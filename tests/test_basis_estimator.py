@@ -48,8 +48,30 @@ def test_basis_virtual_spine_uses_source_head_and_forward_bias() -> None:
 
     assert pose.joints["head"].transform.position == sample.hmd.transform.position
     assert pose.joints["hips"].transform.position == approx((0.0, 0.92, 0.02))
-    assert pose.joints["chest"].transform.position == approx((0.0, 1.3416, 0.0076))
-    assert pose.joints["spine"].transform.position == approx((0.0, 1.1376, 0.0136))
+    assert pose.joints["chest"].transform.position == approx((0.0, 1.34, 0.006))
+    assert pose.joints["spine"].transform.position == approx((0.0, 1.14, 0.0126666667))
+
+
+def test_basis_virtual_spine_preserves_calibrated_head_to_hips_length() -> None:
+    estimator = BasisPortEstimator(
+        BasisEstimatorSettings(
+            head_to_hips_ratio=0.34,
+            hips_forward_bias_m=0.0,
+        )
+    )
+    sample = _sample_with_head((0.0, 1.6, 0.0))
+
+    pose = estimator.estimate(
+        sample,
+        AvatarCalibration(
+            human_height_m=2.0,
+            bone_lengths_m={"head_to_hips": 0.8, "head_to_neck": 0.1},
+        ),
+        GroundingContext(),
+    )
+
+    assert pose.joints["hips"].transform.position == approx((0.0, 0.8, 0.0))
+    assert pose.joints["chest"].transform.position[1] > pose.joints["spine"].transform.position[1]
 
 
 def test_basis_virtual_spine_blends_optional_pelvis_tracker_xz_only() -> None:

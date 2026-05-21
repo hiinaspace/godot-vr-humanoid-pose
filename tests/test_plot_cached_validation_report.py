@@ -17,6 +17,11 @@ def test_plot_cached_validation_report_writes_png(tmp_path) -> None:
                     "total_seconds": 1.0,
                     "mean_reference_error_m": 0.4,
                     "mean_pelvis_error_m": 0.2,
+                    "mean_pelvis_horizontal_error_m": 0.15,
+                    "mean_pelvis_vertical_error_m": 0.05,
+                    "mean_chest_error_m": 0.25,
+                    "mean_spine_error_m": 0.3,
+                    "mean_torso_error_m": 0.25,
                     "mean_left_foot_error_m": 0.5,
                     "mean_right_foot_error_m": 0.6,
                     "mean_contact_foot_error_m": 0.3,
@@ -26,6 +31,7 @@ def test_plot_cached_validation_report_writes_png(tmp_path) -> None:
                             {
                                 "environment_split": "flat",
                                 "mean_reference_error_m": 0.4,
+                                "mean_torso_error_m": 0.25,
                                 "mean_contact_foot_error_m": 0.3,
                             }
                         ],
@@ -33,6 +39,7 @@ def test_plot_cached_validation_report_writes_png(tmp_path) -> None:
                             {
                                 "activity_class": "sitting",
                                 "mean_reference_error_m": 0.5,
+                                "mean_torso_error_m": 0.3,
                                 "mean_contact_foot_error_m": 0.35,
                             }
                         ],

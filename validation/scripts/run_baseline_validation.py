@@ -46,6 +46,11 @@ class ClipResult:
     fk_sample_estimate_metric_seconds: float
     mean_target_error_m: float
     mean_pelvis_error_m: float
+    mean_pelvis_horizontal_error_m: float
+    mean_pelvis_vertical_error_m: float
+    mean_chest_error_m: float
+    mean_spine_error_m: float
+    mean_torso_error_m: float
     mean_left_foot_error_m: float
     mean_right_foot_error_m: float
     mean_reference_error_m: float
@@ -173,6 +178,17 @@ def run_validation(
                     fk_sample_estimate_metric_seconds=time.perf_counter() - work_start,
                     mean_target_error_m=target_summary["mean_target_error_m"],
                     mean_pelvis_error_m=cast(float, reference_summary["mean_pelvis_error_m"]),
+                    mean_pelvis_horizontal_error_m=cast(
+                        float,
+                        reference_summary["mean_pelvis_horizontal_error_m"],
+                    ),
+                    mean_pelvis_vertical_error_m=cast(
+                        float,
+                        reference_summary["mean_pelvis_vertical_error_m"],
+                    ),
+                    mean_chest_error_m=cast(float, reference_summary["mean_chest_error_m"]),
+                    mean_spine_error_m=cast(float, reference_summary["mean_spine_error_m"]),
+                    mean_torso_error_m=cast(float, reference_summary["mean_torso_error_m"]),
                     mean_left_foot_error_m=cast(
                         float,
                         reference_summary["mean_left_foot_error_m"],
@@ -207,6 +223,15 @@ def run_validation(
             ),
             "mean_target_error_m": _mean(result.mean_target_error_m for result in clip_results),
             "mean_pelvis_error_m": _mean(result.mean_pelvis_error_m for result in clip_results),
+            "mean_pelvis_horizontal_error_m": _mean(
+                result.mean_pelvis_horizontal_error_m for result in clip_results
+            ),
+            "mean_pelvis_vertical_error_m": _mean(
+                result.mean_pelvis_vertical_error_m for result in clip_results
+            ),
+            "mean_chest_error_m": _mean(result.mean_chest_error_m for result in clip_results),
+            "mean_spine_error_m": _mean(result.mean_spine_error_m for result in clip_results),
+            "mean_torso_error_m": _mean(result.mean_torso_error_m for result in clip_results),
             "mean_left_foot_error_m": _mean(
                 result.mean_left_foot_error_m for result in clip_results
             ),

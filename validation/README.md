@@ -59,8 +59,9 @@ uv run python -m validation.scripts.run_cached_validation --cache-dir .cache/cmu
 
 Cached validation reports include aggregate metrics, group summaries by
 `environment_split`, `activity_class`, and their combination, plus worst-clip
-lists for the main reference, foot/pelvis, contact-foot, and contact-slip
-metrics. Use `--top-clips 0` to omit worst-clip lists from the JSON summary.
+lists for the main reference, pelvis, torso, foot, contact-foot, and
+contact-slip metrics. Use `--top-clips 0` to omit worst-clip lists from the JSON
+summary.
 
 Compare the first Basis-style estimator port against the trivial baseline:
 

@@ -45,6 +45,10 @@ class FrameMetrics:
 @dataclass(frozen=True, slots=True)
 class ReferencePoseMetrics:
     pelvis_error_m: float
+    pelvis_horizontal_error_m: float
+    pelvis_vertical_error_m: float
+    chest_error_m: float | None
+    spine_error_m: float | None
     left_foot_error_m: float
     right_foot_error_m: float
     joint_errors_m: Mapping[str, float] = field(default_factory=dict)
@@ -52,6 +56,15 @@ class ReferencePoseMetrics:
     @property
     def mean_error_m(self) -> float:
         return fmean((self.pelvis_error_m, self.left_foot_error_m, self.right_foot_error_m))
+
+    @property
+    def mean_torso_error_m(self) -> float:
+        values = [
+            error
+            for error in (self.pelvis_error_m, self.chest_error_m, self.spine_error_m)
+            if error is not None
+        ]
+        return fmean(values) if values else 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,8 +155,21 @@ def evaluate_reference_pose(
         joint_name: _pose_to_reference_error(pose, reference_joints, joint_name)
         for joint_name in sorted(set(pose.joints).intersection(reference_joints))
     }
+    pelvis_error = _pose_to_reference_error(pose, reference_joints, "hips")
     return ReferencePoseMetrics(
-        pelvis_error_m=_pose_to_reference_error(pose, reference_joints, "hips"),
+        pelvis_error_m=pelvis_error,
+        pelvis_horizontal_error_m=_pose_to_reference_horizontal_error(
+            pose,
+            reference_joints,
+            "hips",
+        ),
+        pelvis_vertical_error_m=_pose_to_reference_vertical_error(
+            pose,
+            reference_joints,
+            "hips",
+        ),
+        chest_error_m=_optional_pose_to_reference_error(pose, reference_joints, "chest"),
+        spine_error_m=_optional_pose_to_reference_error(pose, reference_joints, "spine"),
         left_foot_error_m=_pose_to_reference_error(pose, reference_joints, "left_foot"),
         right_foot_error_m=_pose_to_reference_error(pose, reference_joints, "right_foot"),
         joint_errors_m=joint_errors,
@@ -154,6 +180,11 @@ def summarize_reference_errors(metrics: list[ReferencePoseMetrics]) -> dict[str,
     if not metrics:
         return {
             "mean_pelvis_error_m": 0.0,
+            "mean_pelvis_horizontal_error_m": 0.0,
+            "mean_pelvis_vertical_error_m": 0.0,
+            "mean_chest_error_m": 0.0,
+            "mean_spine_error_m": 0.0,
+            "mean_torso_error_m": 0.0,
             "mean_left_foot_error_m": 0.0,
             "mean_right_foot_error_m": 0.0,
             "mean_reference_error_m": 0.0,
@@ -162,6 +193,13 @@ def summarize_reference_errors(metrics: list[ReferencePoseMetrics]) -> dict[str,
     joint_names = sorted({name for metric in metrics for name in metric.joint_errors_m})
     return {
         "mean_pelvis_error_m": fmean(metric.pelvis_error_m for metric in metrics),
+        "mean_pelvis_horizontal_error_m": fmean(
+            metric.pelvis_horizontal_error_m for metric in metrics
+        ),
+        "mean_pelvis_vertical_error_m": fmean(metric.pelvis_vertical_error_m for metric in metrics),
+        "mean_chest_error_m": _mean_optional(metric.chest_error_m for metric in metrics),
+        "mean_spine_error_m": _mean_optional(metric.spine_error_m for metric in metrics),
+        "mean_torso_error_m": fmean(metric.mean_torso_error_m for metric in metrics),
         "mean_left_foot_error_m": fmean(metric.left_foot_error_m for metric in metrics),
         "mean_right_foot_error_m": fmean(metric.right_foot_error_m for metric in metrics),
         "mean_reference_error_m": fmean(metric.mean_error_m for metric in metrics),
@@ -265,6 +303,41 @@ def _pose_to_reference_error(
     return distance(pose.joints[joint_name].transform.position, reference.position)
 
 
+def _optional_pose_to_reference_error(
+    pose: HumanoidPoseFrame,
+    reference_joints: dict[str, Transform],
+    joint_name: str,
+) -> float | None:
+    if joint_name not in pose.joints or joint_name not in reference_joints:
+        return None
+    return _pose_to_reference_error(pose, reference_joints, joint_name)
+
+
+def _pose_to_reference_horizontal_error(
+    pose: HumanoidPoseFrame,
+    reference_joints: dict[str, Transform],
+    joint_name: str,
+) -> float:
+    if joint_name not in pose.joints or joint_name not in reference_joints:
+        return 0.0
+    return horizontal_distance(
+        pose.joints[joint_name].transform.position,
+        reference_joints[joint_name].position,
+    )
+
+
+def _pose_to_reference_vertical_error(
+    pose: HumanoidPoseFrame,
+    reference_joints: dict[str, Transform],
+    joint_name: str,
+) -> float:
+    if joint_name not in pose.joints or joint_name not in reference_joints:
+        return 0.0
+    return abs(
+        pose.joints[joint_name].transform.position[1] - reference_joints[joint_name].position[1]
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _FootContactAccumulatorSummary:
     contact_frames: int
@@ -343,3 +416,8 @@ class _FootContactAccumulator:
 
 def _rate(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator > 0.0 else 0.0
+
+
+def _mean_optional(values: Iterable[float | None]) -> float:
+    value_list = [value for value in values if value is not None]
+    return fmean(value_list) if value_list else 0.0

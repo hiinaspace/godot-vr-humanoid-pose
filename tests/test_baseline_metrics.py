@@ -97,6 +97,10 @@ def test_reference_pose_summary_reports_optional_joint_errors() -> None:
     summary = summarize_reference_errors([metrics])
 
     assert metrics.joint_errors_m["left_knee"] == 0.0
+    assert metrics.pelvis_horizontal_error_m == 0.0
+    assert metrics.pelvis_vertical_error_m == 0.0
+    assert metrics.mean_torso_error_m == 0.0
+    assert summary["mean_torso_error_m"] == 0.0
     assert summary["mean_joint_errors_m"] == {
         "hips": 0.0,
         "left_foot": 0.0,

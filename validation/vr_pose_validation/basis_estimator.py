@@ -51,6 +51,10 @@ class BasisEstimatorSettings:
     lower_arm_ratio: float = 0.16
     upper_leg_ratio: float = 0.245
     lower_leg_ratio: float = 0.246
+    head_to_neck_ratio: float = 0.04
+    neck_to_chest_ratio: float = 0.09
+    chest_to_spine_ratio: float = 0.10
+    spine_to_hips_ratio: float = 0.11
     stance_width_ratio: float = 0.17
     hip_width_ratio: float = 0.11
     hips_forward_bias_m: float = 0.02
@@ -64,6 +68,22 @@ class BasisEstimatorSettings:
     step_duration_s: float = 0.18
     step_lift_height_m: float = 0.06
     planted_foot_confidence: float = 0.75
+
+
+@dataclass(frozen=True, slots=True)
+class _TorsoChainLengths:
+    head_to_neck: float
+    neck_to_chest: float
+    chest_to_spine: float
+    spine_to_hips: float
+
+    @property
+    def neck_to_spine(self) -> float:
+        return self.neck_to_chest + self.chest_to_spine
+
+    @property
+    def neck_to_hips(self) -> float:
+        return self.neck_to_spine + self.spine_to_hips
 
 
 @dataclass(slots=True)
@@ -114,9 +134,26 @@ class BasisPortEstimator:
         forward = _head_forward(sample.hmd)
         right = normalize(cross(WORLD_UP, forward), fallback=(1.0, 0.0, 0.0))
 
-        hips_position = self._estimate_hips(sample, calibration, grounding, head_source, forward)
-        chest_position = lerp(head_source, hips_position, 0.38)
-        spine_position = lerp(head_source, hips_position, 0.68)
+        torso_lengths = self._torso_chain_lengths(calibration)
+        neck_position = subtract(head_source, scale(WORLD_UP, torso_lengths.head_to_neck))
+        hips_position = self._estimate_hips(
+            sample,
+            grounding,
+            neck_position,
+            forward,
+            torso_lengths.neck_to_hips,
+        )
+        chest_position = lerp(
+            neck_position,
+            hips_position,
+            torso_lengths.neck_to_chest / torso_lengths.neck_to_hips,
+        )
+        spine_position = lerp(
+            neck_position,
+            hips_position,
+            torso_lengths.neck_to_spine / torso_lengths.neck_to_hips,
+        )
+        torso_rotation = _yaw_rotation(forward)
         shoulder_width = _calibrated_length(
             calibration,
             ("shoulder_width", "left_shoulder_to_right_shoulder"),
@@ -164,9 +201,18 @@ class BasisPortEstimator:
                 sample.right_hand.confidence,
                 estimated=False,
             ),
-            "hips": JointPose(Transform(position=hips_position), estimated=True),
-            "chest": JointPose(Transform(position=chest_position), estimated=True),
-            "spine": JointPose(Transform(position=spine_position), estimated=True),
+            "hips": JointPose(
+                Transform(position=hips_position, rotation=torso_rotation),
+                estimated=True,
+            ),
+            "chest": JointPose(
+                Transform(position=chest_position, rotation=torso_rotation),
+                estimated=True,
+            ),
+            "spine": JointPose(
+                Transform(position=spine_position, rotation=torso_rotation),
+                estimated=True,
+            ),
             "left_shoulder": JointPose(Transform(position=left_shoulder), estimated=True),
             "right_shoulder": JointPose(Transform(position=right_shoulder), estimated=True),
             "left_elbow": JointPose(
@@ -231,26 +277,69 @@ class BasisPortEstimator:
 
         return HumanoidPoseFrame(
             timestamp_seconds=sample.timestamp_seconds,
-            root=Transform(position=hips_position, rotation=sample.hmd.transform.rotation),
+            root=Transform(position=hips_position, rotation=torso_rotation),
             joints=joints,
+        )
+
+    def _torso_chain_lengths(self, calibration: AvatarCalibration) -> _TorsoChainLengths:
+        head_to_hips = _calibrated_length(
+            calibration,
+            ("head_to_hips", "hips_to_head"),
+            calibration.human_height_m * self.settings.head_to_hips_ratio,
+        )
+        head_to_neck = min(
+            head_to_hips * 0.5,
+            _calibrated_length(
+                calibration,
+                ("head_to_neck", "neck_to_head"),
+                calibration.human_height_m * self.settings.head_to_neck_ratio,
+            ),
+        )
+        raw_segments = (
+            _calibrated_length(
+                calibration,
+                ("neck_to_chest",),
+                calibration.human_height_m * self.settings.neck_to_chest_ratio,
+            ),
+            _calibrated_length(
+                calibration,
+                ("chest_to_spine",),
+                calibration.human_height_m * self.settings.chest_to_spine_ratio,
+            ),
+            _calibrated_length(
+                calibration,
+                ("spine_to_hips", "hips_to_spine"),
+                calibration.human_height_m * self.settings.spine_to_hips_ratio,
+            ),
+        )
+        raw_total = max(sum(raw_segments), 1e-4)
+        target_neck_to_hips = max(head_to_hips - head_to_neck, 1e-4)
+        scale_factor = target_neck_to_hips / raw_total
+        neck_to_chest, chest_to_spine, spine_to_hips = (
+            segment * scale_factor for segment in raw_segments
+        )
+        return _TorsoChainLengths(
+            head_to_neck=head_to_neck,
+            neck_to_chest=neck_to_chest,
+            chest_to_spine=chest_to_spine,
+            spine_to_hips=spine_to_hips,
         )
 
     def _estimate_hips(
         self,
         sample: TrackedPoseSample,
-        calibration: AvatarCalibration,
         grounding: GroundingContext,
-        head_source: Vector3,
+        neck_position: Vector3,
         forward: Vector3,
+        neck_to_hips_length: float,
     ) -> Vector3:
-        torso_drop = _calibrated_length(
-            calibration,
-            ("head_to_hips", "hips_to_head", "neck_to_hips"),
-            calibration.human_height_m * self.settings.head_to_hips_ratio,
-        )
-        floor_y = grounding.floor_height_m + calibration.foot_height_m
+        floor_y = grounding.floor_height_m
         ideal = add(
-            (head_source[0], max(floor_y, head_source[1] - torso_drop), head_source[2]),
+            (
+                neck_position[0],
+                max(floor_y, neck_position[1] - neck_to_hips_length),
+                neck_position[2],
+            ),
             scale(forward, self.settings.hips_forward_bias_m),
         )
 
@@ -462,6 +551,10 @@ def _source_joint_position(tracker: TrackerState) -> Vector3:
 def _head_forward(tracker: TrackerState) -> Vector3:
     forward = rotate_vector(tracker.transform.rotation, WORLD_FORWARD)
     return normalize((forward[0], 0.0, forward[2]), fallback=WORLD_FORWARD)
+
+
+def _yaw_rotation(forward: Vector3) -> Quaternion:
+    return look_rotation(project_on_plane(forward, WORLD_UP), WORLD_UP)
 
 
 def _foot_rotation(
