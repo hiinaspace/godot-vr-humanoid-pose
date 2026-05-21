@@ -13,7 +13,11 @@ from typing import cast
 from zipfile import ZipFile
 
 from validation.vr_pose_validation.baseline import TrivialBaselineEstimator
-from validation.vr_pose_validation.cmu import CmuSkeleton, parse_amc_text, parse_asf_text
+from validation.vr_pose_validation.cmu import (
+    CmuSkeleton,
+    parse_amc_text_sampled,
+    parse_asf_text,
+)
 from validation.vr_pose_validation.cmu_fk import (
     canonical_pose_from_cmu,
     iter_cmu_pose_frames,
@@ -112,7 +116,11 @@ def run_validation(
                 )
 
             parse_start = time.perf_counter()
-            frames = parse_amc_text(zf.read(amc_name).decode("utf-8", errors="replace"))
+            frame_selection = parse_amc_text_sampled(
+                zf.read(amc_name).decode("utf-8", errors="replace"),
+                frame_stride=frame_stride,
+                max_frames=max_frames_per_clip,
+            )
             parse_seconds = time.perf_counter() - parse_start
             work_start = time.perf_counter()
             frame_metrics = []
@@ -120,9 +128,7 @@ def run_validation(
             pose_frames = list(
                 iter_cmu_pose_frames(
                     skeleton_cache[subject],
-                    frames,
-                    frame_stride=frame_stride,
-                    max_frames=max_frames_per_clip,
+                    frame_selection.frames,
                 )
             )
             canonical_frames = [canonical_pose_from_cmu(frame) for frame in pose_frames]
@@ -137,7 +143,7 @@ def run_validation(
                 ClipResult(
                     clip=amc_name,
                     subject=subject,
-                    source_frames=len(frames),
+                    source_frames=frame_selection.source_frame_count,
                     evaluated_frames=len(canonical_frames),
                     parse_seconds=parse_seconds,
                     fk_sample_estimate_metric_seconds=time.perf_counter() - work_start,

@@ -45,6 +45,12 @@ class CmuFrame:
     values: dict[str, tuple[float, ...]]
 
 
+@dataclass(frozen=True, slots=True)
+class CmuFrameSelection:
+    frames: list[CmuFrame]
+    source_frame_count: int
+
+
 def load_asf(path: str | Path) -> CmuSkeleton:
     return parse_asf_text(Path(path).read_text(encoding="utf-8", errors="replace"))
 
@@ -84,28 +90,53 @@ def parse_asf_text(text: str) -> CmuSkeleton:
 
 
 def parse_amc_text(text: str) -> list[CmuFrame]:
+    return parse_amc_text_sampled(text).frames
+
+
+def parse_amc_text_sampled(
+    text: str,
+    *,
+    frame_stride: int = 1,
+    max_frames: int | None = None,
+) -> CmuFrameSelection:
+    if frame_stride < 1:
+        msg = f"frame_stride must be >= 1, got {frame_stride}"
+        raise ValueError(msg)
+
     frames: list[CmuFrame] = []
     current_index: int | None = None
-    current_values: dict[str, tuple[float, ...]] = {}
+    current_values: dict[str, tuple[float, ...]] | None = None
+    source_frame_count = 0
+    selected_frame_count = 0
 
     for line in _clean_lines(text):
         if line.startswith(":"):
             continue
         tokens = line.split()
         if len(tokens) == 1 and tokens[0].lstrip("-").isdigit():
-            if current_index is not None:
+            if current_index is not None and current_values is not None:
                 frames.append(CmuFrame(index=current_index, values=current_values))
             current_index = int(tokens[0])
-            current_values = {}
+            source_ordinal = source_frame_count
+            source_frame_count += 1
+            should_select = source_ordinal % frame_stride == 0 and (
+                max_frames is None or selected_frame_count < max_frames
+            )
+            if should_select:
+                current_values = {}
+                selected_frame_count += 1
+            else:
+                current_values = None
             continue
         if current_index is None:
             msg = f"AMC joint row appeared before a frame number: {line!r}"
             raise ValueError(msg)
-        current_values[tokens[0]] = tuple(float(value) for value in tokens[1:])
+        if current_values is not None:
+            current_values[tokens[0]] = tuple(float(value) for value in tokens[1:])
 
-    if current_index is not None:
+    if current_index is not None and current_values is not None:
         frames.append(CmuFrame(index=current_index, values=current_values))
-    return frames
+    return CmuFrameSelection(frames=frames, source_frame_count=source_frame_count)
 
 
 def scaled_root_translation(frame: CmuFrame, root: CmuRoot) -> tuple[float, float, float]:

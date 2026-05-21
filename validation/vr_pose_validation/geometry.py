@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import cos, radians, sin, sqrt
+from math import cos, pi, radians, sin, sqrt
 
 type Vector3 = tuple[float, float, float]
 type Quaternion = tuple[float, float, float, float]
@@ -80,6 +80,19 @@ def axis_angle_quaternion(axis: Vector3, degrees: float) -> Quaternion:
         normalized_axis[2] * sine,
         cos(half_angle),
     )
+
+
+def axis_name_quaternion(axis_name: str, degrees: float) -> Quaternion:
+    half_angle = degrees * pi / 360.0
+    sine = sin(half_angle)
+    cosine = cos(half_angle)
+    if axis_name == "x":
+        return (sine, 0.0, 0.0, cosine)
+    if axis_name == "y":
+        return (0.0, sine, 0.0, cosine)
+    if axis_name == "z":
+        return (0.0, 0.0, sine, cosine)
+    return IDENTITY_QUATERNION
 
 
 def rotate_vector(rotation: Quaternion, vector: Vector3) -> Vector3:

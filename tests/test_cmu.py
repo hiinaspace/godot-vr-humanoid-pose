@@ -6,6 +6,7 @@ from validation.vr_pose_validation.cmu import (
     CMU_SCALE_TO_METERS,
     ordered_joint_rotation,
     parse_amc_text,
+    parse_amc_text_sampled,
     parse_asf_text,
     scaled_root_translation,
 )
@@ -77,3 +78,10 @@ def test_parse_amc_frames_and_ordered_joint_rotation() -> None:
         "rx": 5.0,
         "ry": 6.0,
     }
+
+
+def test_parse_amc_text_sampled_counts_source_frames() -> None:
+    selection = parse_amc_text_sampled(AMC_TEXT, frame_stride=2, max_frames=1)
+
+    assert selection.source_frame_count == 2
+    assert [frame.index for frame in selection.frames] == [1]
