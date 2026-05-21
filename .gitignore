@@ -1,0 +1,13 @@
+.cache/
+.pytest_cache/
+.pytest-tmp/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Generated validation artifacts.
+validation/cmu_manifest.json
+validation/reports/
+validation/data/
+validation/rendered/

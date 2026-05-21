@@ -1,0 +1,43 @@
+[project]
+name = "godot-vr-humanoid-pose"
+version = "0.1.0"
+description = "Validation and pose-estimation scaffolding for sparse VR humanoid tracking in Godot."
+readme = "PLAN.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.0",
+    "pytest>=9.0.0",
+    "ruff>=0.14.0",
+    "ty>=0.0.1a31",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--basetemp=.pytest-tmp"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+force-exclude = true
+extend-exclude = [
+    ".cache",
+    "validation/cmu_manifest.json",
+    "validation/data",
+    "validation/reports",
+    "validation/rendered",
+]
+
+[tool.ruff.lint]
+select = [
+    "B",
+    "E",
+    "F",
+    "I",
+    "UP",
+]
+
+[tool.ty]
