@@ -82,10 +82,13 @@ def test_cached_validation_runs_one_clip_with_stateful_worker_boundary(tmp_path)
         workers=1,
     )
     summary = cast(dict[str, object], result["summary"])
+    clips = cast(list[dict[str, object]], result["clips"])
 
     assert summary["clips"] == 1
     assert summary["evaluated_frames"] == 2
     assert summary["workers"] == 1
+    assert "reference_error_p95_m" in summary
+    assert "mean_joint_velocity_error_m_per_s" in clips[0]
     assert "grouped_metrics" in summary
     assert "worst_clips" in summary
 

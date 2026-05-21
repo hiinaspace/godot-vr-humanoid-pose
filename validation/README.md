@@ -59,10 +59,16 @@ uv run python -m validation.scripts.run_cached_validation --cache-dir .cache/cmu
 
 Cached validation reports include aggregate metrics, group summaries by
 `environment_split`, `activity_class`, and their combination, plus worst-clip
-lists for the main reference, pelvis, torso, foot, contact-foot, and
-contact-slip metrics. Use `--top-clips 0` to omit worst-clip lists from the JSON
-summary. The headline reference metric is the mean of hips, left foot, and right
-foot errors; per-joint means for all emitted joints are available under
+lists for the main reference, pelvis, torso, limb, foot, tail, temporal, and
+contact-slip metrics. Limb diagnostics include paired shoulder, elbow, and knee
+errors plus left/right fields in the clip rows. Tail diagnostics include
+per-clip reference-error P50/P90/P95/P99 values and percentages over 25 cm,
+50 cm, and 100 cm. Temporal diagnostics use finite differences over each clip
+to report mean estimated-vs-reference velocity error, acceleration error, and
+absolute estimated jerk for all common joints plus pelvis, torso, shoulders,
+elbows, knees, and feet. Use `--top-clips 0` to omit worst-clip lists from the
+JSON summary. The headline reference metric is the mean of hips, left foot, and
+right foot errors; per-joint means for all emitted joints are available under
 `mean_joint_errors_m`.
 
 Compare the first Basis-style estimator port against the trivial baseline:

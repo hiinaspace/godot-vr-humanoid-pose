@@ -23,11 +23,15 @@ from validation.vr_pose_validation.cmu_fk import (
     iter_cmu_pose_frames,
 )
 from validation.vr_pose_validation.metrics import (
+    REFERENCE_ERROR_DISTRIBUTION_FIELDS,
+    TEMPORAL_SUMMARY_FIELDS,
     ReferencePoseMetrics,
     evaluate_frame,
     evaluate_reference_pose,
+    summarize_reference_error_distribution,
     summarize_reference_errors,
     summarize_target_errors,
+    summarize_temporal_reference_sequence,
 )
 from validation.vr_pose_validation.synthetic_trackers import iter_three_point_samples
 from validation.vr_pose_validation.types import AvatarCalibration, GroundingContext
@@ -51,9 +55,52 @@ class ClipResult:
     mean_chest_error_m: float
     mean_spine_error_m: float
     mean_torso_error_m: float
+    mean_left_shoulder_error_m: float
+    mean_right_shoulder_error_m: float
+    mean_shoulder_error_m: float
+    mean_left_elbow_error_m: float
+    mean_right_elbow_error_m: float
+    mean_elbow_error_m: float
+    mean_left_knee_error_m: float
+    mean_right_knee_error_m: float
+    mean_knee_error_m: float
     mean_left_foot_error_m: float
     mean_right_foot_error_m: float
     mean_reference_error_m: float
+    reference_error_p50_m: float
+    reference_error_p90_m: float
+    reference_error_p95_m: float
+    reference_error_p99_m: float
+    pct_reference_error_over_25cm: float
+    pct_reference_error_over_50cm: float
+    pct_reference_error_over_100cm: float
+    pelvis_error_p95_m: float
+    torso_error_p95_m: float
+    shoulder_error_p95_m: float
+    elbow_error_p95_m: float
+    knee_error_p95_m: float
+    feet_error_p95_m: float
+    mean_joint_velocity_error_m_per_s: float
+    mean_joint_acceleration_error_m_per_s2: float
+    mean_joint_estimated_jerk_m_per_s3: float
+    mean_pelvis_velocity_error_m_per_s: float
+    mean_pelvis_acceleration_error_m_per_s2: float
+    mean_pelvis_estimated_jerk_m_per_s3: float
+    mean_torso_velocity_error_m_per_s: float
+    mean_torso_acceleration_error_m_per_s2: float
+    mean_torso_estimated_jerk_m_per_s3: float
+    mean_shoulder_velocity_error_m_per_s: float
+    mean_shoulder_acceleration_error_m_per_s2: float
+    mean_shoulder_estimated_jerk_m_per_s3: float
+    mean_elbow_velocity_error_m_per_s: float
+    mean_elbow_acceleration_error_m_per_s2: float
+    mean_elbow_estimated_jerk_m_per_s3: float
+    mean_knee_velocity_error_m_per_s: float
+    mean_knee_acceleration_error_m_per_s2: float
+    mean_knee_estimated_jerk_m_per_s3: float
+    mean_feet_velocity_error_m_per_s: float
+    mean_feet_acceleration_error_m_per_s2: float
+    mean_feet_estimated_jerk_m_per_s3: float
     mean_joint_errors_m: dict[str, float]
     inferred_floor_height_m: float = 0.0
     contact_frames: int = 0
@@ -158,12 +205,19 @@ def run_validation(
             )
             canonical_frames = [canonical_pose_from_cmu(frame) for frame in pose_frames]
             samples = iter_three_point_samples(canonical_frames)
+            estimated_poses = []
             for reference_frame, sample in zip(canonical_frames, samples, strict=True):
                 pose = estimator.estimate(sample, calibration, grounding)
+                estimated_poses.append(pose)
                 frame_metrics.append(evaluate_frame(pose, sample, grounding.floor_height_m))
                 reference_metrics.append(evaluate_reference_pose(pose, reference_frame))
             target_summary = summarize_target_errors(frame_metrics)
             reference_summary = summarize_reference_errors(reference_metrics)
+            tail_summary = summarize_reference_error_distribution(reference_metrics)
+            temporal_summary = summarize_temporal_reference_sequence(
+                estimated_poses,
+                canonical_frames,
+            )
             mean_joint_errors_m = cast(
                 dict[str, float],
                 reference_summary["mean_joint_errors_m"],
@@ -189,6 +243,36 @@ def run_validation(
                     mean_chest_error_m=cast(float, reference_summary["mean_chest_error_m"]),
                     mean_spine_error_m=cast(float, reference_summary["mean_spine_error_m"]),
                     mean_torso_error_m=cast(float, reference_summary["mean_torso_error_m"]),
+                    mean_left_shoulder_error_m=cast(
+                        float,
+                        reference_summary["mean_left_shoulder_error_m"],
+                    ),
+                    mean_right_shoulder_error_m=cast(
+                        float,
+                        reference_summary["mean_right_shoulder_error_m"],
+                    ),
+                    mean_shoulder_error_m=cast(
+                        float,
+                        reference_summary["mean_shoulder_error_m"],
+                    ),
+                    mean_left_elbow_error_m=cast(
+                        float,
+                        reference_summary["mean_left_elbow_error_m"],
+                    ),
+                    mean_right_elbow_error_m=cast(
+                        float,
+                        reference_summary["mean_right_elbow_error_m"],
+                    ),
+                    mean_elbow_error_m=cast(float, reference_summary["mean_elbow_error_m"]),
+                    mean_left_knee_error_m=cast(
+                        float,
+                        reference_summary["mean_left_knee_error_m"],
+                    ),
+                    mean_right_knee_error_m=cast(
+                        float,
+                        reference_summary["mean_right_knee_error_m"],
+                    ),
+                    mean_knee_error_m=cast(float, reference_summary["mean_knee_error_m"]),
                     mean_left_foot_error_m=cast(
                         float,
                         reference_summary["mean_left_foot_error_m"],
@@ -201,6 +285,82 @@ def run_validation(
                         float,
                         reference_summary["mean_reference_error_m"],
                     ),
+                    reference_error_p50_m=tail_summary["reference_error_p50_m"],
+                    reference_error_p90_m=tail_summary["reference_error_p90_m"],
+                    reference_error_p95_m=tail_summary["reference_error_p95_m"],
+                    reference_error_p99_m=tail_summary["reference_error_p99_m"],
+                    pct_reference_error_over_25cm=tail_summary["pct_reference_error_over_25cm"],
+                    pct_reference_error_over_50cm=tail_summary["pct_reference_error_over_50cm"],
+                    pct_reference_error_over_100cm=tail_summary["pct_reference_error_over_100cm"],
+                    pelvis_error_p95_m=tail_summary["pelvis_error_p95_m"],
+                    torso_error_p95_m=tail_summary["torso_error_p95_m"],
+                    shoulder_error_p95_m=tail_summary["shoulder_error_p95_m"],
+                    elbow_error_p95_m=tail_summary["elbow_error_p95_m"],
+                    knee_error_p95_m=tail_summary["knee_error_p95_m"],
+                    feet_error_p95_m=tail_summary["feet_error_p95_m"],
+                    mean_joint_velocity_error_m_per_s=temporal_summary[
+                        "mean_joint_velocity_error_m_per_s"
+                    ],
+                    mean_joint_acceleration_error_m_per_s2=temporal_summary[
+                        "mean_joint_acceleration_error_m_per_s2"
+                    ],
+                    mean_joint_estimated_jerk_m_per_s3=temporal_summary[
+                        "mean_joint_estimated_jerk_m_per_s3"
+                    ],
+                    mean_pelvis_velocity_error_m_per_s=temporal_summary[
+                        "mean_pelvis_velocity_error_m_per_s"
+                    ],
+                    mean_pelvis_acceleration_error_m_per_s2=temporal_summary[
+                        "mean_pelvis_acceleration_error_m_per_s2"
+                    ],
+                    mean_pelvis_estimated_jerk_m_per_s3=temporal_summary[
+                        "mean_pelvis_estimated_jerk_m_per_s3"
+                    ],
+                    mean_torso_velocity_error_m_per_s=temporal_summary[
+                        "mean_torso_velocity_error_m_per_s"
+                    ],
+                    mean_torso_acceleration_error_m_per_s2=temporal_summary[
+                        "mean_torso_acceleration_error_m_per_s2"
+                    ],
+                    mean_torso_estimated_jerk_m_per_s3=temporal_summary[
+                        "mean_torso_estimated_jerk_m_per_s3"
+                    ],
+                    mean_shoulder_velocity_error_m_per_s=temporal_summary[
+                        "mean_shoulder_velocity_error_m_per_s"
+                    ],
+                    mean_shoulder_acceleration_error_m_per_s2=temporal_summary[
+                        "mean_shoulder_acceleration_error_m_per_s2"
+                    ],
+                    mean_shoulder_estimated_jerk_m_per_s3=temporal_summary[
+                        "mean_shoulder_estimated_jerk_m_per_s3"
+                    ],
+                    mean_elbow_velocity_error_m_per_s=temporal_summary[
+                        "mean_elbow_velocity_error_m_per_s"
+                    ],
+                    mean_elbow_acceleration_error_m_per_s2=temporal_summary[
+                        "mean_elbow_acceleration_error_m_per_s2"
+                    ],
+                    mean_elbow_estimated_jerk_m_per_s3=temporal_summary[
+                        "mean_elbow_estimated_jerk_m_per_s3"
+                    ],
+                    mean_knee_velocity_error_m_per_s=temporal_summary[
+                        "mean_knee_velocity_error_m_per_s"
+                    ],
+                    mean_knee_acceleration_error_m_per_s2=temporal_summary[
+                        "mean_knee_acceleration_error_m_per_s2"
+                    ],
+                    mean_knee_estimated_jerk_m_per_s3=temporal_summary[
+                        "mean_knee_estimated_jerk_m_per_s3"
+                    ],
+                    mean_feet_velocity_error_m_per_s=temporal_summary[
+                        "mean_feet_velocity_error_m_per_s"
+                    ],
+                    mean_feet_acceleration_error_m_per_s2=temporal_summary[
+                        "mean_feet_acceleration_error_m_per_s2"
+                    ],
+                    mean_feet_estimated_jerk_m_per_s3=temporal_summary[
+                        "mean_feet_estimated_jerk_m_per_s3"
+                    ],
                     mean_joint_errors_m=mean_joint_errors_m,
                 )
             )
@@ -208,41 +368,54 @@ def run_validation(
     total_seconds = time.perf_counter() - start
     total_source_frames = sum(result.source_frames for result in clip_results)
     total_evaluated_frames = sum(result.evaluated_frames for result in clip_results)
+    summary = {
+        "archive": archive_path.as_posix(),
+        "clips": len(clip_results),
+        "source_frames": total_source_frames,
+        "evaluated_frames": total_evaluated_frames,
+        "frame_stride": frame_stride,
+        "max_frames_per_clip": max_frames_per_clip,
+        "estimator": estimator_name,
+        "total_seconds": total_seconds,
+        "evaluated_frames_per_second": (
+            total_evaluated_frames / total_seconds if total_seconds > 0.0 else 0.0
+        ),
+        "mean_target_error_m": _mean(result.mean_target_error_m for result in clip_results),
+        "mean_pelvis_error_m": _mean(result.mean_pelvis_error_m for result in clip_results),
+        "mean_pelvis_horizontal_error_m": _mean(
+            result.mean_pelvis_horizontal_error_m for result in clip_results
+        ),
+        "mean_pelvis_vertical_error_m": _mean(
+            result.mean_pelvis_vertical_error_m for result in clip_results
+        ),
+        "mean_chest_error_m": _mean(result.mean_chest_error_m for result in clip_results),
+        "mean_spine_error_m": _mean(result.mean_spine_error_m for result in clip_results),
+        "mean_torso_error_m": _mean(result.mean_torso_error_m for result in clip_results),
+        "mean_left_shoulder_error_m": _mean(
+            result.mean_left_shoulder_error_m for result in clip_results
+        ),
+        "mean_right_shoulder_error_m": _mean(
+            result.mean_right_shoulder_error_m for result in clip_results
+        ),
+        "mean_shoulder_error_m": _mean(result.mean_shoulder_error_m for result in clip_results),
+        "mean_left_elbow_error_m": _mean(result.mean_left_elbow_error_m for result in clip_results),
+        "mean_right_elbow_error_m": _mean(
+            result.mean_right_elbow_error_m for result in clip_results
+        ),
+        "mean_elbow_error_m": _mean(result.mean_elbow_error_m for result in clip_results),
+        "mean_left_knee_error_m": _mean(result.mean_left_knee_error_m for result in clip_results),
+        "mean_right_knee_error_m": _mean(result.mean_right_knee_error_m for result in clip_results),
+        "mean_knee_error_m": _mean(result.mean_knee_error_m for result in clip_results),
+        "mean_left_foot_error_m": _mean(result.mean_left_foot_error_m for result in clip_results),
+        "mean_right_foot_error_m": _mean(result.mean_right_foot_error_m for result in clip_results),
+        "mean_reference_error_m": _mean(result.mean_reference_error_m for result in clip_results),
+        "mean_joint_errors_m": _mean_joint_errors(clip_results),
+    }
+    for metric in (*REFERENCE_ERROR_DISTRIBUTION_FIELDS, *TEMPORAL_SUMMARY_FIELDS):
+        summary[metric] = _mean(float(getattr(result, metric)) for result in clip_results)
+
     return {
-        "summary": {
-            "archive": archive_path.as_posix(),
-            "clips": len(clip_results),
-            "source_frames": total_source_frames,
-            "evaluated_frames": total_evaluated_frames,
-            "frame_stride": frame_stride,
-            "max_frames_per_clip": max_frames_per_clip,
-            "estimator": estimator_name,
-            "total_seconds": total_seconds,
-            "evaluated_frames_per_second": (
-                total_evaluated_frames / total_seconds if total_seconds > 0.0 else 0.0
-            ),
-            "mean_target_error_m": _mean(result.mean_target_error_m for result in clip_results),
-            "mean_pelvis_error_m": _mean(result.mean_pelvis_error_m for result in clip_results),
-            "mean_pelvis_horizontal_error_m": _mean(
-                result.mean_pelvis_horizontal_error_m for result in clip_results
-            ),
-            "mean_pelvis_vertical_error_m": _mean(
-                result.mean_pelvis_vertical_error_m for result in clip_results
-            ),
-            "mean_chest_error_m": _mean(result.mean_chest_error_m for result in clip_results),
-            "mean_spine_error_m": _mean(result.mean_spine_error_m for result in clip_results),
-            "mean_torso_error_m": _mean(result.mean_torso_error_m for result in clip_results),
-            "mean_left_foot_error_m": _mean(
-                result.mean_left_foot_error_m for result in clip_results
-            ),
-            "mean_right_foot_error_m": _mean(
-                result.mean_right_foot_error_m for result in clip_results
-            ),
-            "mean_reference_error_m": _mean(
-                result.mean_reference_error_m for result in clip_results
-            ),
-            "mean_joint_errors_m": _mean_joint_errors(clip_results),
-        },
+        "summary": summary,
         "clips": [asdict(result) for result in clip_results],
     }
 

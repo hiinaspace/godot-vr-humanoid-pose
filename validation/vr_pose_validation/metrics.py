@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from math import floor
 from statistics import fmean
 
-from validation.vr_pose_validation.geometry import Transform, Vector3, distance, horizontal_distance
+from validation.vr_pose_validation.geometry import (
+    Transform,
+    Vector3,
+    distance,
+    horizontal_distance,
+    length,
+    scale,
+    subtract,
+)
 from validation.vr_pose_validation.types import (
     HumanoidPoseFrame,
     TrackedPoseSample,
@@ -14,6 +23,44 @@ from validation.vr_pose_validation.types import (
 )
 
 FOOT_JOINTS = ("left_foot", "right_foot")
+JOINT_PAIR_METRICS = {
+    "shoulder": ("left_shoulder", "right_shoulder"),
+    "elbow": ("left_elbow", "right_elbow"),
+    "knee": ("left_knee", "right_knee"),
+}
+REFERENCE_ERROR_DISTRIBUTION_FIELDS = (
+    "reference_error_p50_m",
+    "reference_error_p90_m",
+    "reference_error_p95_m",
+    "reference_error_p99_m",
+    "pct_reference_error_over_25cm",
+    "pct_reference_error_over_50cm",
+    "pct_reference_error_over_100cm",
+    "pelvis_error_p95_m",
+    "torso_error_p95_m",
+    "shoulder_error_p95_m",
+    "elbow_error_p95_m",
+    "knee_error_p95_m",
+    "feet_error_p95_m",
+)
+TEMPORAL_REGION_JOINTS = {
+    "joint": (),
+    "pelvis": ("hips",),
+    "torso": ("hips", "chest", "spine"),
+    "shoulder": ("left_shoulder", "right_shoulder"),
+    "elbow": ("left_elbow", "right_elbow"),
+    "knee": ("left_knee", "right_knee"),
+    "feet": FOOT_JOINTS,
+}
+TEMPORAL_SUMMARY_FIELDS = tuple(
+    field_name
+    for region in TEMPORAL_REGION_JOINTS
+    for field_name in (
+        f"mean_{region}_velocity_error_m_per_s",
+        f"mean_{region}_acceleration_error_m_per_s2",
+        f"mean_{region}_estimated_jerk_m_per_s3",
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +232,15 @@ def summarize_reference_errors(metrics: list[ReferencePoseMetrics]) -> dict[str,
             "mean_chest_error_m": 0.0,
             "mean_spine_error_m": 0.0,
             "mean_torso_error_m": 0.0,
+            "mean_left_shoulder_error_m": 0.0,
+            "mean_right_shoulder_error_m": 0.0,
+            "mean_shoulder_error_m": 0.0,
+            "mean_left_elbow_error_m": 0.0,
+            "mean_right_elbow_error_m": 0.0,
+            "mean_elbow_error_m": 0.0,
+            "mean_left_knee_error_m": 0.0,
+            "mean_right_knee_error_m": 0.0,
+            "mean_knee_error_m": 0.0,
             "mean_left_foot_error_m": 0.0,
             "mean_right_foot_error_m": 0.0,
             "mean_reference_error_m": 0.0,
@@ -200,6 +256,15 @@ def summarize_reference_errors(metrics: list[ReferencePoseMetrics]) -> dict[str,
         "mean_chest_error_m": _mean_optional(metric.chest_error_m for metric in metrics),
         "mean_spine_error_m": _mean_optional(metric.spine_error_m for metric in metrics),
         "mean_torso_error_m": fmean(metric.mean_torso_error_m for metric in metrics),
+        "mean_left_shoulder_error_m": _mean_joint_error(metrics, "left_shoulder"),
+        "mean_right_shoulder_error_m": _mean_joint_error(metrics, "right_shoulder"),
+        "mean_shoulder_error_m": _mean_joint_pair_error(metrics, "shoulder"),
+        "mean_left_elbow_error_m": _mean_joint_error(metrics, "left_elbow"),
+        "mean_right_elbow_error_m": _mean_joint_error(metrics, "right_elbow"),
+        "mean_elbow_error_m": _mean_joint_pair_error(metrics, "elbow"),
+        "mean_left_knee_error_m": _mean_joint_error(metrics, "left_knee"),
+        "mean_right_knee_error_m": _mean_joint_error(metrics, "right_knee"),
+        "mean_knee_error_m": _mean_joint_pair_error(metrics, "knee"),
         "mean_left_foot_error_m": fmean(metric.left_foot_error_m for metric in metrics),
         "mean_right_foot_error_m": fmean(metric.right_foot_error_m for metric in metrics),
         "mean_reference_error_m": fmean(metric.mean_error_m for metric in metrics),
@@ -209,6 +274,135 @@ def summarize_reference_errors(metrics: list[ReferencePoseMetrics]) -> dict[str,
             )
             for name in joint_names
         },
+    }
+
+
+def summarize_reference_error_distribution(
+    metrics: list[ReferencePoseMetrics],
+) -> dict[str, float]:
+    if not metrics:
+        return {field_name: 0.0 for field_name in REFERENCE_ERROR_DISTRIBUTION_FIELDS}
+
+    reference_errors = [metric.mean_error_m for metric in metrics]
+    shoulder_errors = _joint_pair_frame_errors(metrics, "shoulder")
+    elbow_errors = _joint_pair_frame_errors(metrics, "elbow")
+    knee_errors = _joint_pair_frame_errors(metrics, "knee")
+    feet_errors = [
+        fmean((metric.left_foot_error_m, metric.right_foot_error_m)) for metric in metrics
+    ]
+    return {
+        "reference_error_p50_m": _quantile(reference_errors, 0.50),
+        "reference_error_p90_m": _quantile(reference_errors, 0.90),
+        "reference_error_p95_m": _quantile(reference_errors, 0.95),
+        "reference_error_p99_m": _quantile(reference_errors, 0.99),
+        "pct_reference_error_over_25cm": _percent_over(reference_errors, 0.25),
+        "pct_reference_error_over_50cm": _percent_over(reference_errors, 0.50),
+        "pct_reference_error_over_100cm": _percent_over(reference_errors, 1.00),
+        "pelvis_error_p95_m": _quantile(
+            [metric.pelvis_error_m for metric in metrics],
+            0.95,
+        ),
+        "torso_error_p95_m": _quantile(
+            [metric.mean_torso_error_m for metric in metrics],
+            0.95,
+        ),
+        "shoulder_error_p95_m": _quantile(shoulder_errors, 0.95),
+        "elbow_error_p95_m": _quantile(elbow_errors, 0.95),
+        "knee_error_p95_m": _quantile(knee_errors, 0.95),
+        "feet_error_p95_m": _quantile(feet_errors, 0.95),
+    }
+
+
+def summarize_temporal_reference_sequence(
+    poses: Iterable[HumanoidPoseFrame],
+    reference_frames: Iterable[dict[str, Transform]],
+) -> dict[str, float]:
+    pose_list = list(poses)
+    reference_list = list(reference_frames)
+    frame_count = min(len(pose_list), len(reference_list))
+    velocity_errors = _empty_temporal_buckets()
+    acceleration_errors = _empty_temporal_buckets()
+    estimated_jerks = _empty_temporal_buckets()
+    velocities_by_joint: dict[str, list[_TemporalDerivativeSample]] = {}
+    accelerations_by_joint: dict[str, list[_TemporalDerivativeSample]] = {}
+
+    for frame_index in range(1, frame_count):
+        previous_pose = pose_list[frame_index - 1]
+        pose = pose_list[frame_index]
+        previous_reference = reference_list[frame_index - 1]
+        reference = reference_list[frame_index]
+        dt = _frame_dt(previous_pose.timestamp_seconds, pose.timestamp_seconds)
+        joint_names = sorted(
+            set(previous_pose.joints)
+            .intersection(pose.joints)
+            .intersection(previous_reference)
+            .intersection(reference)
+        )
+        for joint_name in joint_names:
+            estimated_velocity = _finite_difference(
+                pose.joints[joint_name].transform.position,
+                previous_pose.joints[joint_name].transform.position,
+                dt,
+            )
+            reference_velocity = _finite_difference(
+                reference[joint_name].position,
+                previous_reference[joint_name].position,
+                dt,
+            )
+            _add_temporal_value(
+                velocity_errors,
+                joint_name,
+                distance(estimated_velocity, reference_velocity),
+            )
+            velocities_by_joint.setdefault(joint_name, []).append(
+                _TemporalDerivativeSample(
+                    timestamp_seconds=pose.timestamp_seconds,
+                    estimated=estimated_velocity,
+                    reference=reference_velocity,
+                )
+            )
+
+    for joint_name, velocities in velocities_by_joint.items():
+        for previous, current in zip(velocities, velocities[1:], strict=False):
+            dt = _frame_dt(previous.timestamp_seconds, current.timestamp_seconds)
+            estimated_acceleration = _finite_difference(current.estimated, previous.estimated, dt)
+            reference_acceleration = _finite_difference(current.reference, previous.reference, dt)
+            _add_temporal_value(
+                acceleration_errors,
+                joint_name,
+                distance(estimated_acceleration, reference_acceleration),
+            )
+            accelerations_by_joint.setdefault(joint_name, []).append(
+                _TemporalDerivativeSample(
+                    timestamp_seconds=current.timestamp_seconds,
+                    estimated=estimated_acceleration,
+                    reference=reference_acceleration,
+                )
+            )
+
+    for joint_name, accelerations in accelerations_by_joint.items():
+        for previous, current in zip(accelerations, accelerations[1:], strict=False):
+            dt = _frame_dt(previous.timestamp_seconds, current.timestamp_seconds)
+            estimated_jerk = _finite_difference(current.estimated, previous.estimated, dt)
+            _add_temporal_value(estimated_jerks, joint_name, length(estimated_jerk))
+
+    return {
+        field_name: value
+        for region in TEMPORAL_REGION_JOINTS
+        for field_name, value in (
+            (
+                f"mean_{region}_velocity_error_m_per_s",
+                _mean_values(velocity_errors[region]),
+            ),
+            (
+                f"mean_{region}_acceleration_error_m_per_s2",
+                _mean_values(acceleration_errors[region]),
+            ),
+            (
+                f"mean_{region}_estimated_jerk_m_per_s3",
+                _mean_values(estimated_jerks[region]),
+            ),
+        )
     }
 
 
@@ -414,10 +608,104 @@ class _FootContactAccumulator:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _TemporalDerivativeSample:
+    timestamp_seconds: float
+    estimated: Vector3
+    reference: Vector3
+
+
 def _rate(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator > 0.0 else 0.0
 
 
 def _mean_optional(values: Iterable[float | None]) -> float:
     value_list = [value for value in values if value is not None]
+    return fmean(value_list) if value_list else 0.0
+
+
+def _mean_joint_error(metrics: list[ReferencePoseMetrics], joint_name: str) -> float:
+    return _mean_optional(metric.joint_errors_m.get(joint_name) for metric in metrics)
+
+
+def _mean_joint_pair_error(metrics: list[ReferencePoseMetrics], pair_name: str) -> float:
+    left_name, right_name = JOINT_PAIR_METRICS[pair_name]
+    return _mean_optional(
+        error
+        for metric in metrics
+        for error in (
+            metric.joint_errors_m.get(left_name),
+            metric.joint_errors_m.get(right_name),
+        )
+    )
+
+
+def _joint_pair_frame_errors(metrics: list[ReferencePoseMetrics], pair_name: str) -> list[float]:
+    left_name, right_name = JOINT_PAIR_METRICS[pair_name]
+    values = []
+    for metric in metrics:
+        frame_values = [
+            error
+            for error in (
+                metric.joint_errors_m.get(left_name),
+                metric.joint_errors_m.get(right_name),
+            )
+            if error is not None
+        ]
+        if frame_values:
+            values.append(fmean(frame_values))
+    return values
+
+
+def _quantile(values: Iterable[float], quantile: float) -> float:
+    sorted_values = sorted(values)
+    if not sorted_values:
+        return 0.0
+    clamped_quantile = min(1.0, max(0.0, quantile))
+    position = (len(sorted_values) - 1) * clamped_quantile
+    lower_index = floor(position)
+    upper_index = min(len(sorted_values) - 1, lower_index + 1)
+    upper_weight = position - lower_index
+    lower_weight = 1.0 - upper_weight
+    return sorted_values[lower_index] * lower_weight + sorted_values[upper_index] * upper_weight
+
+
+def _percent_over(values: Iterable[float], threshold: float) -> float:
+    value_list = list(values)
+    if not value_list:
+        return 0.0
+    return sum(1 for value in value_list if value > threshold) / len(value_list) * 100.0
+
+
+def _empty_temporal_buckets() -> dict[str, list[float]]:
+    return {region: [] for region in TEMPORAL_REGION_JOINTS}
+
+
+def _add_temporal_value(
+    buckets: dict[str, list[float]],
+    joint_name: str,
+    value: float,
+) -> None:
+    for region in _temporal_regions_for_joint(joint_name):
+        buckets[region].append(value)
+
+
+def _temporal_regions_for_joint(joint_name: str) -> tuple[str, ...]:
+    return tuple(
+        region
+        for region, joint_names in TEMPORAL_REGION_JOINTS.items()
+        if region == "joint" or joint_name in joint_names
+    )
+
+
+def _finite_difference(current: Vector3, previous: Vector3, dt: float) -> Vector3:
+    return scale(subtract(current, previous), 1.0 / dt)
+
+
+def _frame_dt(previous_timestamp_seconds: float, timestamp_seconds: float) -> float:
+    return max(timestamp_seconds - previous_timestamp_seconds, 1.0 / 120.0)
+
+
+def _mean_values(values: Iterable[float]) -> float:
+    value_list = list(values)
     return fmean(value_list) if value_list else 0.0

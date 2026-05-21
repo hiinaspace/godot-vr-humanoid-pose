@@ -9,12 +9,15 @@ from validation.vr_pose_validation.baseline import (
 )
 from validation.vr_pose_validation.geometry import Transform
 from validation.vr_pose_validation.metrics import (
+    ReferencePoseMetrics,
     evaluate_foot_contact_sequence,
     evaluate_frame,
     evaluate_reference_pose,
     infer_reference_floor_height,
+    summarize_reference_error_distribution,
     summarize_reference_errors,
     summarize_target_errors,
+    summarize_temporal_reference_sequence,
 )
 from validation.vr_pose_validation.synthetic_trackers import (
     generate_three_point_samples,
@@ -101,12 +104,110 @@ def test_reference_pose_summary_reports_optional_joint_errors() -> None:
     assert metrics.pelvis_vertical_error_m == 0.0
     assert metrics.mean_torso_error_m == 0.0
     assert summary["mean_torso_error_m"] == 0.0
+    assert summary["mean_left_knee_error_m"] == 0.0
+    assert summary["mean_knee_error_m"] == 0.0
     assert summary["mean_joint_errors_m"] == {
         "hips": 0.0,
         "left_foot": 0.0,
         "left_knee": 0.0,
         "right_foot": 0.0,
     }
+
+
+def test_reference_pose_summary_reports_limb_pair_errors() -> None:
+    pose = HumanoidPoseFrame(
+        timestamp_seconds=0.0,
+        root=Transform(),
+        joints={
+            "hips": JointPose(Transform(position=(0.0, 0.0, 0.0))),
+            "left_foot": JointPose(Transform(position=(0.0, -1.0, 0.0))),
+            "right_foot": JointPose(Transform(position=(1.0, -1.0, 0.0))),
+            "left_shoulder": JointPose(Transform(position=(-0.2, 1.4, 0.0))),
+            "right_shoulder": JointPose(Transform(position=(0.2, 1.4, 0.0))),
+            "left_elbow": JointPose(Transform(position=(-0.4, 1.0, 0.0))),
+            "right_elbow": JointPose(Transform(position=(0.4, 1.0, 0.0))),
+            "left_knee": JointPose(Transform(position=(-0.2, 0.5, 0.0))),
+            "right_knee": JointPose(Transform(position=(0.2, 0.5, 0.0))),
+        },
+    )
+    reference = {
+        "hips": Transform(position=(0.0, 0.0, 0.0)),
+        "left_foot": Transform(position=(0.0, -1.0, 0.0)),
+        "right_foot": Transform(position=(1.0, -1.0, 0.0)),
+        "left_shoulder": Transform(position=(-0.1, 1.4, 0.0)),
+        "right_shoulder": Transform(position=(0.4, 1.4, 0.0)),
+        "left_elbow": Transform(position=(-0.1, 1.0, 0.0)),
+        "right_elbow": Transform(position=(0.8, 1.0, 0.0)),
+        "left_knee": Transform(position=(-0.7, 0.5, 0.0)),
+        "right_knee": Transform(position=(0.8, 0.5, 0.0)),
+    }
+
+    summary = summarize_reference_errors([evaluate_reference_pose(pose, reference)])
+
+    assert summary["mean_left_shoulder_error_m"] == approx(0.1)
+    assert summary["mean_right_shoulder_error_m"] == approx(0.2)
+    assert summary["mean_shoulder_error_m"] == approx(0.15)
+    assert summary["mean_elbow_error_m"] == approx(0.35)
+    assert summary["mean_knee_error_m"] == approx(0.55)
+
+
+def test_reference_error_distribution_reports_quantiles_and_thresholds() -> None:
+    metrics = [
+        ReferencePoseMetrics(
+            pelvis_error_m=value,
+            pelvis_horizontal_error_m=value,
+            pelvis_vertical_error_m=0.0,
+            chest_error_m=value,
+            spine_error_m=value,
+            left_foot_error_m=value,
+            right_foot_error_m=value,
+            joint_errors_m={
+                "left_shoulder": value,
+                "right_shoulder": value,
+                "left_elbow": value,
+                "right_elbow": value,
+                "left_knee": value,
+                "right_knee": value,
+            },
+        )
+        for value in (0.0, 1.0, 2.0, 3.0)
+    ]
+
+    summary = summarize_reference_error_distribution(metrics)
+
+    assert summary["reference_error_p50_m"] == approx(1.5)
+    assert summary["reference_error_p90_m"] == approx(2.7)
+    assert summary["reference_error_p95_m"] == approx(2.85)
+    assert summary["reference_error_p99_m"] == approx(2.97)
+    assert summary["pct_reference_error_over_25cm"] == approx(75.0)
+    assert summary["pct_reference_error_over_50cm"] == approx(75.0)
+    assert summary["pct_reference_error_over_100cm"] == approx(50.0)
+    assert summary["shoulder_error_p95_m"] == approx(2.85)
+    assert summary["feet_error_p95_m"] == approx(2.85)
+
+
+def test_temporal_reference_sequence_reports_velocity_acceleration_and_jerk() -> None:
+    reference_frames = [
+        {"hips": Transform(position=(float(index), 0.0, 0.0))} for index in range(4)
+    ]
+    estimated_positions = (0.0, 2.0, 4.0, 8.0)
+    poses = [
+        HumanoidPoseFrame(
+            timestamp_seconds=float(index),
+            root=Transform(),
+            joints={"hips": JointPose(Transform(position=(estimated_positions[index], 0.0, 0.0)))},
+        )
+        for index in range(4)
+    ]
+
+    summary = summarize_temporal_reference_sequence(poses, reference_frames)
+
+    assert summary["mean_joint_velocity_error_m_per_s"] == approx(5.0 / 3.0)
+    assert summary["mean_joint_acceleration_error_m_per_s2"] == approx(1.0)
+    assert summary["mean_joint_estimated_jerk_m_per_s3"] == approx(2.0)
+    assert summary["mean_pelvis_velocity_error_m_per_s"] == approx(5.0 / 3.0)
+    assert summary["mean_torso_acceleration_error_m_per_s2"] == approx(1.0)
+    assert summary["mean_feet_velocity_error_m_per_s"] == 0.0
 
 
 def test_foot_contact_metrics_measure_estimated_slip_during_reference_contact() -> None:

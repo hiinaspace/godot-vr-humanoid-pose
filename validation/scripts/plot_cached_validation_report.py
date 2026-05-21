@@ -55,8 +55,9 @@ def render_report(report_path: Path, output_path: Path) -> None:
     _plot_clip_scatter(axes[1][1], clips)
     _plot_worst_clips(
         axes[1][2],
-        worst.get("mean_reference_error_m", []),
-        "Worst Clips: Hips + Feet Error",
+        worst.get("reference_error_p95_m") or worst.get("mean_reference_error_m", []),
+        "Worst Clips: P95 Hips + Feet Error",
+        "reference_error_p95_m",
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,14 +77,26 @@ def _plot_overall_metrics(axis, summary: dict[str, Any]) -> None:
         ("hips+feet", float(summary.get("mean_reference_error_m", 0.0))),
         ("pelvis", float(summary.get("mean_pelvis_error_m", 0.0))),
         ("torso", float(summary.get("mean_torso_error_m", 0.0))),
-        ("left foot", float(summary.get("mean_left_foot_error_m", 0.0))),
-        ("right foot", float(summary.get("mean_right_foot_error_m", 0.0))),
+        ("shoulder", float(summary.get("mean_shoulder_error_m", 0.0))),
+        ("elbow", float(summary.get("mean_elbow_error_m", 0.0))),
+        ("knee", float(summary.get("mean_knee_error_m", 0.0))),
+        ("ref p95", float(summary.get("reference_error_p95_m", 0.0))),
         ("contact foot", float(summary.get("mean_contact_foot_error_m", 0.0))),
         ("contact slip/s", float(summary.get("mean_contact_slip_m_per_s", 0.0))),
     ]
     labels = [label for label, _value in metrics]
     values = [value for _label, value in metrics]
-    colors = ["#4c78a8", "#72b7b2", "#54a24b", "#f58518", "#e45756", "#b279a2", "#af7aa1"]
+    colors = [
+        "#4c78a8",
+        "#72b7b2",
+        "#54a24b",
+        "#9c755f",
+        "#f58518",
+        "#e45756",
+        "#ff9da6",
+        "#b279a2",
+        "#af7aa1",
+    ]
     positions = list(range(len(values)))
     bars = axis.barh(positions, values, color=colors[: len(values)])
     axis.set_yticks(positions, labels)
@@ -98,6 +111,10 @@ def _plot_clip_distribution(axis, clips: list[dict[str, Any]]) -> None:
         ("hips+feet", "mean_reference_error_m"),
         ("pelvis", "mean_pelvis_error_m"),
         ("torso", "mean_torso_error_m"),
+        ("shoulder", "mean_shoulder_error_m"),
+        ("elbow", "mean_elbow_error_m"),
+        ("knee", "mean_knee_error_m"),
+        ("ref p95", "reference_error_p95_m"),
         ("contact foot", "mean_contact_foot_error_m"),
     ]
     series = [_metric_values(clips, key) for _label, key in metric_specs]
@@ -174,7 +191,7 @@ def _plot_group_metric(
 
 def _plot_clip_scatter(axis, clips: list[dict[str, Any]]) -> None:
     if not clips:
-        axis.set_title("Torso vs Contact Foot")
+        axis.set_title("Velocity Error vs Jerk")
         axis.text(0.5, 0.5, "No clip metrics", ha="center", va="center")
         axis.axis("off")
         return
@@ -183,10 +200,14 @@ def _plot_clip_scatter(axis, clips: list[dict[str, Any]]) -> None:
         "nonflat": "#e45756",
         "unknown": "#9c755f",
     }
+    plotted = False
     for split, color in colors.items():
         split_clips = [clip for clip in clips if str(clip.get("environment_split")) == split]
-        x_values = _metric_values(split_clips, "mean_torso_error_m")
-        y_values = _metric_values(split_clips, "mean_contact_foot_error_m")
+        x_values, y_values = _metric_pairs(
+            split_clips,
+            "mean_joint_velocity_error_m_per_s",
+            "mean_joint_estimated_jerk_m_per_s3",
+        )
         if not x_values or not y_values:
             continue
         axis.scatter(
@@ -198,14 +219,24 @@ def _plot_clip_scatter(axis, clips: list[dict[str, Any]]) -> None:
             label=split,
             linewidths=0,
         )
-    axis.set_title("Torso vs Contact Foot")
-    axis.set_xlabel("mean torso error (m)")
-    axis.set_ylabel("mean contact foot error (m)")
+        plotted = True
+    axis.set_title("Velocity Error vs Jerk")
+    if not plotted:
+        axis.text(0.5, 0.5, "No temporal metrics", ha="center", va="center")
+        axis.axis("off")
+        return
+    axis.set_xlabel("mean joint velocity error (m/s)")
+    axis.set_ylabel("mean estimated jerk (m/s^3)")
     axis.grid(alpha=0.2)
     axis.legend(fontsize=8)
 
 
-def _plot_worst_clips(axis, clips: list[dict[str, Any]], title: str) -> None:
+def _plot_worst_clips(
+    axis,
+    clips: list[dict[str, Any]],
+    title: str,
+    metric_key: str = "mean_reference_error_m",
+) -> None:
     if not clips:
         axis.set_title(title)
         axis.text(0.5, 0.5, "No worst-clip entries", ha="center", va="center")
@@ -220,10 +251,12 @@ def _plot_worst_clips(axis, clips: list[dict[str, Any]], title: str) -> None:
         )
         for clip in clips
     ]
-    values = [float(clip.get("mean_reference_error_m", 0.0)) for clip in clips]
+    values = [
+        float(clip.get(metric_key, clip.get("mean_reference_error_m", 0.0))) for clip in clips
+    ]
     bars = axis.barh(labels, values, color="#e45756")
     axis.set_title(title)
-    axis.set_xlabel("mean hips + feet error (m)")
+    axis.set_xlabel("hips + feet error (m)")
     axis.bar_label(bars, fmt="%.2f", padding=2, fontsize=8)
 
 
@@ -234,6 +267,20 @@ def _metric_values(rows: list[dict[str, Any]], key: str) -> list[float]:
         if isinstance(value, (int, float)):
             values.append(float(value))
     return values
+
+
+def _metric_pairs(
+    rows: list[dict[str, Any]], x_key: str, y_key: str
+) -> tuple[list[float], list[float]]:
+    x_values = []
+    y_values = []
+    for row in rows:
+        x_value = row.get(x_key)
+        y_value = row.get(y_key)
+        if isinstance(x_value, (int, float)) and isinstance(y_value, (int, float)):
+            x_values.append(float(x_value))
+            y_values.append(float(y_value))
+    return x_values, y_values
 
 
 def _sample_values(values: list[float], *, limit: int) -> list[float]:
