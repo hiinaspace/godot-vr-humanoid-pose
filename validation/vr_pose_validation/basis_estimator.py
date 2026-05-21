@@ -8,8 +8,11 @@ limb midpoint solves.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import exp, pi, sin
+from typing import Literal
 
 from validation.vr_pose_validation.geometry import (
+    Quaternion,
     Transform,
     Vector3,
     add,
@@ -35,6 +38,7 @@ from validation.vr_pose_validation.types import (
 
 WORLD_UP: Vector3 = (0.0, 1.0, 0.0)
 WORLD_FORWARD: Vector3 = (0.0, 0.0, 1.0)
+type FootPhase = Literal["unplanted", "planted", "swing", "settle"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +58,11 @@ class BasisEstimatorSettings:
     max_anchor_stretch_m: float = 0.12
     plant_velocity_threshold_m_s: float = 0.01
     release_velocity_multiplier: float = 2.0
+    foot_position_lerp_speed: float = 15.0
+    planted_foot_lerp_speed: float = 25.0
+    foot_normal_lerp_speed: float = 12.0
+    step_duration_s: float = 0.18
+    step_lift_height_m: float = 0.06
     planted_foot_confidence: float = 0.75
 
 
@@ -61,9 +70,15 @@ class BasisEstimatorSettings:
 class _FootState:
     anchor_position: Vector3 | None = None
     anchor_normal: Vector3 = WORLD_UP
+    filtered_normal: Vector3 = WORLD_UP
+    current_position: Vector3 | None = None
+    current_rotation: Quaternion | None = None
     previous_target: Vector3 | None = None
     previous_timestamp_seconds: float | None = None
+    swing_start_position: Vector3 | None = None
+    swing_start_time_seconds: float | None = None
     planted: bool = False
+    phase: FootPhase = "unplanted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,16 +279,26 @@ class BasisPortEstimator:
         timestamp_seconds: float,
     ) -> _FootTarget:
         state = self._foot_states.setdefault(name, _FootState(anchor_normal=grounding.floor_normal))
+        dt = _state_dt(state, timestamp_seconds)
+        state.filtered_normal = _smooth_normal(
+            state.filtered_normal,
+            grounding.floor_normal,
+            _exp_alpha(self.settings.foot_normal_lerp_speed, dt),
+        )
         if tracker is not None and tracker.valid:
             position = _source_joint_position(tracker)
             state.anchor_position = position
             state.anchor_normal = grounding.floor_normal
+            state.filtered_normal = grounding.floor_normal
+            state.current_position = position
+            state.current_rotation = _foot_rotation(forward, state.anchor_normal)
             state.previous_target = position
             state.previous_timestamp_seconds = timestamp_seconds
             state.planted = True
+            state.phase = "planted"
             return _FootTarget(
                 position=position,
-                rotation=_foot_rotation(forward, state.anchor_normal),
+                rotation=state.current_rotation,
             )
 
         stance_width = _calibrated_length(
@@ -285,6 +310,10 @@ class BasisPortEstimator:
         target = add(hips_position, scale(right, side * stance_width * 0.5))
         target = (target[0], floor_y, target[2])
         speed = _target_speed(state, target, timestamp_seconds)
+        if state.current_position is None:
+            state.current_position = target
+        if state.current_rotation is None:
+            state.current_rotation = _foot_rotation(forward, state.filtered_normal)
 
         if state.planted and state.anchor_position is not None:
             stretch = horizontal_distance(state.anchor_position, target)
@@ -294,23 +323,68 @@ class BasisPortEstimator:
             )
             if stretch > self.settings.max_anchor_stretch_m or speed > release_speed:
                 state.planted = False
+                state.phase = "swing"
+                state.swing_start_position = state.current_position
+                state.swing_start_time_seconds = timestamp_seconds - dt
                 state.anchor_position = None
 
-        if (
-            not state.planted
-            and speed <= self.settings.plant_velocity_threshold_m_s
-            and state.anchor_position is None
-        ):
-            state.anchor_position = target
-            state.anchor_normal = grounding.floor_normal
-            state.planted = True
+        desired_position = target
+        if state.phase == "swing" and state.swing_start_position is not None:
+            progress = _step_progress(
+                timestamp_seconds,
+                state.swing_start_time_seconds,
+                self.settings.step_duration_s,
+            )
+            desired_position = _swing_position(
+                state.swing_start_position,
+                target,
+                progress,
+                self.settings.step_lift_height_m,
+            )
+            if progress >= 1.0:
+                state.phase = "settle"
+
+        if state.phase == "settle":
+            if horizontal_distance(state.current_position, target) <= 0.01:
+                state.anchor_position = target
+                state.anchor_normal = grounding.floor_normal
+                state.planted = True
+                state.phase = "planted"
+            desired_position = target
+
+        if not state.planted and state.phase == "unplanted":
+            if speed <= self.settings.plant_velocity_threshold_m_s:
+                state.anchor_position = target
+                state.anchor_normal = grounding.floor_normal
+                state.planted = True
+                state.phase = "planted"
+
+        if state.planted and state.anchor_position is not None:
+            desired_position = state.anchor_position
 
         state.previous_target = target
         state.previous_timestamp_seconds = timestamp_seconds
-        position = state.anchor_position if state.planted and state.anchor_position else target
+        position_speed = (
+            self.settings.planted_foot_lerp_speed
+            if state.planted
+            else self.settings.foot_position_lerp_speed
+        )
+        state.current_position = lerp(
+            state.current_position,
+            desired_position,
+            _exp_alpha(position_speed, dt),
+        )
+        desired_rotation = _foot_rotation(
+            forward, state.anchor_normal if state.planted else state.filtered_normal
+        )
+        state.current_rotation = _nlerp_quaternion(
+            state.current_rotation,
+            desired_rotation,
+            _exp_alpha(self.settings.foot_position_lerp_speed, dt),
+        )
         return _FootTarget(
-            position=position,
-            rotation=_foot_rotation(forward, state.anchor_normal),
+            position=state.current_position,
+            rotation=state.current_rotation,
         )
 
     def _hip_socket(
@@ -403,6 +477,70 @@ def _target_speed(state: _FootState, target: Vector3, timestamp_seconds: float) 
         return 0.0
     dt = max(timestamp_seconds - state.previous_timestamp_seconds, 1.0 / 120.0)
     return horizontal_distance(target, state.previous_target) / dt
+
+
+def _state_dt(state: _FootState, timestamp_seconds: float) -> float:
+    if state.previous_timestamp_seconds is None:
+        return 1.0 / 120.0
+    return max(timestamp_seconds - state.previous_timestamp_seconds, 1.0 / 120.0)
+
+
+def _exp_alpha(speed: float, dt: float) -> float:
+    if speed <= 0.0:
+        return 1.0
+    return 1.0 - exp(-speed * dt)
+
+
+def _smooth_normal(current: Vector3, target: Vector3, alpha: float) -> Vector3:
+    return normalize(lerp(current, target, alpha), fallback=WORLD_UP)
+
+
+def _step_progress(
+    timestamp_seconds: float,
+    swing_start_time_seconds: float | None,
+    step_duration_s: float,
+) -> float:
+    if swing_start_time_seconds is None:
+        return 1.0
+    return min(1.0, max(0.0, (timestamp_seconds - swing_start_time_seconds) / step_duration_s))
+
+
+def _swing_position(
+    start: Vector3,
+    target: Vector3,
+    progress: float,
+    lift_height_m: float,
+) -> Vector3:
+    eased = progress * progress * (3.0 - 2.0 * progress)
+    base = lerp(start, target, eased)
+    lift = sin(pi * progress) * lift_height_m
+    return (base[0], base[1] + lift, base[2])
+
+
+def _nlerp_quaternion(a: Quaternion, b: Quaternion, alpha: float) -> Quaternion:
+    bx, by, bz, bw = b
+    if a[0] * bx + a[1] * by + a[2] * bz + a[3] * bw < 0.0:
+        bx, by, bz, bw = -bx, -by, -bz, -bw
+    blended = (
+        a[0] + (bx - a[0]) * alpha,
+        a[1] + (by - a[1]) * alpha,
+        a[2] + (bz - a[2]) * alpha,
+        a[3] + (bw - a[3]) * alpha,
+    )
+    magnitude = (
+        blended[0] * blended[0]
+        + blended[1] * blended[1]
+        + blended[2] * blended[2]
+        + blended[3] * blended[3]
+    ) ** 0.5
+    if magnitude <= 1e-9:
+        return b
+    return (
+        blended[0] / magnitude,
+        blended[1] / magnitude,
+        blended[2] / magnitude,
+        blended[3] / magnitude,
+    )
 
 
 def _solve_two_bone_midpoint(

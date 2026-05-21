@@ -50,6 +50,12 @@ class ClipResult:
     mean_right_foot_error_m: float
     mean_reference_error_m: float
     mean_joint_errors_m: dict[str, float]
+    inferred_floor_height_m: float = 0.0
+    contact_frames: int = 0
+    mean_contact_foot_error_m: float = 0.0
+    left_contact_slip_m_per_s: float = 0.0
+    right_contact_slip_m_per_s: float = 0.0
+    mean_contact_slip_m_per_s: float = 0.0
     environment_split: str = "unknown"
     environment_tags: tuple[str, ...] = ()
     activity_class: str = "unknown"

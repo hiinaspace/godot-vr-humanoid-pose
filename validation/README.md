@@ -59,8 +59,8 @@ uv run python -m validation.scripts.run_cached_validation --cache-dir .cache/cmu
 
 Cached validation reports include aggregate metrics, group summaries by
 `environment_split`, `activity_class`, and their combination, plus worst-clip
-lists for the main reference and foot/pelvis metrics. Use `--top-clips 0` to
-omit worst-clip lists from the JSON summary.
+lists for the main reference, foot/pelvis, contact-foot, and contact-slip
+metrics. Use `--top-clips 0` to omit worst-clip lists from the JSON summary.
 
 Compare the first Basis-style estimator port against the trivial baseline:
 
@@ -78,4 +78,10 @@ Combine split filters for narrower slices:
 
 ```powershell
 uv run python -m validation.scripts.run_cached_validation --cache-dir .cache/cmu/parquet/canonical_full --workers 16 --estimator basis --environment-split flat --activity-class idle_standing sitting stationary_upper_body
+```
+
+Render a PNG dashboard for any cached validation JSON report:
+
+```powershell
+uv run python -m validation.scripts.plot_cached_validation_report validation/reports/cached_baseline_smoke.json --output validation/reports/cached_baseline_smoke.png
 ```

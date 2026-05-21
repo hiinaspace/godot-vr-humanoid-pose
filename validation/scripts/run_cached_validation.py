@@ -20,8 +20,10 @@ from validation.vr_pose_validation.cmu_metadata import ActivityClass, Environmen
 from validation.vr_pose_validation.geometry import Transform, add
 from validation.vr_pose_validation.metrics import (
     ReferencePoseMetrics,
+    evaluate_foot_contact_sequence,
     evaluate_frame,
     evaluate_reference_pose,
+    infer_reference_floor_height,
     summarize_reference_errors,
     summarize_target_errors,
 )
@@ -50,12 +52,16 @@ SUMMARY_METRICS = (
     "mean_left_foot_error_m",
     "mean_right_foot_error_m",
     "mean_reference_error_m",
+    "mean_contact_foot_error_m",
+    "mean_contact_slip_m_per_s",
 )
 TOP_CLIP_METRICS = (
     "mean_reference_error_m",
     "mean_pelvis_error_m",
     "mean_left_foot_error_m",
     "mean_right_foot_error_m",
+    "mean_contact_foot_error_m",
+    "mean_contact_slip_m_per_s",
 )
 
 
@@ -184,6 +190,15 @@ def run_cached_validation(
             "mean_left_foot_error_m": _mean_column(summary_frame, "mean_left_foot_error_m"),
             "mean_right_foot_error_m": _mean_column(summary_frame, "mean_right_foot_error_m"),
             "mean_reference_error_m": _mean_column(summary_frame, "mean_reference_error_m"),
+            "contact_frames": _sum_column(summary_frame, "contact_frames"),
+            "mean_contact_foot_error_m": _mean_column(
+                summary_frame,
+                "mean_contact_foot_error_m",
+            ),
+            "mean_contact_slip_m_per_s": _mean_column(
+                summary_frame,
+                "mean_contact_slip_m_per_s",
+            ),
             "mean_joint_errors_m": _mean_joint_errors(clip_results),
             "grouped_metrics": _grouped_metrics(clip_results),
             "worst_clips": _worst_clips(clip_results, top_clip_count),
@@ -196,17 +211,19 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
     start = time.perf_counter()
     estimator = create_estimator(task.estimator_name)
     calibration = AvatarCalibration()
-    grounding = GroundingContext()
     frame_metrics = []
     reference_metrics: list[ReferencePoseMetrics] = []
-    frame_count = 0
+    estimated_poses = []
+    cached_frame_list = list(iter_cached_pose_frames(Path(task.path)))
+    reference_frames = [frame.joints for frame in cached_frame_list]
+    inferred_floor_height_m = infer_reference_floor_height(reference_frames)
+    grounding = GroundingContext(floor_height_m=inferred_floor_height_m)
     environment_split = "unknown"
     environment_tags: tuple[str, ...] = ()
     activity_class = "unknown"
     activity_tags: tuple[str, ...] = ()
     motion_description = ""
-    cached_frames = iter_cached_pose_frames(Path(task.path))
-    for cached_frame in cached_frames:
+    for frame_count, cached_frame in enumerate(cached_frame_list):
         if frame_count == 0:
             environment_split = cached_frame.environment_split
             environment_tags = cached_frame.environment_tags
@@ -215,13 +232,19 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
             motion_description = cached_frame.motion_description
         sample = _tracked_sample_from_cached_frame(cached_frame)
         pose = estimator.estimate(sample, calibration, grounding)
+        estimated_poses.append(pose)
         frame_metrics.append(evaluate_frame(pose, sample, grounding.floor_height_m))
         reference_metrics.append(evaluate_reference_pose(pose, cached_frame.joints))
-        frame_count += 1
     target_summary = summarize_target_errors(frame_metrics)
     reference_summary = summarize_reference_errors(reference_metrics)
+    contact_summary = evaluate_foot_contact_sequence(
+        estimated_poses,
+        reference_frames,
+        floor_height_m=inferred_floor_height_m,
+    )
     mean_joint_errors_m = cast(dict[str, float], reference_summary["mean_joint_errors_m"])
     subject, clip = _subject_and_clip_from_path(Path(task.path))
+    frame_count = len(cached_frame_list)
     return ClipResult(
         clip=clip,
         subject=subject,
@@ -235,6 +258,12 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         mean_right_foot_error_m=cast(float, reference_summary["mean_right_foot_error_m"]),
         mean_reference_error_m=cast(float, reference_summary["mean_reference_error_m"]),
         mean_joint_errors_m=mean_joint_errors_m,
+        inferred_floor_height_m=inferred_floor_height_m,
+        contact_frames=contact_summary.contact_frames,
+        mean_contact_foot_error_m=contact_summary.mean_contact_foot_error_m,
+        left_contact_slip_m_per_s=contact_summary.left_contact_slip_m_per_s,
+        right_contact_slip_m_per_s=contact_summary.right_contact_slip_m_per_s,
+        mean_contact_slip_m_per_s=contact_summary.mean_contact_slip_m_per_s,
         environment_split=environment_split,
         environment_tags=environment_tags,
         activity_class=activity_class,

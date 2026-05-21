@@ -7,9 +7,12 @@ from validation.vr_pose_validation.baseline import (
     PlantedFeetBaselineEstimator,
     TrivialBaselineEstimator,
 )
+from validation.vr_pose_validation.geometry import Transform
 from validation.vr_pose_validation.metrics import (
+    evaluate_foot_contact_sequence,
     evaluate_frame,
     evaluate_reference_pose,
+    infer_reference_floor_height,
     summarize_reference_errors,
     summarize_target_errors,
 )
@@ -17,7 +20,12 @@ from validation.vr_pose_validation.synthetic_trackers import (
     generate_three_point_samples,
     pose_frame_from_positions,
 )
-from validation.vr_pose_validation.types import AvatarCalibration, GroundingContext
+from validation.vr_pose_validation.types import (
+    AvatarCalibration,
+    GroundingContext,
+    HumanoidPoseFrame,
+    JointPose,
+)
 
 
 def _sample_frame():
@@ -95,3 +103,47 @@ def test_reference_pose_summary_reports_optional_joint_errors() -> None:
         "left_knee": 0.0,
         "right_foot": 0.0,
     }
+
+
+def test_foot_contact_metrics_measure_estimated_slip_during_reference_contact() -> None:
+    reference_frames = [
+        {
+            "left_foot": Transform(position=(0.0, 0.0, 0.0)),
+            "right_foot": Transform(position=(0.3, 0.0, 0.0)),
+        },
+        {
+            "left_foot": Transform(position=(0.0, 0.0, 0.0)),
+            "right_foot": Transform(position=(0.3, 0.0, 0.0)),
+        },
+        {
+            "left_foot": Transform(position=(0.0, 0.0, 0.0)),
+            "right_foot": Transform(position=(0.3, 0.0, 0.0)),
+        },
+    ]
+    poses = [
+        _foot_pose(0.0, 0.0),
+        _foot_pose(0.05, 1.0 / 120.0),
+        _foot_pose(0.10, 2.0 / 120.0),
+    ]
+
+    metrics = evaluate_foot_contact_sequence(
+        poses,
+        reference_frames,
+        floor_height_m=infer_reference_floor_height(reference_frames),
+    )
+
+    assert metrics.left_contact_frames == 3
+    assert metrics.mean_left_contact_foot_error_m > 0.0
+    assert metrics.left_contact_slip_m_per_s == approx(6.0)
+
+
+def _foot_pose(left_x: float, timestamp_seconds: float) -> HumanoidPoseFrame:
+    joints = {
+        "left_foot": JointPose(Transform(position=(left_x, 0.0, 0.0))),
+        "right_foot": JointPose(Transform(position=(0.3, 0.0, 0.0))),
+    }
+    return HumanoidPoseFrame(
+        timestamp_seconds=timestamp_seconds,
+        root=Transform(),
+        joints=joints,
+    )
