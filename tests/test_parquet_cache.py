@@ -33,6 +33,8 @@ def test_parquet_cache_round_trips_canonical_wide_columns(tmp_path) -> None:
         joints=joints,
         environment_split="nonflat",
         environment_tags=("stairs",),
+        activity_class="locomotion",
+        activity_tags=("walk",),
         motion_description="Walking up and down stairs",
     )
 
@@ -46,6 +48,8 @@ def test_parquet_cache_round_trips_canonical_wide_columns(tmp_path) -> None:
     assert frames[0].joints["head"].position == (1.0, 2.0, 3.0)
     assert frames[0].environment_split == "nonflat"
     assert frames[0].environment_tags == ("stairs",)
+    assert frames[0].activity_class == "locomotion"
+    assert frames[0].activity_tags == ("walk",)
     assert frames[0].motion_description == "Walking up and down stairs"
 
 
@@ -105,6 +109,7 @@ def test_cache_file_environment_filter_reads_first_row_metadata(tmp_path) -> Non
             timestamp_s=0.0,
             joints=joints,
             environment_split=split,
+            activity_class="locomotion",
         )
         write_clip_cache(path, columns)
 
@@ -114,3 +119,38 @@ def test_cache_file_environment_filter_reads_first_row_metadata(tmp_path) -> Non
     )
 
     assert paths == [nonflat_path]
+
+
+def test_cache_file_activity_filter_reads_first_row_metadata(tmp_path) -> None:
+    cache_dir = tmp_path / "cache"
+    sitting_path = cache_dir / "subject=01" / "01_01.parquet"
+    locomotion_path = cache_dir / "subject=01" / "01_02.parquet"
+    joints = {
+        joint: Transform(
+            position=(1.0, 2.0, 3.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+        )
+        for joint in CACHE_JOINTS
+    }
+    for path, activity_class in (
+        (sitting_path, "sitting"),
+        (locomotion_path, "locomotion"),
+    ):
+        columns = new_cache_columns()
+        append_cached_pose_frame(
+            columns,
+            subject="01",
+            clip=path.stem,
+            frame_index=1,
+            timestamp_s=0.0,
+            joints=joints,
+            activity_class=activity_class,
+        )
+        write_clip_cache(path, columns)
+
+    paths = filter_clip_cache_files_by_environment(
+        [sitting_path, locomotion_path],
+        activity_classes={"sitting"},
+    )
+
+    assert paths == [sitting_path]

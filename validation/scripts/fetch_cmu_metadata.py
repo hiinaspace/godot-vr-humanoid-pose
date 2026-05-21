@@ -36,8 +36,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_cmu_metadata(args.metadata_path, metadata)
 
     split_counts: dict[str, int] = {}
+    activity_counts: dict[str, int] = {}
     for row in metadata.values():
         split_counts[row.environment_split] = split_counts.get(row.environment_split, 0) + 1
+        activity_counts[row.activity_class] = activity_counts.get(row.activity_class, 0) + 1
     print(
         json.dumps(
             {
@@ -45,6 +47,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "subjects": len(subjects),
                 "clips": len(metadata),
                 "environment_splits": split_counts,
+                "activity_classes": activity_counts,
                 "missing_live_metadata": sum(
                     1 for row in metadata.values() if row.label_source == "missing_metadata"
                 ),

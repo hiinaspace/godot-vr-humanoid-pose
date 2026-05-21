@@ -16,7 +16,7 @@ import polars as pl
 
 from validation.scripts.run_baseline_validation import ClipResult, write_clip_csv
 from validation.vr_pose_validation.baseline import EstimatorName, create_estimator
-from validation.vr_pose_validation.cmu_metadata import EnvironmentSplit
+from validation.vr_pose_validation.cmu_metadata import ActivityClass, EnvironmentSplit
 from validation.vr_pose_validation.geometry import Transform, add
 from validation.vr_pose_validation.metrics import (
     ReferencePoseMetrics,
@@ -67,6 +67,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Only evaluate clips with these cached environment split labels.",
     )
     parser.add_argument(
+        "--activity-class",
+        choices=(
+            "idle_standing",
+            "sitting",
+            "stationary_upper_body",
+            "locomotion",
+            "dance_exercise",
+            "floor_pose",
+            "sports",
+            "unknown",
+        ),
+        nargs="*",
+        help="Only evaluate clips with these cached activity class labels.",
+    )
+    parser.add_argument(
         "--estimator",
         choices=("trivial", "planted", "basis"),
         default="trivial",
@@ -81,6 +96,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         workers=max(1, args.workers),
         estimator_name=args.estimator,
         environment_splits=cast(set[EnvironmentSplit], set(args.environment_split or [])),
+        activity_classes=cast(set[ActivityClass], set(args.activity_class or [])),
     )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -99,12 +115,14 @@ def run_cached_validation(
     workers: int,
     estimator_name: EstimatorName = "trivial",
     environment_splits: set[EnvironmentSplit] | None = None,
+    activity_classes: set[ActivityClass] | None = None,
 ) -> dict[str, object]:
     start = time.perf_counter()
     paths = list_clip_cache_files(cache_dir, subjects or None)
     paths = filter_clip_cache_files_by_environment(
         paths,
         environment_splits=environment_splits,
+        activity_classes=activity_classes,
     )
     if max_clips is not None:
         paths = paths[:max_clips]
@@ -133,6 +151,7 @@ def run_cached_validation(
             "workers": workers,
             "estimator": estimator_name,
             "environment_splits": sorted(environment_splits or []),
+            "activity_classes": sorted(activity_classes or []),
             "total_seconds": total_seconds,
             "evaluated_frames_per_second": (
                 _sum_column(summary_frame, "evaluated_frames") / total_seconds

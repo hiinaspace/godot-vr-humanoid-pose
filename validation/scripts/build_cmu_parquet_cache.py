@@ -51,6 +51,8 @@ class CacheClipResult:
     path: str
     environment_split: str
     environment_tags: tuple[str, ...]
+    activity_class: str
+    activity_tags: tuple[str, ...]
     motion_description: str
     skipped: bool = False
 
@@ -131,6 +133,8 @@ def build_cache(
                         path=output_path.as_posix(),
                         environment_split=metadata.environment_split,
                         environment_tags=metadata.environment_tags,
+                        activity_class=metadata.activity_class,
+                        activity_tags=metadata.activity_tags,
                         motion_description=metadata.motion_description,
                         skipped=True,
                     )
@@ -161,6 +165,8 @@ def build_cache(
                     joints=pose,
                     environment_split=metadata.environment_split,
                     environment_tags=metadata.environment_tags,
+                    activity_class=metadata.activity_class,
+                    activity_tags=metadata.activity_tags,
                     motion_description=metadata.motion_description,
                     subject_description=metadata.subject_description,
                 )
@@ -179,6 +185,8 @@ def build_cache(
                     path=output_path.as_posix(),
                     environment_split=metadata.environment_split,
                     environment_tags=metadata.environment_tags,
+                    activity_class=metadata.activity_class,
+                    activity_tags=metadata.activity_tags,
                     motion_description=metadata.motion_description,
                 )
             )
@@ -197,6 +205,7 @@ def build_cache(
             "joints": list(CACHE_JOINTS),
             "metadata_path": metadata_path.as_posix() if metadata_path.exists() else None,
             "environment_splits": _split_counts(results),
+            "activity_classes": _activity_counts(results),
             "total_seconds": time.perf_counter() - start,
             "generated_at_utc": datetime.now(UTC).isoformat(),
         },
@@ -221,6 +230,13 @@ def _split_counts(results: list[CacheClipResult]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for result in results:
         counts[result.environment_split] = counts.get(result.environment_split, 0) + 1
+    return counts
+
+
+def _activity_counts(results: list[CacheClipResult]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result.activity_class] = counts.get(result.activity_class, 0) + 1
     return counts
 
 

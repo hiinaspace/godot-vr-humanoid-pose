@@ -10,7 +10,7 @@ from typing import Any, Literal
 import polars as pl
 
 from validation.vr_pose_validation.cmu_fk import CANONICAL_CMU_JOINTS
-from validation.vr_pose_validation.cmu_metadata import EnvironmentSplit
+from validation.vr_pose_validation.cmu_metadata import ActivityClass, EnvironmentSplit
 from validation.vr_pose_validation.geometry import Transform
 
 CACHE_JOINTS = tuple(CANONICAL_CMU_JOINTS)
@@ -18,6 +18,8 @@ TRANSFORM_COMPONENTS = ("px", "py", "pz", "qx", "qy", "qz", "qw")
 METADATA_COLUMNS = (
     "environment_split",
     "environment_tags",
+    "activity_class",
+    "activity_tags",
     "motion_description",
     "subject_description",
 )
@@ -34,6 +36,8 @@ class CachedPoseFrame:
     joints: dict[str, Transform]
     environment_split: EnvironmentSplit = "unknown"
     environment_tags: tuple[str, ...] = ()
+    activity_class: ActivityClass = "unknown"
+    activity_tags: tuple[str, ...] = ()
     motion_description: str = ""
     subject_description: str = ""
 
@@ -53,14 +57,19 @@ def filter_clip_cache_files_by_environment(
     paths: Iterable[Path],
     *,
     environment_splits: set[EnvironmentSplit] | None = None,
+    activity_classes: set[ActivityClass] | None = None,
 ) -> list[Path]:
-    if not environment_splits:
+    if not environment_splits and not activity_classes:
         return list(paths)
-    return [
-        path
-        for path in paths
-        if _clip_environment_from_cache(path).environment_split in environment_splits
-    ]
+    filtered_paths = []
+    for path in paths:
+        metadata = _clip_environment_from_cache(path)
+        if environment_splits and metadata.environment_split not in environment_splits:
+            continue
+        if activity_classes and metadata.activity_class not in activity_classes:
+            continue
+        filtered_paths.append(path)
+    return filtered_paths
 
 
 def subject_from_cache_path(path: Path) -> str:
@@ -82,6 +91,8 @@ def new_cache_columns() -> CacheColumns:
         "timestamp_s": [],
         "environment_split": [],
         "environment_tags": [],
+        "activity_class": [],
+        "activity_tags": [],
         "motion_description": [],
         "subject_description": [],
     }
@@ -101,6 +112,8 @@ def append_cached_pose_frame(
     joints: Mapping[str, Transform],
     environment_split: EnvironmentSplit = "unknown",
     environment_tags: tuple[str, ...] = (),
+    activity_class: ActivityClass = "unknown",
+    activity_tags: tuple[str, ...] = (),
     motion_description: str = "",
     subject_description: str = "",
 ) -> None:
@@ -110,6 +123,8 @@ def append_cached_pose_frame(
     _append(columns, "timestamp_s", timestamp_s)
     _append(columns, "environment_split", environment_split)
     _append(columns, "environment_tags", ";".join(environment_tags))
+    _append(columns, "activity_class", activity_class)
+    _append(columns, "activity_tags", ";".join(activity_tags))
     _append(columns, "motion_description", motion_description)
     _append(columns, "subject_description", subject_description)
     for joint in CACHE_JOINTS:
@@ -177,6 +192,8 @@ def iter_cached_pose_dataframe(dataframe: pl.DataFrame) -> Iterator[CachedPoseFr
             joints=joints,
             environment_split=_environment_split_from_columns(columns, row_index),
             environment_tags=_environment_tags_from_columns(columns, row_index),
+            activity_class=_activity_class_from_columns(columns, row_index),
+            activity_tags=_metadata_tags_from_columns(columns, "activity_tags", row_index),
             motion_description=_string_from_columns(columns, "motion_description", row_index),
             subject_description=_string_from_columns(columns, "subject_description", row_index),
         )
@@ -229,10 +246,37 @@ def _environment_split_from_columns(columns: CacheColumns, row_index: int) -> En
 
 
 def _environment_tags_from_columns(columns: CacheColumns, row_index: int) -> tuple[str, ...]:
-    value = _string_from_columns(columns, "environment_tags", row_index)
+    return _metadata_tags_from_columns(columns, "environment_tags", row_index)
+
+
+def _metadata_tags_from_columns(
+    columns: CacheColumns,
+    column: str,
+    row_index: int,
+) -> tuple[str, ...]:
+    value = _string_from_columns(columns, column, row_index)
     if not value:
         return ()
     return tuple(tag for tag in value.split(";") if tag)
+
+
+def _activity_class_from_columns(columns: CacheColumns, row_index: int) -> ActivityClass:
+    value = _string_from_columns(columns, "activity_class", row_index)
+    if value == "idle_standing":
+        return "idle_standing"
+    if value == "sitting":
+        return "sitting"
+    if value == "stationary_upper_body":
+        return "stationary_upper_body"
+    if value == "locomotion":
+        return "locomotion"
+    if value == "dance_exercise":
+        return "dance_exercise"
+    if value == "floor_pose":
+        return "floor_pose"
+    if value == "sports":
+        return "sports"
+    return "unknown"
 
 
 def _string_from_columns(columns: CacheColumns, column: str, row_index: int) -> str:

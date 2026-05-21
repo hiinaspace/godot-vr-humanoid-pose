@@ -4,6 +4,7 @@ from pathlib import Path
 
 from validation.vr_pose_validation.cmu_metadata import (
     clip_metadata_from_subject_page,
+    label_activity,
     label_environment,
     read_cmu_metadata,
 )
@@ -33,13 +34,36 @@ def test_label_environment_marks_motion_description_nonflat() -> None:
     assert source == "motion_description"
 
 
+def test_label_activity_marks_common_vr_stationary_interaction() -> None:
+    activity_class, tags, source = label_activity("punch/strike")
+
+    assert activity_class == "dance_exercise"
+    assert tags == ("martial_arts",)
+    assert source == "motion_description"
+
+
+def test_label_activity_marks_sitting_before_locomotion() -> None:
+    activity_class, tags, source = label_activity("walk to chair, sit down")
+
+    assert activity_class == "sitting"
+    assert tags == ("chair", "sit")
+    assert source == "motion_description"
+
+
+def test_label_activity_handles_cmu_camel_case_and_digit_suffixes() -> None:
+    assert label_activity("RegularWalk8")[0] == "locomotion"
+    assert label_activity("GetUpFaceDown")[0] == "floor_pose"
+
+
 def test_parse_subject_page_labels_flat_and_nonflat_trials() -> None:
     rows = clip_metadata_from_subject_page("114", SUBJECT_HTML)
 
     by_clip = {row.clip: row for row in rows}
     assert by_clip["114_07"].environment_split == "nonflat"
     assert by_clip["114_07"].environment_tags == ("stairs",)
+    assert by_clip["114_07"].activity_class == "locomotion"
     assert by_clip["114_13"].environment_split == "flat"
+    assert by_clip["114_13"].activity_class == "locomotion"
 
 
 def test_generic_motion_description_can_inherit_subject_label() -> None:
@@ -56,3 +80,4 @@ def test_committed_cmu_metadata_file_is_readable() -> None:
     assert len(metadata) == 2514
     assert metadata["01_01"].environment_split == "nonflat"
     assert metadata["01_01"].environment_tags == ("playground",)
+    assert metadata["01_01"].activity_class == "locomotion"
