@@ -48,9 +48,15 @@ def generate_three_point_samples(
     frames: Iterable[PoseFrame],
     config: SyntheticTrackerConfig | None = None,
 ) -> list[TrackedPoseSample]:
+    return list(iter_three_point_samples(frames, config))
+
+
+def iter_three_point_samples(
+    frames: Iterable[PoseFrame],
+    config: SyntheticTrackerConfig | None = None,
+) -> Iterable[TrackedPoseSample]:
     effective_config = config or SyntheticTrackerConfig()
     rng = Random(effective_config.seed)
-    samples: list[TrackedPoseSample] = []
 
     for frame_index, frame in enumerate(frames):
         timestamp = frame_index / effective_config.frame_rate_hz
@@ -58,15 +64,12 @@ def generate_three_point_samples(
             role: _make_tracker_state(role, frame, effective_config, rng)
             for role in ("head", "left_hand", "right_hand")
         }
-        samples.append(
-            TrackedPoseSample(
-                timestamp_seconds=timestamp,
-                hmd=states["head"],
-                left_hand=states["left_hand"],
-                right_hand=states["right_hand"],
-            )
+        yield TrackedPoseSample(
+            timestamp_seconds=timestamp,
+            hmd=states["head"],
+            left_hand=states["left_hand"],
+            right_hand=states["right_hand"],
         )
-    return samples
 
 
 def _make_tracker_state(

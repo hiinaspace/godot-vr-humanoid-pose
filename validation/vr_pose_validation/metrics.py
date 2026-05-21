@@ -5,8 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from statistics import fmean
 
-from validation.vr_pose_validation.geometry import distance
-from validation.vr_pose_validation.types import HumanoidPoseFrame, TrackedPoseSample, TrackerState
+from validation.vr_pose_validation.geometry import Transform, distance
+from validation.vr_pose_validation.types import (
+    HumanoidPoseFrame,
+    TrackedPoseSample,
+    TrackerState,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +37,17 @@ class FrameMetrics:
     timestamp_seconds: float
     target_errors: TargetErrorMetrics
     foot_grounding: FootGroundingMetrics
+
+
+@dataclass(frozen=True, slots=True)
+class ReferencePoseMetrics:
+    pelvis_error_m: float
+    left_foot_error_m: float
+    right_foot_error_m: float
+
+    @property
+    def mean_error_m(self) -> float:
+        return fmean((self.pelvis_error_m, self.left_foot_error_m, self.right_foot_error_m))
 
 
 def evaluate_frame(
@@ -76,6 +91,33 @@ def summarize_target_errors(metrics: list[FrameMetrics]) -> dict[str, float]:
     }
 
 
+def evaluate_reference_pose(
+    pose: HumanoidPoseFrame,
+    reference_joints: dict[str, Transform],
+) -> ReferencePoseMetrics:
+    return ReferencePoseMetrics(
+        pelvis_error_m=_pose_to_reference_error(pose, reference_joints, "hips"),
+        left_foot_error_m=_pose_to_reference_error(pose, reference_joints, "left_foot"),
+        right_foot_error_m=_pose_to_reference_error(pose, reference_joints, "right_foot"),
+    )
+
+
+def summarize_reference_errors(metrics: list[ReferencePoseMetrics]) -> dict[str, float]:
+    if not metrics:
+        return {
+            "mean_pelvis_error_m": 0.0,
+            "mean_left_foot_error_m": 0.0,
+            "mean_right_foot_error_m": 0.0,
+            "mean_reference_error_m": 0.0,
+        }
+    return {
+        "mean_pelvis_error_m": fmean(metric.pelvis_error_m for metric in metrics),
+        "mean_left_foot_error_m": fmean(metric.left_foot_error_m for metric in metrics),
+        "mean_right_foot_error_m": fmean(metric.right_foot_error_m for metric in metrics),
+        "mean_reference_error_m": fmean(metric.mean_error_m for metric in metrics),
+    }
+
+
 def _joint_to_tracker_error(
     pose: HumanoidPoseFrame,
     joint_name: str,
@@ -92,3 +134,12 @@ def _penetration(pose: HumanoidPoseFrame, joint_name: str, floor_height_m: float
 def _hover(pose: HumanoidPoseFrame, joint_name: str, floor_height_m: float) -> float:
     y = pose.joints[joint_name].transform.position[1]
     return max(0.0, y - floor_height_m)
+
+
+def _pose_to_reference_error(
+    pose: HumanoidPoseFrame,
+    reference_joints: dict[str, Transform],
+    joint_name: str,
+) -> float:
+    reference = reference_joints[joint_name]
+    return distance(pose.joints[joint_name].transform.position, reference.position)
