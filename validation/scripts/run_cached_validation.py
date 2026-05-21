@@ -10,12 +10,13 @@ from collections.abc import Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import polars as pl
 
 from validation.scripts.run_baseline_validation import ClipResult, write_clip_csv
-from validation.vr_pose_validation.baseline import TrivialBaselineEstimator
+from validation.vr_pose_validation.baseline import EstimatorName, create_estimator
+from validation.vr_pose_validation.cmu_metadata import EnvironmentSplit
 from validation.vr_pose_validation.geometry import Transform, add
 from validation.vr_pose_validation.metrics import (
     ReferencePoseMetrics,
@@ -27,6 +28,7 @@ from validation.vr_pose_validation.metrics import (
 from validation.vr_pose_validation.parquet_cache import (
     CachedPoseFrame,
     cache_summary,
+    filter_clip_cache_files_by_environment,
     iter_cached_pose_frames,
     list_clip_cache_files,
 )
@@ -47,6 +49,7 @@ DEFAULT_SYNTHETIC_TRACKER_CONFIG = SyntheticTrackerConfig()
 @dataclass(frozen=True, slots=True)
 class CachedValidationTask:
     path: str
+    estimator_name: EstimatorName
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -57,6 +60,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--subjects", nargs="*", help="Subject ids such as 07 08 09.")
     parser.add_argument("--max-clips", type=int)
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
+    parser.add_argument(
+        "--environment-split",
+        choices=("flat", "nonflat", "unknown"),
+        nargs="*",
+        help="Only evaluate clips with these cached environment split labels.",
+    )
+    parser.add_argument(
+        "--estimator",
+        choices=("trivial", "planted", "basis"),
+        default="trivial",
+        help="Estimator implementation to evaluate.",
+    )
     args = parser.parse_args(argv)
 
     result = run_cached_validation(
@@ -64,6 +79,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         subjects=set(args.subjects or []),
         max_clips=args.max_clips,
         workers=max(1, args.workers),
+        estimator_name=args.estimator,
+        environment_splits=cast(set[EnvironmentSplit], set(args.environment_split or [])),
     )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -80,20 +97,28 @@ def run_cached_validation(
     subjects: set[str],
     max_clips: int | None,
     workers: int,
+    estimator_name: EstimatorName = "trivial",
+    environment_splits: set[EnvironmentSplit] | None = None,
 ) -> dict[str, object]:
     start = time.perf_counter()
     paths = list_clip_cache_files(cache_dir, subjects or None)
+    paths = filter_clip_cache_files_by_environment(
+        paths,
+        environment_splits=environment_splits,
+    )
     if max_clips is not None:
         paths = paths[:max_clips]
 
-    tasks = [CachedValidationTask(path=path.as_posix()) for path in paths]
+    tasks = [
+        CachedValidationTask(path=path.as_posix(), estimator_name=estimator_name) for path in paths
+    ]
     if workers == 1:
         clip_results = [_evaluate_cached_clip(task) for task in tasks]
     else:
         with ProcessPoolExecutor(max_workers=workers) as executor:
             clip_results = list(executor.map(_evaluate_cached_clip, tasks))
 
-    summary_frame = pl.DataFrame([asdict(result) for result in clip_results])
+    summary_frame = pl.DataFrame([_scalar_clip_result(result) for result in clip_results])
     cache_frame = cache_summary(paths)
     total_seconds = time.perf_counter() - start
     return {
@@ -106,6 +131,8 @@ def run_cached_validation(
             "source_frames": _sum_column(summary_frame, "source_frames"),
             "evaluated_frames": _sum_column(summary_frame, "evaluated_frames"),
             "workers": workers,
+            "estimator": estimator_name,
+            "environment_splits": sorted(environment_splits or []),
             "total_seconds": total_seconds,
             "evaluated_frames_per_second": (
                 _sum_column(summary_frame, "evaluated_frames") / total_seconds
@@ -117,6 +144,7 @@ def run_cached_validation(
             "mean_left_foot_error_m": _mean_column(summary_frame, "mean_left_foot_error_m"),
             "mean_right_foot_error_m": _mean_column(summary_frame, "mean_right_foot_error_m"),
             "mean_reference_error_m": _mean_column(summary_frame, "mean_reference_error_m"),
+            "mean_joint_errors_m": _mean_joint_errors(clip_results),
         },
         "clips": [asdict(result) for result in clip_results],
     }
@@ -124,7 +152,7 @@ def run_cached_validation(
 
 def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
     start = time.perf_counter()
-    estimator = TrivialBaselineEstimator()
+    estimator = create_estimator(task.estimator_name)
     calibration = AvatarCalibration()
     grounding = GroundingContext()
     frame_metrics = []
@@ -139,6 +167,7 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         frame_count += 1
     target_summary = summarize_target_errors(frame_metrics)
     reference_summary = summarize_reference_errors(reference_metrics)
+    mean_joint_errors_m = cast(dict[str, float], reference_summary["mean_joint_errors_m"])
     subject, clip = _subject_and_clip_from_path(Path(task.path))
     return ClipResult(
         clip=clip,
@@ -148,10 +177,11 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         parse_seconds=0.0,
         fk_sample_estimate_metric_seconds=time.perf_counter() - start,
         mean_target_error_m=target_summary["mean_target_error_m"],
-        mean_pelvis_error_m=reference_summary["mean_pelvis_error_m"],
-        mean_left_foot_error_m=reference_summary["mean_left_foot_error_m"],
-        mean_right_foot_error_m=reference_summary["mean_right_foot_error_m"],
-        mean_reference_error_m=reference_summary["mean_reference_error_m"],
+        mean_pelvis_error_m=cast(float, reference_summary["mean_pelvis_error_m"]),
+        mean_left_foot_error_m=cast(float, reference_summary["mean_left_foot_error_m"]),
+        mean_right_foot_error_m=cast(float, reference_summary["mean_right_foot_error_m"]),
+        mean_reference_error_m=cast(float, reference_summary["mean_reference_error_m"]),
+        mean_joint_errors_m=mean_joint_errors_m,
     )
 
 
@@ -204,6 +234,25 @@ def _mean(values: Iterable[float]) -> float:
     if not value_list:
         return 0.0
     return sum(value_list) / len(value_list)
+
+
+def _scalar_clip_result(result: ClipResult) -> dict[str, Any]:
+    data = asdict(result)
+    data.pop("mean_joint_errors_m", None)
+    return data
+
+
+def _mean_joint_errors(results: Iterable[ClipResult]) -> dict[str, float]:
+    result_list = list(results)
+    joint_names = sorted({name for result in result_list for name in result.mean_joint_errors_m})
+    return {
+        name: _mean(
+            result.mean_joint_errors_m[name]
+            for result in result_list
+            if name in result.mean_joint_errors_m
+        )
+        for name in joint_names
+    }
 
 
 if __name__ == "__main__":

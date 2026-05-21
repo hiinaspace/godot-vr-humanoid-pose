@@ -22,6 +22,11 @@ from validation.vr_pose_validation.cmu_fk import (
     compile_cmu_fk_plan,
     solve_cmu_pose_frame,
 )
+from validation.vr_pose_validation.cmu_metadata import (
+    DEFAULT_CMU_METADATA_PATH,
+    default_clip_metadata,
+    read_cmu_metadata,
+)
 from validation.vr_pose_validation.parquet_cache import (
     CACHE_JOINTS,
     ParquetCompression,
@@ -44,6 +49,9 @@ class CacheClipResult:
     cached_frames: int
     seconds: float
     path: str
+    environment_split: str
+    environment_tags: tuple[str, ...]
+    motion_description: str
     skipped: bool = False
 
 
@@ -55,6 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-clips", type=int)
     parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--max-frames-per-clip", type=int)
+    parser.add_argument("--metadata-path", type=Path, default=DEFAULT_CMU_METADATA_PATH)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--compression", default="zstd")
     args = parser.parse_args(argv)
@@ -66,6 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_clips=args.max_clips,
         frame_stride=args.frame_stride,
         max_frames_per_clip=args.max_frames_per_clip,
+        metadata_path=args.metadata_path,
         force=args.force,
         compression=args.compression,
     )
@@ -81,12 +91,14 @@ def build_cache(
     max_clips: int | None,
     frame_stride: int,
     max_frames_per_clip: int | None,
+    metadata_path: Path,
     force: bool,
     compression: str,
 ) -> dict[str, object]:
     start = time.perf_counter()
     cache_dir.mkdir(parents=True, exist_ok=True)
     results: list[CacheClipResult] = []
+    metadata_by_clip = read_cmu_metadata(metadata_path) if metadata_path.exists() else {}
 
     with ZipFile(archive_path) as zf:
         names = zf.namelist()
@@ -106,6 +118,7 @@ def build_cache(
         for amc_name in amc_names:
             subject = _subject_from_amc(amc_name)
             clip = Path(amc_name).stem
+            metadata = metadata_by_clip.get(clip, default_clip_metadata(subject, clip))
             output_path = clip_cache_path(cache_dir, subject, clip)
             if output_path.exists() and not force:
                 results.append(
@@ -116,6 +129,9 @@ def build_cache(
                         cached_frames=0,
                         seconds=0.0,
                         path=output_path.as_posix(),
+                        environment_split=metadata.environment_split,
+                        environment_tags=metadata.environment_tags,
+                        motion_description=metadata.motion_description,
                         skipped=True,
                     )
                 )
@@ -143,6 +159,10 @@ def build_cache(
                     frame_index=frame.index,
                     timestamp_s=(frame.index - 1) / CMU_FRAME_RATE_HZ,
                     joints=pose,
+                    environment_split=metadata.environment_split,
+                    environment_tags=metadata.environment_tags,
+                    motion_description=metadata.motion_description,
+                    subject_description=metadata.subject_description,
                 )
             write_clip_cache(
                 output_path,
@@ -157,6 +177,9 @@ def build_cache(
                     cached_frames=len(frame_selection.frames),
                     seconds=time.perf_counter() - clip_start,
                     path=output_path.as_posix(),
+                    environment_split=metadata.environment_split,
+                    environment_tags=metadata.environment_tags,
+                    motion_description=metadata.motion_description,
                 )
             )
 
@@ -172,6 +195,8 @@ def build_cache(
             "max_frames_per_clip": max_frames_per_clip,
             "compression": compression,
             "joints": list(CACHE_JOINTS),
+            "metadata_path": metadata_path.as_posix() if metadata_path.exists() else None,
+            "environment_splits": _split_counts(results),
             "total_seconds": time.perf_counter() - start,
             "generated_at_utc": datetime.now(UTC).isoformat(),
         },
@@ -190,6 +215,13 @@ def _subject_from_asf(name: str) -> str:
 
 def _subject_from_amc(name: str) -> str:
     return Path(name).stem.split("_", maxsplit=1)[0]
+
+
+def _split_counts(results: list[CacheClipResult]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result.environment_split] = counts.get(result.environment_split, 0) + 1
+    return counts
 
 
 if __name__ == "__main__":

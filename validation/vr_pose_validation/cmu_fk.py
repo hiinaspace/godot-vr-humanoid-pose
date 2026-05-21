@@ -27,9 +27,17 @@ type CmuPoseFrame = Mapping[str, Transform]
 
 CANONICAL_CMU_JOINTS = {
     "head": "head",
+    "chest": "thorax",
+    "spine": "upperback",
+    "left_shoulder": "lclavicle",
+    "right_shoulder": "rclavicle",
+    "left_elbow": "lhumerus",
+    "right_elbow": "rhumerus",
     "left_hand": "lwrist",
     "right_hand": "rwrist",
     "hips": "root",
+    "left_knee": "lfemur",
+    "right_knee": "rfemur",
     "left_foot": "lfoot",
     "right_foot": "rfoot",
 }

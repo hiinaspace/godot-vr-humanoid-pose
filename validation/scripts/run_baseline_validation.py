@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import cast
 from zipfile import ZipFile
 
-from validation.vr_pose_validation.baseline import TrivialBaselineEstimator
+from validation.vr_pose_validation.baseline import EstimatorName, create_estimator
 from validation.vr_pose_validation.cmu import (
     CmuSkeleton,
     parse_amc_text_sampled,
@@ -49,6 +49,7 @@ class ClipResult:
     mean_left_foot_error_m: float
     mean_right_foot_error_m: float
     mean_reference_error_m: float
+    mean_joint_errors_m: dict[str, float]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -60,6 +61,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-clips", type=int)
     parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--max-frames-per-clip", type=int)
+    parser.add_argument(
+        "--estimator",
+        choices=("trivial", "planted", "basis"),
+        default="trivial",
+        help="Estimator implementation to evaluate.",
+    )
     args = parser.parse_args(argv)
 
     result = run_validation(
@@ -68,6 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_clips=args.max_clips,
         frame_stride=args.frame_stride,
         max_frames_per_clip=args.max_frames_per_clip,
+        estimator_name=args.estimator,
     )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -85,10 +93,10 @@ def run_validation(
     max_clips: int | None,
     frame_stride: int,
     max_frames_per_clip: int | None,
+    estimator_name: EstimatorName = "trivial",
 ) -> dict[str, object]:
     start = time.perf_counter()
     clip_results: list[ClipResult] = []
-    estimator = TrivialBaselineEstimator()
     calibration = AvatarCalibration()
     grounding = GroundingContext()
 
@@ -123,6 +131,7 @@ def run_validation(
             )
             parse_seconds = time.perf_counter() - parse_start
             work_start = time.perf_counter()
+            estimator = create_estimator(estimator_name)
             frame_metrics = []
             reference_metrics: list[ReferencePoseMetrics] = []
             pose_frames = list(
@@ -139,6 +148,10 @@ def run_validation(
                 reference_metrics.append(evaluate_reference_pose(pose, reference_frame))
             target_summary = summarize_target_errors(frame_metrics)
             reference_summary = summarize_reference_errors(reference_metrics)
+            mean_joint_errors_m = cast(
+                dict[str, float],
+                reference_summary["mean_joint_errors_m"],
+            )
             clip_results.append(
                 ClipResult(
                     clip=amc_name,
@@ -148,10 +161,20 @@ def run_validation(
                     parse_seconds=parse_seconds,
                     fk_sample_estimate_metric_seconds=time.perf_counter() - work_start,
                     mean_target_error_m=target_summary["mean_target_error_m"],
-                    mean_pelvis_error_m=reference_summary["mean_pelvis_error_m"],
-                    mean_left_foot_error_m=reference_summary["mean_left_foot_error_m"],
-                    mean_right_foot_error_m=reference_summary["mean_right_foot_error_m"],
-                    mean_reference_error_m=reference_summary["mean_reference_error_m"],
+                    mean_pelvis_error_m=cast(float, reference_summary["mean_pelvis_error_m"]),
+                    mean_left_foot_error_m=cast(
+                        float,
+                        reference_summary["mean_left_foot_error_m"],
+                    ),
+                    mean_right_foot_error_m=cast(
+                        float,
+                        reference_summary["mean_right_foot_error_m"],
+                    ),
+                    mean_reference_error_m=cast(
+                        float,
+                        reference_summary["mean_reference_error_m"],
+                    ),
+                    mean_joint_errors_m=mean_joint_errors_m,
                 )
             )
 
@@ -166,6 +189,7 @@ def run_validation(
             "evaluated_frames": total_evaluated_frames,
             "frame_stride": frame_stride,
             "max_frames_per_clip": max_frames_per_clip,
+            "estimator": estimator_name,
             "total_seconds": total_seconds,
             "evaluated_frames_per_second": (
                 total_evaluated_frames / total_seconds if total_seconds > 0.0 else 0.0
@@ -181,6 +205,7 @@ def run_validation(
             "mean_reference_error_m": _mean(
                 result.mean_reference_error_m for result in clip_results
             ),
+            "mean_joint_errors_m": _mean_joint_errors(clip_results),
         },
         "clips": [asdict(result) for result in clip_results],
     }
@@ -207,6 +232,19 @@ def _mean(values: Iterable[float]) -> float:
     if not value_list:
         return 0.0
     return sum(value_list) / len(value_list)
+
+
+def _mean_joint_errors(results: Iterable[ClipResult]) -> dict[str, float]:
+    result_list = list(results)
+    joint_names = sorted({name for result in result_list for name in result.mean_joint_errors_m})
+    return {
+        name: _mean(
+            result.mean_joint_errors_m[name]
+            for result in result_list
+            if name in result.mean_joint_errors_m
+        )
+        for name in joint_names
+    }
 
 
 if __name__ == "__main__":

@@ -10,10 +10,17 @@ from typing import Any, Literal
 import polars as pl
 
 from validation.vr_pose_validation.cmu_fk import CANONICAL_CMU_JOINTS
+from validation.vr_pose_validation.cmu_metadata import EnvironmentSplit
 from validation.vr_pose_validation.geometry import Transform
 
 CACHE_JOINTS = tuple(CANONICAL_CMU_JOINTS)
 TRANSFORM_COMPONENTS = ("px", "py", "pz", "qx", "qy", "qz", "qw")
+METADATA_COLUMNS = (
+    "environment_split",
+    "environment_tags",
+    "motion_description",
+    "subject_description",
+)
 type CacheColumns = dict[str, list[Any]]
 type ParquetCompression = Literal["lz4", "uncompressed", "snappy", "gzip", "brotli", "zstd"]
 
@@ -25,6 +32,10 @@ class CachedPoseFrame:
     frame_index: int
     timestamp_s: float
     joints: dict[str, Transform]
+    environment_split: EnvironmentSplit = "unknown"
+    environment_tags: tuple[str, ...] = ()
+    motion_description: str = ""
+    subject_description: str = ""
 
 
 def clip_cache_path(cache_dir: Path, subject: str, clip: str) -> Path:
@@ -36,6 +47,20 @@ def list_clip_cache_files(cache_dir: Path, subjects: set[str] | None = None) -> 
     if not subjects:
         return paths
     return [path for path in paths if subject_from_cache_path(path) in subjects]
+
+
+def filter_clip_cache_files_by_environment(
+    paths: Iterable[Path],
+    *,
+    environment_splits: set[EnvironmentSplit] | None = None,
+) -> list[Path]:
+    if not environment_splits:
+        return list(paths)
+    return [
+        path
+        for path in paths
+        if _clip_environment_from_cache(path).environment_split in environment_splits
+    ]
 
 
 def subject_from_cache_path(path: Path) -> str:
@@ -55,6 +80,10 @@ def new_cache_columns() -> CacheColumns:
         "clip": [],
         "frame_index": [],
         "timestamp_s": [],
+        "environment_split": [],
+        "environment_tags": [],
+        "motion_description": [],
+        "subject_description": [],
     }
     for joint in CACHE_JOINTS:
         for component in TRANSFORM_COMPONENTS:
@@ -70,11 +99,19 @@ def append_cached_pose_frame(
     frame_index: int,
     timestamp_s: float,
     joints: Mapping[str, Transform],
+    environment_split: EnvironmentSplit = "unknown",
+    environment_tags: tuple[str, ...] = (),
+    motion_description: str = "",
+    subject_description: str = "",
 ) -> None:
     _append(columns, "subject", subject)
     _append(columns, "clip", clip)
     _append(columns, "frame_index", frame_index)
     _append(columns, "timestamp_s", timestamp_s)
+    _append(columns, "environment_split", environment_split)
+    _append(columns, "environment_tags", ";".join(environment_tags))
+    _append(columns, "motion_description", motion_description)
+    _append(columns, "subject_description", subject_description)
     for joint in CACHE_JOINTS:
         transform = joints[joint]
         position = transform.position
@@ -111,9 +148,14 @@ def iter_cached_pose_frames(path: Path) -> Iterator[CachedPoseFrame]:
 def iter_cached_pose_dataframe(dataframe: pl.DataFrame) -> Iterator[CachedPoseFrame]:
     columns = dataframe.to_dict(as_series=False)
     row_count = dataframe.height
+    available_joints = [
+        joint
+        for joint in CACHE_JOINTS
+        if all(_transform_column(joint, component) in columns for component in TRANSFORM_COMPONENTS)
+    ]
     for row_index in range(row_count):
         joints: dict[str, Transform] = {}
-        for joint in CACHE_JOINTS:
+        for joint in available_joints:
             joints[joint] = Transform(
                 position=(
                     float(columns[_transform_column(joint, "px")][row_index]),
@@ -133,6 +175,10 @@ def iter_cached_pose_dataframe(dataframe: pl.DataFrame) -> Iterator[CachedPoseFr
             frame_index=int(columns["frame_index"][row_index]),
             timestamp_s=float(columns["timestamp_s"][row_index]),
             joints=joints,
+            environment_split=_environment_split_from_columns(columns, row_index),
+            environment_tags=_environment_tags_from_columns(columns, row_index),
+            motion_description=_string_from_columns(columns, "motion_description", row_index),
+            subject_description=_string_from_columns(columns, "subject_description", row_index),
         )
 
 
@@ -166,3 +212,30 @@ def _append(
     value: float | int | str,
 ) -> None:
     columns[column].append(value)
+
+
+def _clip_environment_from_cache(path: Path) -> CachedPoseFrame:
+    frame = pl.read_parquet(path, n_rows=1)
+    return next(iter_cached_pose_dataframe(frame))
+
+
+def _environment_split_from_columns(columns: CacheColumns, row_index: int) -> EnvironmentSplit:
+    value = _string_from_columns(columns, "environment_split", row_index)
+    if value == "flat":
+        return "flat"
+    if value == "nonflat":
+        return "nonflat"
+    return "unknown"
+
+
+def _environment_tags_from_columns(columns: CacheColumns, row_index: int) -> tuple[str, ...]:
+    value = _string_from_columns(columns, "environment_tags", row_index)
+    if not value:
+        return ()
+    return tuple(tag for tag in value.split(";") if tag)
+
+
+def _string_from_columns(columns: CacheColumns, column: str, row_index: int) -> str:
+    if column not in columns:
+        return ""
+    return str(columns[column][row_index])

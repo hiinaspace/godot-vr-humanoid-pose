@@ -32,6 +32,14 @@ def scale(a: Vector3, scalar: float) -> Vector3:
     return (a[0] * scalar, a[1] * scalar, a[2] * scalar)
 
 
+def lerp(a: Vector3, b: Vector3, t: float) -> Vector3:
+    return (
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    )
+
+
 def length(a: Vector3) -> float:
     return sqrt(dot(a, a))
 
@@ -44,6 +52,14 @@ def dot(a: Vector3, b: Vector3) -> float:
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
+def cross(a: Vector3, b: Vector3) -> Vector3:
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
 def normalize(a: Vector3, fallback: Vector3 = (0.0, 1.0, 0.0)) -> Vector3:
     magnitude = length(a)
     if magnitude <= 1e-9:
@@ -51,8 +67,21 @@ def normalize(a: Vector3, fallback: Vector3 = (0.0, 1.0, 0.0)) -> Vector3:
     return scale(a, 1.0 / magnitude)
 
 
+def horizontal(a: Vector3) -> Vector3:
+    return (a[0], 0.0, a[2])
+
+
+def horizontal_distance(a: Vector3, b: Vector3) -> float:
+    return length(subtract(horizontal(a), horizontal(b)))
+
+
 def with_y(position: Vector3, y: float) -> Vector3:
     return (position[0], y, position[2])
+
+
+def project_on_plane(vector: Vector3, normal: Vector3) -> Vector3:
+    normalized_normal = normalize(normal)
+    return subtract(vector, scale(normalized_normal, dot(vector, normalized_normal)))
 
 
 def conjugate_quaternion(q: Quaternion) -> Quaternion:
@@ -101,6 +130,34 @@ def rotate_vector(rotation: Quaternion, vector: Vector3) -> Vector3:
         conjugate_quaternion(rotation),
     )
     return (rotated[0], rotated[1], rotated[2])
+
+
+def look_rotation(
+    forward: Vector3,
+    up: Vector3 = (0.0, 1.0, 0.0),
+) -> Quaternion:
+    f = normalize(forward, fallback=(0.0, 0.0, 1.0))
+    r = normalize(cross(up, f), fallback=(1.0, 0.0, 0.0))
+    u = cross(f, r)
+
+    m00, m01, m02 = r[0], u[0], f[0]
+    m10, m11, m12 = r[1], u[1], f[1]
+    m20, m21, m22 = r[2], u[2], f[2]
+
+    trace = m00 + m11 + m22
+    if trace > 0.0:
+        s = sqrt(trace + 1.0) * 2.0
+        return ((m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s)
+
+    if m00 > m11 and m00 > m22:
+        s = sqrt(1.0 + m00 - m11 - m22) * 2.0
+        return (0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s)
+    if m11 > m22:
+        s = sqrt(1.0 + m11 - m00 - m22) * 2.0
+        return ((m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s)
+
+    s = sqrt(1.0 + m22 - m00 - m11) * 2.0
+    return ((m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s)
 
 
 def euler_quaternion(channels: tuple[str, ...], values: tuple[float, ...]) -> Quaternion:

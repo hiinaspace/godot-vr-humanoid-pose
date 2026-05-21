@@ -7,7 +7,12 @@ from validation.vr_pose_validation.baseline import (
     PlantedFeetBaselineEstimator,
     TrivialBaselineEstimator,
 )
-from validation.vr_pose_validation.metrics import evaluate_frame, summarize_target_errors
+from validation.vr_pose_validation.metrics import (
+    evaluate_frame,
+    evaluate_reference_pose,
+    summarize_reference_errors,
+    summarize_target_errors,
+)
 from validation.vr_pose_validation.synthetic_trackers import (
     generate_three_point_samples,
     pose_frame_from_positions,
@@ -68,4 +73,25 @@ def test_basis_port_scaffold_uses_pose_estimator_interface() -> None:
         "hips",
         "left_foot",
         "right_foot",
+    }
+
+
+def test_reference_pose_summary_reports_optional_joint_errors() -> None:
+    sample = _sample_frame()
+    pose = BasisPortEstimator().estimate(sample, AvatarCalibration(), GroundingContext())
+    reference = {
+        name: joint.transform
+        for name, joint in pose.joints.items()
+        if name in {"hips", "left_foot", "right_foot", "left_knee"}
+    }
+
+    metrics = evaluate_reference_pose(pose, reference)
+    summary = summarize_reference_errors([metrics])
+
+    assert metrics.joint_errors_m["left_knee"] == 0.0
+    assert summary["mean_joint_errors_m"] == {
+        "hips": 0.0,
+        "left_foot": 0.0,
+        "left_knee": 0.0,
+        "right_foot": 0.0,
     }

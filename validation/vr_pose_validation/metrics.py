@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from statistics import fmean
 
 from validation.vr_pose_validation.geometry import Transform, distance
@@ -44,6 +45,7 @@ class ReferencePoseMetrics:
     pelvis_error_m: float
     left_foot_error_m: float
     right_foot_error_m: float
+    joint_errors_m: Mapping[str, float] = field(default_factory=dict)
 
     @property
     def mean_error_m(self) -> float:
@@ -95,26 +97,39 @@ def evaluate_reference_pose(
     pose: HumanoidPoseFrame,
     reference_joints: dict[str, Transform],
 ) -> ReferencePoseMetrics:
+    joint_errors = {
+        joint_name: _pose_to_reference_error(pose, reference_joints, joint_name)
+        for joint_name in sorted(set(pose.joints).intersection(reference_joints))
+    }
     return ReferencePoseMetrics(
         pelvis_error_m=_pose_to_reference_error(pose, reference_joints, "hips"),
         left_foot_error_m=_pose_to_reference_error(pose, reference_joints, "left_foot"),
         right_foot_error_m=_pose_to_reference_error(pose, reference_joints, "right_foot"),
+        joint_errors_m=joint_errors,
     )
 
 
-def summarize_reference_errors(metrics: list[ReferencePoseMetrics]) -> dict[str, float]:
+def summarize_reference_errors(metrics: list[ReferencePoseMetrics]) -> dict[str, object]:
     if not metrics:
         return {
             "mean_pelvis_error_m": 0.0,
             "mean_left_foot_error_m": 0.0,
             "mean_right_foot_error_m": 0.0,
             "mean_reference_error_m": 0.0,
+            "mean_joint_errors_m": {},
         }
+    joint_names = sorted({name for metric in metrics for name in metric.joint_errors_m})
     return {
         "mean_pelvis_error_m": fmean(metric.pelvis_error_m for metric in metrics),
         "mean_left_foot_error_m": fmean(metric.left_foot_error_m for metric in metrics),
         "mean_right_foot_error_m": fmean(metric.right_foot_error_m for metric in metrics),
         "mean_reference_error_m": fmean(metric.mean_error_m for metric in metrics),
+        "mean_joint_errors_m": {
+            name: fmean(
+                metric.joint_errors_m[name] for metric in metrics if name in metric.joint_errors_m
+            )
+            for name in joint_names
+        },
     }
 
 
@@ -141,5 +156,7 @@ def _pose_to_reference_error(
     reference_joints: dict[str, Transform],
     joint_name: str,
 ) -> float:
+    if joint_name not in pose.joints or joint_name not in reference_joints:
+        return 0.0
     reference = reference_joints[joint_name]
     return distance(pose.joints[joint_name].transform.position, reference.position)

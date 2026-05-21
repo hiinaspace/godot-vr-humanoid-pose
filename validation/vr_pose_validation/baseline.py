@@ -3,15 +3,32 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
+from validation.vr_pose_validation.basis_estimator import (
+    BasisEstimatorSettings,
+    BasisPortEstimator,
+)
 from validation.vr_pose_validation.geometry import Transform, Vector3, distance, with_y
 from validation.vr_pose_validation.types import (
     AvatarCalibration,
     GroundingContext,
     HumanoidPoseFrame,
     JointPose,
+    PoseEstimator,
     TrackedPoseSample,
 )
+
+type EstimatorName = Literal["trivial", "planted", "basis"]
+
+__all__ = [
+    "BasisEstimatorSettings",
+    "BasisPortEstimator",
+    "EstimatorName",
+    "PlantedFeetBaselineEstimator",
+    "TrivialBaselineEstimator",
+    "create_estimator",
+]
 
 
 @dataclass(slots=True)
@@ -100,10 +117,11 @@ class PlantedFeetBaselineEstimator(TrivialBaselineEstimator):
         )
 
 
-class BasisPortEstimator(PlantedFeetBaselineEstimator):
-    """Placeholder for the Basis-inspired solver phases.
-
-    The class intentionally inherits the planted-feet baseline for now so the
-    validation harness can exercise the intended estimator interface while the
-    virtual-spine, arm, and foot-grounding phases are ported incrementally.
-    """
+def create_estimator(name: EstimatorName) -> PoseEstimator:
+    if name == "trivial":
+        return TrivialBaselineEstimator()
+    if name == "planted":
+        return PlantedFeetBaselineEstimator()
+    if name == "basis":
+        return BasisPortEstimator()
+    raise ValueError(f"Unknown estimator: {name}")
