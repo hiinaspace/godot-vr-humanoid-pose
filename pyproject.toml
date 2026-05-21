@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Validation and pose-estimation scaffolding for sparse VR humanoid tracking in Godot."
 readme = "PLAN.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "polars>=1.40.1",
+]
 
 [dependency-groups]
 dev = [
