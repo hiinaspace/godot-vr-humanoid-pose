@@ -31,15 +31,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 def render_report(report_path: Path, output_path: Path) -> None:
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     summary = cast(dict[str, Any], payload.get("summary", {}))
+    clips = cast(list[dict[str, Any]], payload.get("clips", []))
     grouped = cast(dict[str, list[dict[str, Any]]], summary.get("grouped_metrics", {}))
     worst = cast(dict[str, list[dict[str, Any]]], summary.get("worst_clips", {}))
 
-    figure, axes = plt.subplots(2, 2, figsize=(15, 9), constrained_layout=True)
+    figure, axes = plt.subplots(2, 3, figsize=(20, 10), constrained_layout=True)
     figure.suptitle(_title(summary), fontsize=15, fontweight="bold")
 
     _plot_overall_metrics(axes[0][0], summary)
+    _plot_clip_distribution(axes[0][1], clips)
     _plot_group_metric(
-        axes[0][1],
+        axes[0][2],
         grouped.get("environment_split", []),
         "environment_split",
         "By Environment",
@@ -50,10 +52,11 @@ def render_report(report_path: Path, output_path: Path) -> None:
         "activity_class",
         "By Activity",
     )
+    _plot_clip_scatter(axes[1][1], clips)
     _plot_worst_clips(
-        axes[1][1],
+        axes[1][2],
         worst.get("mean_reference_error_m", []),
-        "Worst Clips: Reference Error",
+        "Worst Clips: Hips + Feet Error",
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,13 +73,9 @@ def _title(summary: dict[str, Any]) -> str:
 
 def _plot_overall_metrics(axis, summary: dict[str, Any]) -> None:
     metrics = [
-        ("reference", float(summary.get("mean_reference_error_m", 0.0))),
+        ("hips+feet", float(summary.get("mean_reference_error_m", 0.0))),
         ("pelvis", float(summary.get("mean_pelvis_error_m", 0.0))),
-        ("pelvis xz", float(summary.get("mean_pelvis_horizontal_error_m", 0.0))),
-        ("pelvis y", float(summary.get("mean_pelvis_vertical_error_m", 0.0))),
         ("torso", float(summary.get("mean_torso_error_m", 0.0))),
-        ("spine", float(summary.get("mean_spine_error_m", 0.0))),
-        ("chest", float(summary.get("mean_chest_error_m", 0.0))),
         ("left foot", float(summary.get("mean_left_foot_error_m", 0.0))),
         ("right foot", float(summary.get("mean_right_foot_error_m", 0.0))),
         ("contact foot", float(summary.get("mean_contact_foot_error_m", 0.0))),
@@ -84,24 +83,58 @@ def _plot_overall_metrics(axis, summary: dict[str, Any]) -> None:
     ]
     labels = [label for label, _value in metrics]
     values = [value for _label, value in metrics]
-    colors = [
-        "#4c78a8",
-        "#72b7b2",
-        "#8cd17d",
-        "#b6992d",
-        "#54a24b",
-        "#59a14f",
-        "#9c755f",
-        "#f58518",
-        "#e45756",
-        "#b279a2",
-        "#af7aa1",
-    ]
-    bars = axis.bar(labels, values, color=colors[: len(values)])
-    axis.set_title("Overall Metrics")
-    axis.set_ylabel("meters / meters per second")
-    axis.tick_params(axis="x", rotation=30)
+    colors = ["#4c78a8", "#72b7b2", "#54a24b", "#f58518", "#e45756", "#b279a2", "#af7aa1"]
+    positions = list(range(len(values)))
+    bars = axis.barh(positions, values, color=colors[: len(values)])
+    axis.set_yticks(positions, labels)
+    axis.invert_yaxis()
+    axis.set_title("Headline Means")
+    axis.set_xlabel("meters / meters per second")
     axis.bar_label(bars, fmt="%.2f", padding=2, fontsize=8)
+
+
+def _plot_clip_distribution(axis, clips: list[dict[str, Any]]) -> None:
+    metric_specs = [
+        ("hips+feet", "mean_reference_error_m"),
+        ("pelvis", "mean_pelvis_error_m"),
+        ("torso", "mean_torso_error_m"),
+        ("contact foot", "mean_contact_foot_error_m"),
+    ]
+    series = [_metric_values(clips, key) for _label, key in metric_specs]
+    labels = [label for label, _key in metric_specs]
+    nonempty = [(label, values) for label, values in zip(labels, series, strict=True) if values]
+    if not nonempty:
+        axis.set_title("Per-Clip Distributions")
+        axis.text(0.5, 0.5, "No clip metrics", ha="center", va="center")
+        axis.axis("off")
+        return
+
+    labels = [label for label, _values in nonempty]
+    series = [values for _label, values in nonempty]
+    positions = list(range(1, len(series) + 1))
+    parts = axis.violinplot(series, positions=positions, showmeans=True, showextrema=True)
+    for body in parts["bodies"]:
+        body.set_facecolor("#4c78a8")
+        body.set_edgecolor("#2f4b68")
+        body.set_alpha(0.32)
+    for key in ("cmeans", "cmins", "cmaxes", "cbars"):
+        parts[key].set_color("#2f4b68")
+
+    for position, values in zip(positions, series, strict=True):
+        sample = _sample_values(values, limit=350)
+        offsets = _jitter_offsets(len(sample), width=0.12)
+        axis.scatter(
+            [position + offset for offset in offsets],
+            sample,
+            s=5,
+            alpha=0.22,
+            color="#111111",
+            linewidths=0,
+        )
+    axis.set_xticks(positions, labels, rotation=25, ha="right")
+    axis.set_title("Per-Clip Error Distributions")
+    axis.set_ylabel("meters")
+    axis.grid(axis="y", alpha=0.2)
 
 
 def _plot_group_metric(
@@ -126,7 +159,7 @@ def _plot_group_metric(
     contact = [float(group.get("mean_contact_foot_error_m", 0.0)) for group in groups]
     positions = range(len(groups))
     axis.barh(
-        [position + 0.24 for position in positions], reference, height=0.22, label="reference"
+        [position + 0.24 for position in positions], reference, height=0.22, label="hips+feet"
     )
     axis.barh([position for position in positions], torso, height=0.22, label="torso")
     axis.barh(
@@ -136,6 +169,39 @@ def _plot_group_metric(
     axis.invert_yaxis()
     axis.set_title(title)
     axis.set_xlabel("mean error (m)")
+    axis.legend(fontsize=8)
+
+
+def _plot_clip_scatter(axis, clips: list[dict[str, Any]]) -> None:
+    if not clips:
+        axis.set_title("Torso vs Contact Foot")
+        axis.text(0.5, 0.5, "No clip metrics", ha="center", va="center")
+        axis.axis("off")
+        return
+    colors = {
+        "flat": "#4c78a8",
+        "nonflat": "#e45756",
+        "unknown": "#9c755f",
+    }
+    for split, color in colors.items():
+        split_clips = [clip for clip in clips if str(clip.get("environment_split")) == split]
+        x_values = _metric_values(split_clips, "mean_torso_error_m")
+        y_values = _metric_values(split_clips, "mean_contact_foot_error_m")
+        if not x_values or not y_values:
+            continue
+        axis.scatter(
+            x_values,
+            y_values,
+            s=8,
+            alpha=0.35,
+            color=color,
+            label=split,
+            linewidths=0,
+        )
+    axis.set_title("Torso vs Contact Foot")
+    axis.set_xlabel("mean torso error (m)")
+    axis.set_ylabel("mean contact foot error (m)")
+    axis.grid(alpha=0.2)
     axis.legend(fontsize=8)
 
 
@@ -157,8 +223,30 @@ def _plot_worst_clips(axis, clips: list[dict[str, Any]], title: str) -> None:
     values = [float(clip.get("mean_reference_error_m", 0.0)) for clip in clips]
     bars = axis.barh(labels, values, color="#e45756")
     axis.set_title(title)
-    axis.set_xlabel("mean reference error (m)")
+    axis.set_xlabel("mean hips + feet error (m)")
     axis.bar_label(bars, fmt="%.2f", padding=2, fontsize=8)
+
+
+def _metric_values(rows: list[dict[str, Any]], key: str) -> list[float]:
+    values = []
+    for row in rows:
+        value = row.get(key)
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    return values
+
+
+def _sample_values(values: list[float], *, limit: int) -> list[float]:
+    if len(values) <= limit:
+        return values
+    step = max(1, len(values) // limit)
+    return values[::step][:limit]
+
+
+def _jitter_offsets(count: int, *, width: float) -> list[float]:
+    if count <= 1:
+        return [0.0] * count
+    return [((index * 37) % count) / (count - 1) * width * 2.0 - width for index in range(count)]
 
 
 if __name__ == "__main__":

@@ -61,7 +61,9 @@ Cached validation reports include aggregate metrics, group summaries by
 `environment_split`, `activity_class`, and their combination, plus worst-clip
 lists for the main reference, pelvis, torso, foot, contact-foot, and
 contact-slip metrics. Use `--top-clips 0` to omit worst-clip lists from the JSON
-summary.
+summary. The headline reference metric is the mean of hips, left foot, and right
+foot errors; per-joint means for all emitted joints are available under
+`mean_joint_errors_m`.
 
 Compare the first Basis-style estimator port against the trivial baseline:
 

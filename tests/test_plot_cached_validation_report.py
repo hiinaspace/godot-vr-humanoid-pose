@@ -56,7 +56,24 @@ def test_plot_cached_validation_report_writes_png(tmp_path) -> None:
                         ]
                     },
                 },
-                "clips": [],
+                "clips": [
+                    {
+                        "environment_split": "flat",
+                        "mean_reference_error_m": 0.4,
+                        "mean_pelvis_error_m": 0.2,
+                        "mean_torso_error_m": 0.25,
+                        "mean_contact_foot_error_m": 0.3,
+                        "mean_contact_slip_m_per_s": 0.1,
+                    },
+                    {
+                        "environment_split": "nonflat",
+                        "mean_reference_error_m": 0.8,
+                        "mean_pelvis_error_m": 0.5,
+                        "mean_torso_error_m": 0.45,
+                        "mean_contact_foot_error_m": 0.7,
+                        "mean_contact_slip_m_per_s": 0.2,
+                    },
+                ],
             }
         ),
         encoding="utf-8",
