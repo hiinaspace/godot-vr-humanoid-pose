@@ -1,0 +1,1975 @@
+{
+  "calibration": {
+    "avatar_scale": 1.0,
+    "bone_lengths_m": {
+      "chest_to_spine": 0.16,
+      "head_to_hips": 0.59,
+      "head_to_neck": 0.075,
+      "hip_width": 0.2,
+      "lower_arm": 0.26,
+      "lower_leg": 0.43,
+      "neck_to_chest": 0.15,
+      "shoulder_width": 0.4,
+      "spine_to_hips": 0.205,
+      "stance_width": 0.32,
+      "upper_arm": 0.3,
+      "upper_leg": 0.42
+    },
+    "eye_to_head": {
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "foot_height_m": 0.075,
+    "human_height_m": 1.72,
+    "left_controller_to_wrist": {
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "right_controller_to_wrist": {
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  },
+  "description": "Stateful BasisPortEstimator parity fixture exported from Python.",
+  "expected_frames": [
+    {
+      "joints": {
+        "chest": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.0,
+              1.3950000000000002,
+              0.005825242718446601
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "head": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              0.0,
+              1.7000000000000002,
+              0.02
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "hips": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.0,
+              1.0300000000000002,
+              0.02
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_elbow": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.28077765317550185,
+              1.498612844380008,
+              0.27552757720397275
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_foot": {
+          "confidence": 0.75,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.16,
+              0.075,
+              0.02
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_hand": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              -0.32,
+              1.2600000000000002,
+              0.18
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_knee": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.12633233712289532,
+              0.6108769674605832,
+              0.026518559396741963
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_shoulder": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.2,
+              1.3950000000000002,
+              0.005825242718446601
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_elbow": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.27778223001877506,
+              1.5146771224318916,
+              0.2696951179594987
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_foot": {
+          "confidence": 0.75,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.16,
+              0.075,
+              0.02
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_hand": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              0.3,
+              1.28,
+              0.16
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_knee": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.12633233712289532,
+              0.6108769674605832,
+              0.026518559396741963
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_shoulder": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.2,
+              1.3950000000000002,
+              0.005825242718446601
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "spine": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.0,
+              1.2350000000000003,
+              0.01203883495145631
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "root": {
+        "position": [
+          0.0,
+          1.0300000000000002,
+          0.02
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "timestamp_seconds": 0.0
+    },
+    {
+      "joints": {
+        "chest": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.0205077033558116,
+              1.3850000000000002,
+              0.04580307591121405
+            ],
+            "rotation": [
+              0.0,
+              0.043619387365336,
+              0.0,
+              0.9990482215818578
+            ]
+          }
+        },
+        "head": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              0.02,
+              1.6900000000000002,
+              0.06
+            ],
+            "rotation": [
+              0.0,
+              0.043619387365336,
+              0.0,
+              0.9990482215818578
+            ]
+          }
+        },
+        "hips": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.021743114854953165,
+              1.02,
+              0.05992389396183491
+            ],
+            "rotation": [
+              0.0,
+              0.043619387365336,
+              0.0,
+              0.9990482215818578
+            ]
+          }
+        },
+        "left_elbow": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.23051769997871444,
+              1.4656723657470216,
+              0.34750545336116023
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_foot": {
+          "confidence": 0.75,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.15988068320605406,
+              0.07880643902929696,
+              0.020287556577963935
+            ],
+            "rotation": [
+              0.0,
+              0.009650156726362819,
+              0.0,
+              0.9999534361534824
+            ]
+          }
+        },
+        "left_hand": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              -0.3,
+              1.25,
+              0.22
+            ],
+            "rotation": [
+              0.0,
+              0.043619387365336,
+              0.0,
+              0.9990482215818578
+            ]
+          }
+        },
+        "left_knee": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.11374396902221556,
+              0.6018025120819868,
+              0.05366030403653702
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_shoulder": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.17873123626253756,
+              1.3850000000000002,
+              0.06323422446074568
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_elbow": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.338722573776821,
+              1.5201633342502803,
+              0.2683210906525504
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_foot": {
+          "confidence": 0.75,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.1601128166196866,
+              0.07880643902929696,
+              0.020138678110703606
+            ],
+            "rotation": [
+              0.0,
+              0.009650156726362819,
+              0.0,
+              0.9999534361534824
+            ]
+          }
+        },
+        "right_hand": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              0.32,
+              1.27,
+              0.2
+            ],
+            "rotation": [
+              0.0,
+              0.043619387365336,
+              0.0,
+              0.9990482215818578
+            ]
+          }
+        },
+        "right_knee": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.1392046719576775,
+              0.6004435824999277,
+              0.04385492213802742
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_shoulder": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.21974664297416074,
+              1.3850000000000002,
+              0.02837192736168241
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "spine": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.021049253602010643,
+              1.225,
+              0.051993023549842365
+            ],
+            "rotation": [
+              0.0,
+              0.043619387365336,
+              0.0,
+              0.9990482215818578
+            ]
+          }
+        }
+      },
+      "root": {
+        "position": [
+          0.021743114854953165,
+          1.02,
+          0.05992389396183491
+        ],
+        "rotation": [
+          0.0,
+          0.043619387365336,
+          0.0,
+          0.9990482215818578
+        ]
+      },
+      "timestamp_seconds": 0.016666666666666666
+    },
+    {
+      "joints": {
+        "chest": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.0509112687283897,
+              1.3150000000000002,
+              0.1257535243141464
+            ],
+            "rotation": [
+              0.0,
+              0.07845909572784494,
+              0.0,
+              0.996917333733128
+            ]
+          }
+        },
+        "head": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              0.05,
+              1.62,
+              0.13999999999999999
+            ],
+            "rotation": [
+              0.0,
+              0.07845909572784494,
+              0.0,
+              0.996917333733128
+            ]
+          }
+        },
+        "hips": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.05312868930080462,
+              0.9500000000000001,
+              0.13975376681190274
+            ],
+            "rotation": [
+              0.0,
+              0.07845909572784494,
+              0.0,
+              0.996917333733128
+            ]
+          }
+        },
+        "left_elbow": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.1822605568137064,
+              1.3741838972906117,
+              0.44897786460541156
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_foot": {
+          "confidence": 0.75,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.15880799205770585,
+              0.08525751503539972,
+              0.023112028262996957
+            ],
+            "rotation": [
+              0.0,
+              0.024880808903021658,
+              0.0,
+              0.9996904247557498
+            ]
+          }
+        },
+        "left_hand": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              -0.27,
+              1.1800000000000002,
+              0.3
+            ],
+            "rotation": [
+              0.0,
+              0.07845909572784494,
+              0.0,
+              0.996917333733128
+            ]
+          }
+        },
+        "left_knee": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.09862572548815163,
+              0.5372199681251333,
+              0.09878296139869461
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_shoulder": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.14662639939063787,
+              1.3150000000000002,
+              0.1570404173221926
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_elbow": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.40336695916013504,
+              1.4525103649090645,
+              0.3114719443868915
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_foot": {
+          "confidence": 0.75,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.16110835742335514,
+              0.08525751503539972,
+              0.021997524114876342
+            ],
+            "rotation": [
+              0.0,
+              0.024880808903021658,
+              0.0,
+              0.9996904247557498
+            ]
+          }
+        },
+        "right_hand": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              0.35,
+              1.2,
+              0.28
+            ],
+            "rotation": [
+              0.0,
+              0.07845909572784494,
+              0.0,
+              0.996917333733128
+            ]
+          }
+        },
+        "right_knee": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.15737387812608994,
+              0.5322276559658939,
+              0.08125850472524818
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_shoulder": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.24844893684741726,
+              1.3150000000000002,
+              0.09446663130610022
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "spine": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.051883288705338704,
+              1.155,
+              0.13189061691590262
+            ],
+            "rotation": [
+              0.0,
+              0.07845909572784494,
+              0.0,
+              0.996917333733128
+            ]
+          }
+        }
+      },
+      "root": {
+        "position": [
+          0.05312868930080462,
+          0.9500000000000001,
+          0.13975376681190274
+        ],
+        "rotation": [
+          0.0,
+          0.07845909572784494,
+          0.0,
+          0.996917333733128
+        ]
+      },
+      "timestamp_seconds": 0.03333333333333333
+    },
+    {
+      "joints": {
+        "chest": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.08140925376077476,
+              1.2650000000000001,
+              0.28565220811422914
+            ],
+            "rotation": [
+              0.0,
+              0.12186934340514748,
+              0.0,
+              0.992546151641322
+            ]
+          }
+        },
+        "head": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              0.08,
+              1.57,
+              0.30000000000000004
+            ],
+            "rotation": [
+              0.0,
+              0.12186934340514748,
+              0.0,
+              0.992546151641322
+            ]
+          }
+        },
+        "hips": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.08483843791199336,
+              0.9,
+              0.29940591452551996
+            ],
+            "rotation": [
+              0.0,
+              0.12186934340514748,
+              0.0,
+              0.992546151641322
+            ]
+          }
+        },
+        "left_elbow": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.1364728821522661,
+              1.2957345550388537,
+              0.6315056650265949
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_foot": {
+          "confidence": 0.75,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.15533379727252686,
+              0.09315546659896118,
+              0.03569578358867098
+            ],
+            "rotation": [
+              0.0,
+              0.0463723894348112,
+              0.0,
+              0.9989242221000081
+            ]
+          }
+        },
+        "left_hand": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              -0.24,
+              1.13,
+              0.46
+            ],
+            "rotation": [
+              0.0,
+              0.12186934340514748,
+              0.0,
+              0.992546151641322
+            ]
+          }
+        },
+        "left_knee": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.08012683743178863,
+              0.5075368564827469,
+              0.19034112949498205
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_shoulder": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.11264989149442453,
+              1.2650000000000001,
+              0.3340365872341627
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_elbow": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.47222486582841205,
+              1.3925908050169244,
+              0.42437068638193454
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_foot": {
+          "confidence": 0.75,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.16420447850224157,
+              0.09315546659896118,
+              0.03159794530782108
+            ],
+            "rotation": [
+              0.0,
+              0.0463723894348112,
+              0.0,
+              0.9989242221000081
+            ]
+          }
+        },
+        "right_hand": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              0.38,
+              1.15,
+              0.44000000000000006
+            ],
+            "rotation": [
+              0.0,
+              0.12186934340514748,
+              0.0,
+              0.992546151641322
+            ]
+          }
+        },
+        "right_knee": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.1865355416107432,
+              0.4858928028817571,
+              0.2052605731525541
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_shoulder": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.2754683990159741,
+              1.2650000000000001,
+              0.2372678289942956
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "spine": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.08291245777226784,
+              1.105,
+              0.29168123010274016
+            ],
+            "rotation": [
+              0.0,
+              0.12186934340514748,
+              0.0,
+              0.992546151641322
+            ]
+          }
+        }
+      },
+      "root": {
+        "position": [
+          0.08483843791199336,
+          0.9,
+          0.29940591452551996
+        ],
+        "rotation": [
+          0.0,
+          0.12186934340514748,
+          0.0,
+          0.992546151641322
+        ]
+      },
+      "timestamp_seconds": 0.05
+    },
+    {
+      "joints": {
+        "chest": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.11180009899635893,
+              1.3550000000000002,
+              0.4355401350463795
+            ],
+            "rotation": [
+              0.0,
+              0.15643446504023087,
+              0.0,
+              0.9876883405951378
+            ]
+          }
+        },
+        "head": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              0.11,
+              1.6600000000000001,
+              0.45
+            ],
+            "rotation": [
+              0.0,
+              0.15643446504023087,
+              0.0,
+              0.9876883405951378
+            ]
+          }
+        },
+        "hips": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.11618033988749896,
+              0.9900000000000001,
+              0.4490211303259031
+            ],
+            "rotation": [
+              0.0,
+              0.15643446504023087,
+              0.0,
+              0.9876883405951378
+            ]
+          }
+        },
+        "left_elbow": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.09862603927916057,
+              1.36279764571888,
+              0.7965601062673855
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_foot": {
+          "confidence": 0.75,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.14786469610230255,
+              0.10132601263308609,
+              0.0650236932447953
+            ],
+            "rotation": [
+              0.0,
+              0.07079270945032526,
+              0.0,
+              0.9974910487260935
+            ]
+          }
+        },
+        "left_hand": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              -0.21000000000000002,
+              1.2200000000000002,
+              0.61
+            ],
+            "rotation": [
+              0.0,
+              0.15643446504023087,
+              0.0,
+              0.9876883405951378
+            ]
+          }
+        },
+        "left_knee": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.04851514787324454,
+              0.6120773596396176,
+              0.31041845633820914
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "left_shoulder": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              -0.07841120426267181,
+              1.3550000000000002,
+              0.497343533921369
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_elbow": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.52591885234085,
+              1.4670683336910808,
+              0.5389824392318078
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_foot": {
+          "confidence": 0.75,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.17070205218797685,
+              0.10132601263308609,
+              0.055053467838603834
+            ],
+            "rotation": [
+              0.0,
+              0.07079270945032526,
+              0.0,
+              0.9974910487260935
+            ]
+          }
+        },
+        "right_hand": {
+          "confidence": 1.0,
+          "estimated": false,
+          "transform": {
+            "position": [
+              0.41,
+              1.24,
+              0.59
+            ],
+            "rotation": [
+              0.0,
+              0.15643446504023087,
+              0.0,
+              0.9876883405951378
+            ]
+          }
+        },
+        "right_knee": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.19560809483016023,
+              0.5991707341565974,
+              0.2651269849448807
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "right_shoulder": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.3020114022553897,
+              1.3550000000000002,
+              0.37373673617139
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "spine": {
+          "confidence": 1.0,
+          "estimated": true,
+          "transform": {
+            "position": [
+              0.1137202045924751,
+              1.195,
+              0.44144961242918435
+            ],
+            "rotation": [
+              0.0,
+              0.15643446504023087,
+              0.0,
+              0.9876883405951378
+            ]
+          }
+        }
+      },
+      "root": {
+        "position": [
+          0.11618033988749896,
+          0.9900000000000001,
+          0.4490211303259031
+        ],
+        "rotation": [
+          0.0,
+          0.15643446504023087,
+          0.0,
+          0.9876883405951378
+        ]
+      },
+      "timestamp_seconds": 0.06666666666666667
+    }
+  ],
+  "grounding": {
+    "character_velocity": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "floor_height_m": 0.0,
+    "floor_normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "locomotion_state": "unknown"
+  },
+  "samples": [
+    {
+      "character_velocity": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "hmd": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.08,
+              0.02
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "head",
+          "source_joint": "head"
+        },
+        "confidence": 1.0,
+        "role": "head",
+        "transform": {
+          "position": [
+            0.0,
+            1.7000000000000002,
+            0.02
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "valid": true
+      },
+      "left_hand": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "left_hand",
+          "source_joint": "left_hand"
+        },
+        "confidence": 1.0,
+        "role": "left_hand",
+        "transform": {
+          "position": [
+            -0.32,
+            1.2600000000000002,
+            0.18
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "valid": true
+      },
+      "optional_trackers": {},
+      "right_hand": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "right_hand",
+          "source_joint": "right_hand"
+        },
+        "confidence": 1.0,
+        "role": "right_hand",
+        "transform": {
+          "position": [
+            0.3,
+            1.28,
+            0.16
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "valid": true
+      },
+      "timestamp_seconds": 0.0
+    },
+    {
+      "character_velocity": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "hmd": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.08,
+              0.02
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "head",
+          "source_joint": "head"
+        },
+        "confidence": 1.0,
+        "role": "head",
+        "transform": {
+          "position": [
+            0.02,
+            1.6900000000000002,
+            0.06
+          ],
+          "rotation": [
+            0.0,
+            0.043619387365336,
+            0.0,
+            0.9990482215818578
+          ]
+        },
+        "valid": true
+      },
+      "left_hand": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "left_hand",
+          "source_joint": "left_hand"
+        },
+        "confidence": 1.0,
+        "role": "left_hand",
+        "transform": {
+          "position": [
+            -0.3,
+            1.25,
+            0.22
+          ],
+          "rotation": [
+            0.0,
+            0.043619387365336,
+            0.0,
+            0.9990482215818578
+          ]
+        },
+        "valid": true
+      },
+      "optional_trackers": {},
+      "right_hand": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "right_hand",
+          "source_joint": "right_hand"
+        },
+        "confidence": 1.0,
+        "role": "right_hand",
+        "transform": {
+          "position": [
+            0.32,
+            1.27,
+            0.2
+          ],
+          "rotation": [
+            0.0,
+            0.043619387365336,
+            0.0,
+            0.9990482215818578
+          ]
+        },
+        "valid": true
+      },
+      "timestamp_seconds": 0.016666666666666666
+    },
+    {
+      "character_velocity": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "hmd": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.08,
+              0.02
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "head",
+          "source_joint": "head"
+        },
+        "confidence": 1.0,
+        "role": "head",
+        "transform": {
+          "position": [
+            0.05,
+            1.62,
+            0.13999999999999999
+          ],
+          "rotation": [
+            0.0,
+            0.07845909572784494,
+            0.0,
+            0.996917333733128
+          ]
+        },
+        "valid": true
+      },
+      "left_hand": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "left_hand",
+          "source_joint": "left_hand"
+        },
+        "confidence": 1.0,
+        "role": "left_hand",
+        "transform": {
+          "position": [
+            -0.27,
+            1.1800000000000002,
+            0.3
+          ],
+          "rotation": [
+            0.0,
+            0.07845909572784494,
+            0.0,
+            0.996917333733128
+          ]
+        },
+        "valid": true
+      },
+      "optional_trackers": {},
+      "right_hand": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "right_hand",
+          "source_joint": "right_hand"
+        },
+        "confidence": 1.0,
+        "role": "right_hand",
+        "transform": {
+          "position": [
+            0.35,
+            1.2,
+            0.28
+          ],
+          "rotation": [
+            0.0,
+            0.07845909572784494,
+            0.0,
+            0.996917333733128
+          ]
+        },
+        "valid": true
+      },
+      "timestamp_seconds": 0.03333333333333333
+    },
+    {
+      "character_velocity": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "hmd": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.08,
+              0.02
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "head",
+          "source_joint": "head"
+        },
+        "confidence": 1.0,
+        "role": "head",
+        "transform": {
+          "position": [
+            0.08,
+            1.57,
+            0.30000000000000004
+          ],
+          "rotation": [
+            0.0,
+            0.12186934340514748,
+            0.0,
+            0.992546151641322
+          ]
+        },
+        "valid": true
+      },
+      "left_hand": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "left_hand",
+          "source_joint": "left_hand"
+        },
+        "confidence": 1.0,
+        "role": "left_hand",
+        "transform": {
+          "position": [
+            -0.24,
+            1.13,
+            0.46
+          ],
+          "rotation": [
+            0.0,
+            0.12186934340514748,
+            0.0,
+            0.992546151641322
+          ]
+        },
+        "valid": true
+      },
+      "optional_trackers": {},
+      "right_hand": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "right_hand",
+          "source_joint": "right_hand"
+        },
+        "confidence": 1.0,
+        "role": "right_hand",
+        "transform": {
+          "position": [
+            0.38,
+            1.15,
+            0.44000000000000006
+          ],
+          "rotation": [
+            0.0,
+            0.12186934340514748,
+            0.0,
+            0.992546151641322
+          ]
+        },
+        "valid": true
+      },
+      "timestamp_seconds": 0.05
+    },
+    {
+      "character_velocity": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "hmd": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.08,
+              0.02
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "head",
+          "source_joint": "head"
+        },
+        "confidence": 1.0,
+        "role": "head",
+        "transform": {
+          "position": [
+            0.11,
+            1.6600000000000001,
+            0.45
+          ],
+          "rotation": [
+            0.0,
+            0.15643446504023087,
+            0.0,
+            0.9876883405951378
+          ]
+        },
+        "valid": true
+      },
+      "left_hand": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "left_hand",
+          "source_joint": "left_hand"
+        },
+        "confidence": 1.0,
+        "role": "left_hand",
+        "transform": {
+          "position": [
+            -0.21000000000000002,
+            1.2200000000000002,
+            0.61
+          ],
+          "rotation": [
+            0.0,
+            0.15643446504023087,
+            0.0,
+            0.9876883405951378
+          ]
+        },
+        "valid": true
+      },
+      "optional_trackers": {},
+      "right_hand": {
+        "attachment": {
+          "confidence": 1.0,
+          "latency_seconds": 0.0,
+          "local_transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "noise_profile_id": "clean",
+          "role": "right_hand",
+          "source_joint": "right_hand"
+        },
+        "confidence": 1.0,
+        "role": "right_hand",
+        "transform": {
+          "position": [
+            0.41,
+            1.24,
+            0.59
+          ],
+          "rotation": [
+            0.0,
+            0.15643446504023087,
+            0.0,
+            0.9876883405951378
+          ]
+        },
+        "valid": true
+      },
+      "timestamp_seconds": 0.06666666666666667
+    }
+  ],
+  "schema_version": 1
+}

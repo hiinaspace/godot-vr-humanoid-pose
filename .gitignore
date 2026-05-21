@@ -6,6 +6,11 @@
 __pycache__/
 *.py[cod]
 
+# Godot local/editor artifacts.
+godot/.godot/
+godot/.import/
+godot/export_presets.cfg
+
 # Generated validation artifacts.
 validation/cmu_manifest.json
 validation/reports/

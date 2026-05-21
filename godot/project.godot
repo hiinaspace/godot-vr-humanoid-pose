@@ -1,0 +1,15 @@
+; Engine configuration file.
+; Target runtime compatibility: Godot 4.6+.
+
+config_version=5
+
+[application]
+
+config/name="Godot VR Humanoid Pose"
+run/main_scene=""
+config/features=PackedStringArray("4.6")
+config/icon="res://icon.svg"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godot_vr_humanoid_pose/plugin.cfg")
