@@ -50,6 +50,11 @@ class ClipResult:
     mean_right_foot_error_m: float
     mean_reference_error_m: float
     mean_joint_errors_m: dict[str, float]
+    environment_split: str = "unknown"
+    environment_tags: tuple[str, ...] = ()
+    activity_class: str = "unknown"
+    activity_tags: tuple[str, ...] = ()
+    motion_description: str = ""
 
 
 def main(argv: Sequence[str] | None = None) -> int:

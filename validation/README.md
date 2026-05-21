@@ -57,6 +57,11 @@ Run cached validation across clips with stateful estimator resets per clip:
 uv run python -m validation.scripts.run_cached_validation --cache-dir .cache/cmu/parquet/canonical_full --workers 16
 ```
 
+Cached validation reports include aggregate metrics, group summaries by
+`environment_split`, `activity_class`, and their combination, plus worst-clip
+lists for the main reference and foot/pelvis metrics. Use `--top-clips 0` to
+omit worst-clip lists from the JSON summary.
+
 Compare the first Basis-style estimator port against the trivial baseline:
 
 ```powershell

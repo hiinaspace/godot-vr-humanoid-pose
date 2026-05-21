@@ -44,6 +44,19 @@ from validation.vr_pose_validation.types import (
 DEFAULT_CACHE_DIR = Path(".cache/cmu/parquet/canonical")
 DEFAULT_REPORT_PATH = Path("validation/reports/cached_baseline_smoke.json")
 DEFAULT_SYNTHETIC_TRACKER_CONFIG = SyntheticTrackerConfig()
+SUMMARY_METRICS = (
+    "mean_target_error_m",
+    "mean_pelvis_error_m",
+    "mean_left_foot_error_m",
+    "mean_right_foot_error_m",
+    "mean_reference_error_m",
+)
+TOP_CLIP_METRICS = (
+    "mean_reference_error_m",
+    "mean_pelvis_error_m",
+    "mean_left_foot_error_m",
+    "mean_right_foot_error_m",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +73,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--subjects", nargs="*", help="Subject ids such as 07 08 09.")
     parser.add_argument("--max-clips", type=int)
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
+    parser.add_argument(
+        "--top-clips",
+        type=int,
+        default=10,
+        help="Include this many worst clips per summary metric.",
+    )
     parser.add_argument(
         "--environment-split",
         choices=("flat", "nonflat", "unknown"),
@@ -97,6 +116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         estimator_name=args.estimator,
         environment_splits=cast(set[EnvironmentSplit], set(args.environment_split or [])),
         activity_classes=cast(set[ActivityClass], set(args.activity_class or [])),
+        top_clip_count=max(0, args.top_clips),
     )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -116,6 +136,7 @@ def run_cached_validation(
     estimator_name: EstimatorName = "trivial",
     environment_splits: set[EnvironmentSplit] | None = None,
     activity_classes: set[ActivityClass] | None = None,
+    top_clip_count: int = 10,
 ) -> dict[str, object]:
     start = time.perf_counter()
     paths = list_clip_cache_files(cache_dir, subjects or None)
@@ -164,6 +185,8 @@ def run_cached_validation(
             "mean_right_foot_error_m": _mean_column(summary_frame, "mean_right_foot_error_m"),
             "mean_reference_error_m": _mean_column(summary_frame, "mean_reference_error_m"),
             "mean_joint_errors_m": _mean_joint_errors(clip_results),
+            "grouped_metrics": _grouped_metrics(clip_results),
+            "worst_clips": _worst_clips(clip_results, top_clip_count),
         },
         "clips": [asdict(result) for result in clip_results],
     }
@@ -177,8 +200,19 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
     frame_metrics = []
     reference_metrics: list[ReferencePoseMetrics] = []
     frame_count = 0
+    environment_split = "unknown"
+    environment_tags: tuple[str, ...] = ()
+    activity_class = "unknown"
+    activity_tags: tuple[str, ...] = ()
+    motion_description = ""
     cached_frames = iter_cached_pose_frames(Path(task.path))
     for cached_frame in cached_frames:
+        if frame_count == 0:
+            environment_split = cached_frame.environment_split
+            environment_tags = cached_frame.environment_tags
+            activity_class = cached_frame.activity_class
+            activity_tags = cached_frame.activity_tags
+            motion_description = cached_frame.motion_description
         sample = _tracked_sample_from_cached_frame(cached_frame)
         pose = estimator.estimate(sample, calibration, grounding)
         frame_metrics.append(evaluate_frame(pose, sample, grounding.floor_height_m))
@@ -201,6 +235,11 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         mean_right_foot_error_m=cast(float, reference_summary["mean_right_foot_error_m"]),
         mean_reference_error_m=cast(float, reference_summary["mean_reference_error_m"]),
         mean_joint_errors_m=mean_joint_errors_m,
+        environment_split=environment_split,
+        environment_tags=environment_tags,
+        activity_class=activity_class,
+        activity_tags=activity_tags,
+        motion_description=motion_description,
     )
 
 
@@ -258,6 +297,9 @@ def _mean(values: Iterable[float]) -> float:
 def _scalar_clip_result(result: ClipResult) -> dict[str, Any]:
     data = asdict(result)
     data.pop("mean_joint_errors_m", None)
+    data.pop("environment_tags", None)
+    data.pop("activity_tags", None)
+    data.pop("motion_description", None)
     return data
 
 
@@ -271,6 +313,84 @@ def _mean_joint_errors(results: Iterable[ClipResult]) -> dict[str, float]:
             if name in result.mean_joint_errors_m
         )
         for name in joint_names
+    }
+
+
+def _grouped_metrics(results: list[ClipResult]) -> dict[str, list[dict[str, object]]]:
+    return {
+        "environment_split": _group_results(results, ("environment_split",)),
+        "activity_class": _group_results(results, ("activity_class",)),
+        "environment_split_activity_class": _group_results(
+            results,
+            ("environment_split", "activity_class"),
+        ),
+    }
+
+
+def _group_results(
+    results: list[ClipResult],
+    group_fields: tuple[str, ...],
+) -> list[dict[str, object]]:
+    groups: dict[tuple[str, ...], list[ClipResult]] = {}
+    for result in results:
+        key = tuple(str(getattr(result, field)) for field in group_fields)
+        groups.setdefault(key, []).append(result)
+    return [
+        _summarize_result_group(group_fields, key, group_results)
+        for key, group_results in sorted(groups.items())
+    ]
+
+
+def _summarize_result_group(
+    group_fields: tuple[str, ...],
+    key: tuple[str, ...],
+    results: list[ClipResult],
+) -> dict[str, object]:
+    summary: dict[str, object] = {
+        field: value for field, value in zip(group_fields, key, strict=True)
+    }
+    summary.update(
+        {
+            "clips": len(results),
+            "subjects": len({result.subject for result in results}),
+            "source_frames": sum(result.source_frames for result in results),
+            "evaluated_frames": sum(result.evaluated_frames for result in results),
+            "mean_joint_errors_m": _mean_joint_errors(results),
+        }
+    )
+    for metric in SUMMARY_METRICS:
+        summary[metric] = _mean(float(getattr(result, metric)) for result in results)
+    return summary
+
+
+def _worst_clips(
+    results: list[ClipResult],
+    limit: int,
+) -> dict[str, list[dict[str, object]]]:
+    if limit <= 0:
+        return {metric: [] for metric in TOP_CLIP_METRICS}
+    return {
+        metric: [
+            _clip_metric_summary(result, metric)
+            for result in sorted(
+                results,
+                key=lambda clip_result: float(getattr(clip_result, metric)),
+                reverse=True,
+            )[:limit]
+        ]
+        for metric in TOP_CLIP_METRICS
+    }
+
+
+def _clip_metric_summary(result: ClipResult, metric: str) -> dict[str, object]:
+    return {
+        "clip": result.clip,
+        "subject": result.subject,
+        "environment_split": result.environment_split,
+        "activity_class": result.activity_class,
+        "motion_description": result.motion_description,
+        "evaluated_frames": result.evaluated_frames,
+        metric: float(getattr(result, metric)),
     }
 
 
