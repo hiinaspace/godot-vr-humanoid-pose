@@ -137,6 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "stationary_upper_body",
             "locomotion",
             "dance_exercise",
+            "swimming",
             "floor_pose",
             "sports",
             "unknown",
@@ -146,7 +147,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--estimator",
-        choices=("trivial", "planted", "basis"),
+        choices=("trivial", "planted", "basis", "basis_knee_hint"),
         default="trivial",
         help="Estimator implementation to evaluate.",
     )

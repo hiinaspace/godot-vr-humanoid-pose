@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -21,6 +21,7 @@ type ActivityClass = Literal[
     "stationary_upper_body",
     "locomotion",
     "dance_exercise",
+    "swimming",
     "floor_pose",
     "sports",
     "unknown",
@@ -60,6 +61,16 @@ GENERIC_MOTION_DESCRIPTIONS = {
     "no movie",
     "tvd",
 }
+
+SWIMMING_MOTION_KEYWORDS = (
+    "swimming",
+    "back stroke",
+    "breast stroke",
+    "break stroke",
+    "fly stroke",
+)
+SWIMMING_CONTEXTUAL_MOTION_KEYWORDS = ("butterfly", "free style", "freestyle")
+SWIMMING_SUBJECT_KEYWORDS = ("swimming",)
 
 ACTIVITY_KEYWORDS: Mapping[ActivityClass, Mapping[str, tuple[str, ...]]] = {
     "floor_pose": {
@@ -393,10 +404,48 @@ class CmuClipMetadata:
     activity_label_source: str = "missing_description"
 
 
+@dataclass(frozen=True, slots=True)
+class ClipLabelOverride:
+    environment_split: EnvironmentSplit | None = None
+    environment_tags: tuple[str, ...] | None = None
+    label_source: str | None = None
+    activity_class: ActivityClass | None = None
+    activity_tags: tuple[str, ...] | None = None
+    activity_label_source: str | None = None
+
+
+KNOWN_CLIP_LABEL_OVERRIDES: Mapping[str, ClipLabelOverride] = {
+    # Visual review: ground truth appears suspended/floating rather than flat-floor locomotion.
+    "104_17": ClipLabelOverride(
+        environment_split="nonflat",
+        environment_tags=("suspended",),
+        label_source="manual_clip_override",
+    ),
+    "104_18": ClipLabelOverride(
+        environment_split="nonflat",
+        environment_tags=("suspended",),
+        label_source="manual_clip_override",
+    ),
+    # Visual review: ground truth appears to be a sideways T-pose translating through space.
+    "133_25": ClipLabelOverride(
+        environment_split="unknown",
+        environment_tags=("data_issue", "sideways_t_pose"),
+        label_source="manual_clip_override",
+        activity_class="unknown",
+        activity_tags=("parse_issue", "sideways_t_pose"),
+        activity_label_source="manual_clip_override",
+    ),
+}
+
+
 def label_environment(
     motion_description: str,
     subject_description: str = "",
 ) -> tuple[EnvironmentSplit, tuple[str, ...], str]:
+    swimming_tags = _swimming_tags(motion_description, subject_description)
+    if swimming_tags:
+        return "nonflat", swimming_tags, "motion_description"
+
     motion_tags = _nonflat_tags(motion_description)
     if motion_tags:
         return "nonflat", motion_tags, "motion_description"
@@ -417,18 +466,20 @@ def clip_metadata_from_subject_page(subject: str, html: str) -> list[CmuClipMeta
     parser.feed(html)
     subject_description = parser.subject_description
     return [
-        CmuClipMetadata(
-            subject=subject,
-            clip=f"{subject}_{trial:02d}",
-            trial=trial,
-            motion_description=description,
-            subject_description=subject_description,
-            environment_split=split,
-            environment_tags=tags,
-            label_source=label_source,
-            activity_class=activity_class,
-            activity_tags=activity_tags,
-            activity_label_source=activity_label_source,
+        apply_known_clip_label_overrides(
+            CmuClipMetadata(
+                subject=subject,
+                clip=f"{subject}_{trial:02d}",
+                trial=trial,
+                motion_description=description,
+                subject_description=subject_description,
+                environment_split=split,
+                environment_tags=tags,
+                label_source=label_source,
+                activity_class=activity_class,
+                activity_tags=activity_tags,
+                activity_label_source=activity_label_source,
+            )
         )
         for trial, description in parser.trials
         for split, tags, label_source in [label_environment(description, subject_description)]
@@ -443,6 +494,10 @@ def label_activity(
     subject_description: str = "",
 ) -> tuple[ActivityClass, tuple[str, ...], str]:
     normalized_motion = _normalize(motion_description)
+    swimming_tags = _swimming_tags(motion_description, subject_description)
+    if swimming_tags:
+        return "swimming", swimming_tags, "motion_description"
+
     if normalized_motion in GENERIC_MOTION_DESCRIPTIONS:
         subject_class, subject_tags = _activity_match(subject_description)
         if subject_class != "unknown":
@@ -458,6 +513,25 @@ def label_activity(
         return subject_class, subject_tags, "subject_description"
 
     return "unknown", (), "missing_description" if not normalized_motion else "keyword_miss"
+
+
+def apply_known_clip_label_overrides(row: CmuClipMetadata) -> CmuClipMetadata:
+    override = KNOWN_CLIP_LABEL_OVERRIDES.get(row.clip)
+    if override is None:
+        return row
+    return replace(
+        row,
+        environment_split=override.environment_split or row.environment_split,
+        environment_tags=override.environment_tags
+        if override.environment_tags is not None
+        else row.environment_tags,
+        label_source=override.label_source or row.label_source,
+        activity_class=override.activity_class or row.activity_class,
+        activity_tags=override.activity_tags
+        if override.activity_tags is not None
+        else row.activity_tags,
+        activity_label_source=override.activity_label_source or row.activity_label_source,
+    )
 
 
 def fetch_subject_metadata(subject: str, *, timeout_seconds: float = 20.0) -> list[CmuClipMetadata]:
@@ -510,6 +584,14 @@ def write_cmu_metadata(path: Path, metadata: Mapping[str, CmuClipMetadata]) -> N
                 activity_class: {tag: list(keywords) for tag, keywords in tag_keywords.items()}
                 for activity_class, tag_keywords in ACTIVITY_KEYWORDS.items()
             },
+            "swimming_keywords": {
+                "contextual_motion": list(SWIMMING_CONTEXTUAL_MOTION_KEYWORDS),
+                "motion": list(SWIMMING_MOTION_KEYWORDS),
+                "subject": list(SWIMMING_SUBJECT_KEYWORDS),
+            },
+            "clip_overrides": {
+                clip: asdict(override) for clip, override in KNOWN_CLIP_LABEL_OVERRIDES.items()
+            },
             "generic_motion_descriptions": sorted(GENERIC_MOTION_DESCRIPTIONS),
         },
         "clips": [asdict(metadata[clip]) for clip in sorted(metadata, key=_clip_sort_key)],
@@ -558,6 +640,22 @@ def _activity_match(text: str) -> tuple[ActivityClass, tuple[str, ...]]:
         if matched_tags:
             return activity_class, matched_tags
     return "unknown", ()
+
+
+def _swimming_tags(motion_description: str, subject_description: str) -> tuple[str, ...]:
+    normalized_motion = _normalize(motion_description)
+    normalized_subject = _normalize(subject_description)
+    if any(_keyword_matches(normalized_motion, keyword) for keyword in SWIMMING_MOTION_KEYWORDS):
+        return ("swimming",)
+    subject_is_swimming = any(
+        _keyword_matches(normalized_subject, keyword) for keyword in SWIMMING_SUBJECT_KEYWORDS
+    )
+    if subject_is_swimming and any(
+        _keyword_matches(normalized_motion, keyword)
+        for keyword in SWIMMING_CONTEXTUAL_MOTION_KEYWORDS
+    ):
+        return ("swimming",)
+    return ()
 
 
 def _normalize(text: str) -> str:
@@ -623,6 +721,8 @@ def _activity_class(value: object) -> ActivityClass:
         return "locomotion"
     if value == "dance_exercise":
         return "dance_exercise"
+    if value == "swimming":
+        return "swimming"
     if value == "floor_pose":
         return "floor_pose"
     if value == "sports":

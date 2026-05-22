@@ -226,7 +226,7 @@ def _posture_subset(
         return "floor_reclined_ood"
     if activity_class == "sitting" or sitting_pct >= 30.0:
         return "sitting"
-    if activity_class in {"dance_exercise", "sports"}:
+    if activity_class in {"dance_exercise", "sports", "swimming"}:
         return "dynamic_ood"
     if upright_like_pct >= 60.0:
         if (

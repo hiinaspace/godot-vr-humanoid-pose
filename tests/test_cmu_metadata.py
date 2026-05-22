@@ -25,6 +25,20 @@ GENERIC_SUBJECT_HTML = """
 </table>
 """
 
+SPASTIC_SUBJECT_HTML = """
+<table>
+<tr><td>Subject #104 (motion) file index</td></tr>
+<tr><td></td><td>18</td><td>SpasticStop</td></tr>
+</table>
+"""
+
+MOTORCYCLE_SUBJECT_HTML = """
+<table>
+<tr><td>Subject #133 (Baby Styled Walk) file index</td></tr>
+<tr><td></td><td>25</td><td>Motorcycle</td></tr>
+</table>
+"""
+
 
 def test_label_environment_marks_motion_description_nonflat() -> None:
     split, tags, source = label_environment("Walking up and down stairs")
@@ -50,6 +64,38 @@ def test_label_activity_marks_sitting_before_locomotion() -> None:
     assert source == "motion_description"
 
 
+def test_label_activity_marks_swimming_as_out_of_distribution_class() -> None:
+    activity_class, tags, source = label_activity("Breast Stroke", "Swimming")
+
+    assert activity_class == "swimming"
+    assert tags == ("swimming",)
+    assert source == "motion_description"
+
+
+def test_label_environment_marks_swimming_as_nonflat_out_of_distribution() -> None:
+    split, tags, source = label_environment("Free Style", "Swimming")
+
+    assert split == "nonflat"
+    assert tags == ("swimming",)
+    assert source == "motion_description"
+
+
+def test_swimming_context_does_not_relabel_unrelated_free_style_motion() -> None:
+    split, _environment_tags, _environment_source = label_environment(
+        "basketball - low, fast free style dribble, dribble through legs",
+        "dribble, shoot basketball",
+    )
+    activity_class, tags, source = label_activity(
+        "basketball - low, fast free style dribble, dribble through legs",
+        "dribble, shoot basketball",
+    )
+
+    assert split == "flat"
+    assert activity_class == "sports"
+    assert tags == ("ball_sport",)
+    assert source == "motion_description"
+
+
 def test_label_activity_handles_cmu_camel_case_and_digit_suffixes() -> None:
     assert label_activity("RegularWalk8")[0] == "locomotion"
     assert label_activity("GetUpFaceDown")[0] == "floor_pose"
@@ -64,6 +110,29 @@ def test_parse_subject_page_labels_flat_and_nonflat_trials() -> None:
     assert by_clip["114_07"].activity_class == "locomotion"
     assert by_clip["114_13"].environment_split == "flat"
     assert by_clip["114_13"].activity_class == "locomotion"
+
+
+def test_parse_subject_page_applies_spastic_stop_ood_clip_override() -> None:
+    rows = clip_metadata_from_subject_page("104", SPASTIC_SUBJECT_HTML)
+
+    row = rows[0]
+    assert row.clip == "104_18"
+    assert row.environment_split == "nonflat"
+    assert row.environment_tags == ("suspended",)
+    assert row.label_source == "manual_clip_override"
+    assert row.activity_class == "locomotion"
+
+
+def test_parse_subject_page_applies_motorcycle_data_issue_clip_override() -> None:
+    rows = clip_metadata_from_subject_page("133", MOTORCYCLE_SUBJECT_HTML)
+
+    row = rows[0]
+    assert row.clip == "133_25"
+    assert row.environment_split == "unknown"
+    assert row.environment_tags == ("data_issue", "sideways_t_pose")
+    assert row.activity_class == "unknown"
+    assert row.activity_tags == ("parse_issue", "sideways_t_pose")
+    assert row.activity_label_source == "manual_clip_override"
 
 
 def test_generic_motion_description_can_inherit_subject_label() -> None:
@@ -81,3 +150,11 @@ def test_committed_cmu_metadata_file_is_readable() -> None:
     assert metadata["01_01"].environment_split == "nonflat"
     assert metadata["01_01"].environment_tags == ("playground",)
     assert metadata["01_01"].activity_class == "locomotion"
+    assert metadata["126_04"].environment_split == "nonflat"
+    assert metadata["126_04"].environment_tags == ("swimming",)
+    assert metadata["126_04"].activity_class == "swimming"
+    assert metadata["104_18"].environment_split == "nonflat"
+    assert metadata["104_18"].environment_tags == ("suspended",)
+    assert metadata["133_25"].environment_split == "unknown"
+    assert metadata["133_25"].environment_tags == ("data_issue", "sideways_t_pose")
+    assert metadata["133_25"].activity_class == "unknown"

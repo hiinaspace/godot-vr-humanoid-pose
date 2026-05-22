@@ -10,6 +10,11 @@ run/main_scene=""
 config/features=PackedStringArray("4.6")
 config/icon="res://icon.svg"
 
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=1200
+
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/godot_vr_humanoid_pose/plugin.cfg")

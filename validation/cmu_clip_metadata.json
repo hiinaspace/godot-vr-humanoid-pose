@@ -16064,14 +16064,16 @@
       "trial": 1
     },
     {
-      "activity_class": "dance_exercise",
+      "activity_class": "swimming",
       "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "79_02",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "swimming",
       "subject": "79",
@@ -16079,14 +16081,16 @@
       "trial": 2
     },
     {
-      "activity_class": "dance_exercise",
+      "activity_class": "swimming",
       "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "79_03",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "swimming",
       "subject": "79",
@@ -18543,14 +18547,16 @@
       "trial": 71
     },
     {
-      "activity_class": "dance_exercise",
+      "activity_class": "swimming",
       "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "80_72",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "swimming",
       "subject": "80",
@@ -23998,9 +24004,11 @@
         "turn"
       ],
       "clip": "104_17",
-      "environment_split": "flat",
-      "environment_tags": [],
-      "label_source": "motion_description",
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "suspended"
+      ],
+      "label_source": "manual_clip_override",
       "motion_description": "SpasticStop",
       "subject": "104",
       "subject_description": "motion",
@@ -24013,9 +24021,11 @@
         "turn"
       ],
       "clip": "104_18",
-      "environment_split": "flat",
-      "environment_tags": [],
-      "label_source": "motion_description",
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "suspended"
+      ],
+      "label_source": "manual_clip_override",
       "motion_description": "SpasticStop",
       "subject": "104",
       "subject_description": "motion",
@@ -31077,14 +31087,16 @@
       "trial": 13
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "125_01",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Breast Stroke",
       "subject": "125",
@@ -31092,14 +31104,16 @@
       "trial": 1
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "125_02",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Breast Stroke",
       "subject": "125",
@@ -31107,14 +31121,16 @@
       "trial": 2
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "125_03",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Break Stroke",
       "subject": "125",
@@ -31122,14 +31138,16 @@
       "trial": 3
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "125_04",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Breast Stroke",
       "subject": "125",
@@ -31137,14 +31155,16 @@
       "trial": 4
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "125_05",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Butterfly",
       "subject": "125",
@@ -31152,14 +31172,16 @@
       "trial": 5
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "125_06",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Free Style",
       "subject": "125",
@@ -31182,14 +31204,16 @@
       "trial": 7
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_01",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Back Stroke",
       "subject": "126",
@@ -31197,14 +31221,16 @@
       "trial": 1
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_02",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Back Stroke",
       "subject": "126",
@@ -31212,14 +31238,16 @@
       "trial": 2
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_03",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Breast Stroke",
       "subject": "126",
@@ -31227,14 +31255,16 @@
       "trial": 3
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_04",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Breast Stroke",
       "subject": "126",
@@ -31242,14 +31272,16 @@
       "trial": 4
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_05",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Breast Stroke",
       "subject": "126",
@@ -31257,14 +31289,16 @@
       "trial": 5
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_06",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Fly Stroke",
       "subject": "126",
@@ -31272,14 +31306,16 @@
       "trial": 6
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_07",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Fly Stroke",
       "subject": "126",
@@ -31287,14 +31323,16 @@
       "trial": 7
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_08",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Fly Stroke",
       "subject": "126",
@@ -31302,14 +31340,16 @@
       "trial": 8
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_09",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Fly Stroke",
       "subject": "126",
@@ -31317,14 +31357,16 @@
       "trial": 9
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_10",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Free Style",
       "subject": "126",
@@ -31332,14 +31374,16 @@
       "trial": 10
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_11",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Free Style",
       "subject": "126",
@@ -31347,14 +31391,16 @@
       "trial": 11
     },
     {
-      "activity_class": "dance_exercise",
-      "activity_label_source": "subject_description",
+      "activity_class": "swimming",
+      "activity_label_source": "motion_description",
       "activity_tags": [
-        "exercise"
+        "swimming"
       ],
       "clip": "126_12",
-      "environment_split": "flat",
-      "environment_tags": [],
+      "environment_split": "nonflat",
+      "environment_tags": [
+        "swimming"
+      ],
       "label_source": "motion_description",
       "motion_description": "Free Style",
       "subject": "126",
@@ -33585,15 +33631,19 @@
       "trial": 24
     },
     {
-      "activity_class": "sitting",
-      "activity_label_source": "motion_description",
+      "activity_class": "unknown",
+      "activity_label_source": "manual_clip_override",
       "activity_tags": [
-        "vehicle"
+        "parse_issue",
+        "sideways_t_pose"
       ],
       "clip": "133_25",
-      "environment_split": "flat",
-      "environment_tags": [],
-      "label_source": "motion_description",
+      "environment_split": "unknown",
+      "environment_tags": [
+        "data_issue",
+        "sideways_t_pose"
+      ],
+      "label_source": "manual_clip_override",
       "motion_description": "Motorcycle",
       "subject": "133",
       "subject_description": "Baby Styled Walk",
@@ -38111,7 +38161,7 @@
       "trial": 42
     }
   ],
-  "generated_at_utc": "2026-05-21T17:09:32.828917+00:00",
+  "generated_at_utc": "2026-05-22T04:56:16.716270+00:00",
   "label_rules": {
     "activity_keywords": {
       "dance_exercise": {
@@ -38508,6 +38558,42 @@
         ]
       }
     },
+    "clip_overrides": {
+      "104_17": {
+        "activity_class": null,
+        "activity_label_source": null,
+        "activity_tags": null,
+        "environment_split": "nonflat",
+        "environment_tags": [
+          "suspended"
+        ],
+        "label_source": "manual_clip_override"
+      },
+      "104_18": {
+        "activity_class": null,
+        "activity_label_source": null,
+        "activity_tags": null,
+        "environment_split": "nonflat",
+        "environment_tags": [
+          "suspended"
+        ],
+        "label_source": "manual_clip_override"
+      },
+      "133_25": {
+        "activity_class": "unknown",
+        "activity_label_source": "manual_clip_override",
+        "activity_tags": [
+          "parse_issue",
+          "sideways_t_pose"
+        ],
+        "environment_split": "unknown",
+        "environment_tags": [
+          "data_issue",
+          "sideways_t_pose"
+        ],
+        "label_source": "manual_clip_override"
+      }
+    },
     "generic_motion_descriptions": [
       "",
       "bad amc",
@@ -38553,6 +38639,23 @@
         "ramp",
         "incline",
         "decline"
+      ]
+    },
+    "swimming_keywords": {
+      "contextual_motion": [
+        "butterfly",
+        "free style",
+        "freestyle"
+      ],
+      "motion": [
+        "swimming",
+        "back stroke",
+        "breast stroke",
+        "break stroke",
+        "fly stroke"
+      ],
+      "subject": [
+        "swimming"
       ]
     }
   },

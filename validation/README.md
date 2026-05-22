@@ -49,7 +49,7 @@ knees, and feet. Rebuild the cache after changing that joint set or clip metadat
 When `validation/cmu_clip_metadata.json` exists, cache rows include `environment_split`
 labels: `flat`, `nonflat`, or `unknown`, plus deterministic `activity_class`
 labels such as `idle_standing`, `sitting`, `stationary_upper_body`, `locomotion`,
-`dance_exercise`, `floor_pose`, `sports`, or `unknown`.
+`dance_exercise`, `swimming`, `floor_pose`, `sports`, or `unknown`.
 
 Run cached validation across clips with stateful estimator resets per clip:
 

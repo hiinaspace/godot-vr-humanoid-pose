@@ -164,7 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-frames-per-clip", type=int)
     parser.add_argument(
         "--estimator",
-        choices=("trivial", "planted", "basis"),
+        choices=("trivial", "planted", "basis", "basis_knee_hint"),
         default="trivial",
         help="Estimator implementation to evaluate.",
     )

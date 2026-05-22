@@ -19,7 +19,7 @@ from validation.vr_pose_validation.types import (
     TrackedPoseSample,
 )
 
-type EstimatorName = Literal["trivial", "planted", "basis"]
+type EstimatorName = Literal["trivial", "planted", "basis", "basis_knee_hint"]
 
 __all__ = [
     "BasisEstimatorSettings",
@@ -124,4 +124,6 @@ def create_estimator(name: EstimatorName) -> PoseEstimator:
         return PlantedFeetBaselineEstimator()
     if name == "basis":
         return BasisPortEstimator()
+    if name == "basis_knee_hint":
+        return BasisPortEstimator(BasisEstimatorSettings(knee_hint_enabled=True))
     raise ValueError(f"Unknown estimator: {name}")

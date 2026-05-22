@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from pytest import approx
 
-from validation.vr_pose_validation.baseline import BasisEstimatorSettings, BasisPortEstimator
+from validation.vr_pose_validation.baseline import (
+    BasisEstimatorSettings,
+    BasisPortEstimator,
+    create_estimator,
+)
 from validation.vr_pose_validation.geometry import (
     Transform,
     distance,
+    dot,
     look_rotation,
     normalize,
 )
@@ -33,6 +38,30 @@ def _sample_with_head(head_position: tuple[float, float, float]) -> TrackedPoseS
             )
         ]
     )[0]
+
+
+def _manual_sample(
+    head_position: tuple[float, float, float],
+    *,
+    timestamp_seconds: float,
+    forward: tuple[float, float, float] = (0.0, 0.0, 1.0),
+) -> TrackedPoseSample:
+    x, _, z = head_position
+    return TrackedPoseSample(
+        timestamp_seconds=timestamp_seconds,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(position=head_position, rotation=look_rotation(forward)),
+        ),
+        left_hand=TrackerState(
+            role="left_hand",
+            transform=Transform(position=(x + 0.3, 1.2, z + 0.2)),
+        ),
+        right_hand=TrackerState(
+            role="right_hand",
+            transform=Transform(position=(x - 0.3, 1.2, z + 0.2)),
+        ),
+    )
 
 
 def test_basis_virtual_spine_uses_source_head_and_forward_bias() -> None:
@@ -276,3 +305,46 @@ def test_basis_outputs_two_bone_limb_joints() -> None:
         < pose.joints["left_knee"].transform.position[1]
         < pose.joints["hips"].transform.position[1]
     )
+
+
+def test_basis_knee_hint_factory_isolated_from_default_basis() -> None:
+    default = create_estimator("basis")
+    experiment = create_estimator("basis_knee_hint")
+
+    assert isinstance(default, BasisPortEstimator)
+    assert isinstance(experiment, BasisPortEstimator)
+    assert not default.settings.knee_hint_enabled
+    assert experiment.settings.knee_hint_enabled
+
+
+def test_basis_knee_hint_smooths_across_yaw_changes() -> None:
+    estimator = BasisPortEstimator(
+        BasisEstimatorSettings(
+            knee_hint_enabled=True,
+            knee_hint_lerp_speed=1.0,
+            support_hips_xz_follow_blend=0.0,
+        )
+    )
+    calibration = AvatarCalibration(human_height_m=2.0, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.0), timestamp_seconds=0.0),
+        calibration,
+        grounding,
+    )
+    first_hint = estimator._foot_states["left_foot"].filtered_knee_hint
+    estimator.estimate(
+        _manual_sample(
+            (0.0, 1.6, 0.0),
+            timestamp_seconds=1.0 / 120.0,
+            forward=(1.0, 0.0, 0.0),
+        ),
+        calibration,
+        grounding,
+    )
+    second_hint = estimator._foot_states["left_foot"].filtered_knee_hint
+
+    assert first_hint is not None
+    assert second_hint is not None
+    assert dot(first_hint, second_hint) > 0.9

@@ -272,6 +272,8 @@ def _activity_class_from_columns(columns: CacheColumns, row_index: int) -> Activ
         return "locomotion"
     if value == "dance_exercise":
         return "dance_exercise"
+    if value == "swimming":
+        return "swimming"
     if value == "floor_pose":
         return "floor_pose"
     if value == "sports":

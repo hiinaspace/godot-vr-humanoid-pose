@@ -76,6 +76,9 @@ class BasisEstimatorSettings:
     step_duration_s: float = 0.18
     step_lift_height_m: float = 0.06
     planted_foot_confidence: float = 0.75
+    knee_hint_enabled: bool = False
+    knee_hint_lateral_weight: float = 0.12
+    knee_hint_lerp_speed: float = 20.0
     arm_bend_lookup_blend: float = 0.0
     shoulder_reach_engage_ratio: float = 0.7
     shoulder_elevation_gain_m: float = 0.05
@@ -110,6 +113,7 @@ class _FootState:
     previous_timestamp_seconds: float | None = None
     swing_start_position: Vector3 | None = None
     swing_start_time_seconds: float | None = None
+    filtered_knee_hint: Vector3 | None = None
     planted: bool = False
     phase: FootPhase = "unplanted"
 
@@ -350,7 +354,7 @@ class BasisPortEstimator:
                 position=self._estimate_knee(
                     left_hip,
                     left_foot.position,
-                    forward,
+                    self._knee_bend_hint("left_foot", forward, right, -1.0, dt),
                     calibration,
                 )
             ),
@@ -361,7 +365,7 @@ class BasisPortEstimator:
                 position=self._estimate_knee(
                     right_hip,
                     right_foot.position,
-                    forward,
+                    self._knee_bend_hint("right_foot", forward, right, 1.0, dt),
                     calibration,
                 )
             ),
@@ -612,6 +616,37 @@ class BasisPortEstimator:
         )
         return add(hips_position, scale(right, side * hip_width * 0.5))
 
+    def _knee_bend_hint(
+        self,
+        foot_name: str,
+        forward: Vector3,
+        right: Vector3,
+        side: float,
+        dt: float,
+    ) -> Vector3:
+        if not self.settings.knee_hint_enabled:
+            return forward
+
+        raw_hint = normalize(
+            add(
+                forward,
+                scale(right, side * self.settings.knee_hint_lateral_weight),
+            ),
+            fallback=forward,
+        )
+        state = self._foot_states.get(foot_name)
+        if state is None:
+            return raw_hint
+        if state.filtered_knee_hint is None:
+            state.filtered_knee_hint = raw_hint
+            return raw_hint
+        state.filtered_knee_hint = _smooth_direction(
+            state.filtered_knee_hint,
+            raw_hint,
+            _exp_alpha(self.settings.knee_hint_lerp_speed, dt),
+        )
+        return state.filtered_knee_hint
+
     def _estimate_knee(
         self,
         hip_position: Vector3,
@@ -824,6 +859,10 @@ def _exp_alpha(speed: float, dt: float) -> float:
 
 def _smooth_normal(current: Vector3, target: Vector3, alpha: float) -> Vector3:
     return normalize(lerp(current, target, alpha), fallback=WORLD_UP)
+
+
+def _smooth_direction(current: Vector3, target: Vector3, alpha: float) -> Vector3:
+    return normalize(lerp(current, target, alpha), fallback=target)
 
 
 def _smooth_rotation(
