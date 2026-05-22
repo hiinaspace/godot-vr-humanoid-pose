@@ -48,9 +48,9 @@ def render_report(report_path: Path, output_path: Path) -> None:
     )
     _plot_group_metric(
         axes[1][0],
-        grouped.get("activity_class", []),
-        "activity_class",
-        "By Activity",
+        grouped.get("posture_subset", []) or grouped.get("activity_class", []),
+        "posture_subset" if grouped.get("posture_subset") else "activity_class",
+        "By Posture Slice" if grouped.get("posture_subset") else "By Activity",
     )
     _plot_clip_scatter(axes[1][1], clips)
     _plot_worst_clips(
@@ -247,7 +247,8 @@ def _plot_worst_clips(
         (
             f"{clip.get('clip', 'unknown')} | "
             f"{clip.get('environment_split', '?')} | "
-            f"{clip.get('activity_class', '?')}"
+            f"{clip.get('activity_class', '?')} | "
+            f"{clip.get('posture_subset', '?')}"
         )
         for clip in clips
     ]

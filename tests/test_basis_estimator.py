@@ -3,7 +3,12 @@ from __future__ import annotations
 from pytest import approx
 
 from validation.vr_pose_validation.baseline import BasisEstimatorSettings, BasisPortEstimator
-from validation.vr_pose_validation.geometry import Transform
+from validation.vr_pose_validation.geometry import (
+    Transform,
+    distance,
+    look_rotation,
+    normalize,
+)
 from validation.vr_pose_validation.synthetic_trackers import (
     generate_three_point_samples,
     pose_frame_from_positions,
@@ -47,6 +52,7 @@ def test_basis_virtual_spine_uses_source_head_and_forward_bias() -> None:
     )
 
     assert pose.joints["head"].transform.position == sample.hmd.transform.position
+    assert pose.joints["neck"].transform.position == approx((0.0, 1.52, 0.0))
     assert pose.joints["hips"].transform.position == approx((0.0, 0.92, 0.02))
     assert pose.joints["chest"].transform.position == approx((0.0, 1.34, 0.006))
     assert pose.joints["spine"].transform.position == approx((0.0, 1.14, 0.0126666667))
@@ -91,14 +97,114 @@ def test_basis_virtual_spine_blends_optional_pelvis_tracker_xz_only() -> None:
         optional_trackers={
             "pelvis": TrackerState(
                 role="pelvis",
-                transform=Transform(position=(1.0, 0.2, 2.0)),
+                transform=Transform(position=(0.1, 0.2, 0.2)),
             )
         },
     )
 
     pose = estimator.estimate(sample, AvatarCalibration(human_height_m=2.0), GroundingContext())
 
-    assert pose.joints["hips"].transform.position == approx((0.5, 1.0, 1.0))
+    assert pose.joints["hips"].transform.position == approx((0.05, 1.0, 0.1))
+
+
+def test_basis_virtual_spine_can_lean_against_planted_support() -> None:
+    estimator = BasisPortEstimator(
+        BasisEstimatorSettings(
+            head_to_hips_ratio=0.3,
+            hips_forward_bias_m=0.0,
+            stance_width_ratio=0.2,
+            support_hips_xz_follow_blend=1.0,
+            max_torso_lean_degrees=45.0,
+        )
+    )
+    calibration = AvatarCalibration(human_height_m=2.0, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    estimator.estimate(_sample_with_head((0.0, 1.6, 0.0)), calibration, grounding)
+    leaned = estimator.estimate(_sample_with_head((0.0, 1.6, 0.2)), calibration, grounding)
+
+    assert leaned.joints["hips"].transform.position[2] < 0.1
+    assert (
+        leaned.joints["chest"].transform.position[2] > leaned.joints["hips"].transform.position[2]
+    )
+    assert (
+        leaned.joints["chest"].transform.position[2] < leaned.joints["neck"].transform.position[2]
+    )
+
+
+def test_basis_virtual_spine_places_neck_from_pitched_head_rotation() -> None:
+    head_rotation = look_rotation(normalize((0.0, -0.4, 1.0)))
+    sample = _sample_with_head((0.0, 1.6, 0.0))
+    sample = TrackedPoseSample(
+        timestamp_seconds=sample.timestamp_seconds,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(position=(0.0, 1.6, 0.0), rotation=head_rotation),
+        ),
+        left_hand=sample.left_hand,
+        right_hand=sample.right_hand,
+    )
+
+    pose = BasisPortEstimator().estimate(
+        sample,
+        AvatarCalibration(human_height_m=2.0),
+        GroundingContext(),
+    )
+
+    assert pose.joints["neck"].transform.position[1] < pose.joints["head"].transform.position[1]
+    assert pose.joints["neck"].transform.position[2] < pose.joints["head"].transform.position[2]
+
+
+def test_basis_body_right_matches_canonical_forward_convention() -> None:
+    pose = BasisPortEstimator().estimate(
+        _sample_with_head((0.0, 1.6, 0.0)),
+        AvatarCalibration(human_height_m=1.8),
+        GroundingContext(),
+    )
+
+    assert (
+        pose.joints["left_shoulder"].transform.position[0]
+        > pose.joints["right_shoulder"].transform.position[0]
+    )
+
+
+def test_basis_body_forward_flips_when_controllers_would_cross_arms() -> None:
+    sample = TrackedPoseSample(
+        timestamp_seconds=0.0,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(
+                position=(0.0, 1.6, 0.0),
+                rotation=look_rotation(normalize((0.0, -0.4, -1.0))),
+            ),
+        ),
+        left_hand=TrackerState(
+            role="left_hand",
+            transform=Transform(position=(0.55, 1.25, 0.0)),
+        ),
+        right_hand=TrackerState(
+            role="right_hand",
+            transform=Transform(position=(-0.55, 1.25, 0.0)),
+        ),
+    )
+
+    pose = BasisPortEstimator().estimate(
+        sample,
+        AvatarCalibration(human_height_m=1.8),
+        GroundingContext(),
+    )
+    left_shoulder = pose.joints["left_shoulder"].transform.position
+    right_shoulder = pose.joints["right_shoulder"].transform.position
+
+    assert left_shoulder[0] > right_shoulder[0]
+    assert distance(left_shoulder, sample.left_hand.transform.position) < distance(
+        left_shoulder,
+        sample.right_hand.transform.position,
+    )
+    assert distance(right_shoulder, sample.right_hand.transform.position) < distance(
+        right_shoulder,
+        sample.left_hand.transform.position,
+    )
 
 
 def test_basis_sticky_feet_hold_until_anchor_stretch_exceeds_limit() -> None:
@@ -163,6 +269,7 @@ def test_basis_outputs_two_bone_limb_joints() -> None:
         "right_elbow",
         "left_knee",
         "right_knee",
+        "neck",
     }
     assert (
         pose.joints["left_foot"].transform.position[1]

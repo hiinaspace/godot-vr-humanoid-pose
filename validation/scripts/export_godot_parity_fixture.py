@@ -39,7 +39,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     fixture = build_fixture()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(fixture, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    args.output.write_bytes((json.dumps(fixture, indent=2, sort_keys=True) + "\n").encode("utf-8"))
     print(f"Wrote {args.output}")
     return 0
 

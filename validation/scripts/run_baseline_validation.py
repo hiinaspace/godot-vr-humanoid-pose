@@ -23,11 +23,13 @@ from validation.vr_pose_validation.cmu_fk import (
     iter_cmu_pose_frames,
 )
 from validation.vr_pose_validation.metrics import (
+    FLEXION_SUMMARY_FIELDS,
     REFERENCE_ERROR_DISTRIBUTION_FIELDS,
     TEMPORAL_SUMMARY_FIELDS,
     ReferencePoseMetrics,
     evaluate_frame,
     evaluate_reference_pose,
+    summarize_joint_flexion_sequence,
     summarize_reference_error_distribution,
     summarize_reference_errors,
     summarize_target_errors,
@@ -113,6 +115,42 @@ class ClipResult:
     activity_class: str = "unknown"
     activity_tags: tuple[str, ...] = ()
     motion_description: str = ""
+    mean_left_elbow_flexion_error_deg: float = 0.0
+    mean_right_elbow_flexion_error_deg: float = 0.0
+    mean_elbow_flexion_error_deg: float = 0.0
+    mean_left_knee_flexion_error_deg: float = 0.0
+    mean_right_knee_flexion_error_deg: float = 0.0
+    mean_knee_flexion_error_deg: float = 0.0
+    mean_joint_flexion_error_deg: float = 0.0
+    pct_left_elbow_flexion_over_limit: float = 0.0
+    pct_right_elbow_flexion_over_limit: float = 0.0
+    pct_elbow_flexion_over_limit: float = 0.0
+    pct_left_knee_flexion_over_limit: float = 0.0
+    pct_right_knee_flexion_over_limit: float = 0.0
+    pct_knee_flexion_over_limit: float = 0.0
+    pct_joint_flexion_over_limit: float = 0.0
+    posture_class: str = "unknown"
+    posture_subset: str = "unknown_ood"
+    posture_vr_candidate: bool = False
+    posture_frame_count: int = 0
+    posture_upright_frames: int = 0
+    posture_crouched_frames: int = 0
+    posture_sitting_frames: int = 0
+    posture_reclined_frames: int = 0
+    posture_floor_reclined_frames: int = 0
+    posture_unknown_frames: int = 0
+    posture_upright_pct: float = 0.0
+    posture_crouched_pct: float = 0.0
+    posture_sitting_pct: float = 0.0
+    posture_reclined_pct: float = 0.0
+    posture_floor_reclined_pct: float = 0.0
+    posture_unknown_pct: float = 0.0
+    mean_head_height_m: float = 0.0
+    mean_hip_height_m: float = 0.0
+    mean_torso_verticality: float = 0.0
+    hip_horizontal_displacement_m: float = 0.0
+    hip_horizontal_path_m: float = 0.0
+    mean_hip_horizontal_speed_m_per_s: float = 0.0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -215,6 +253,10 @@ def run_validation(
             reference_summary = summarize_reference_errors(reference_metrics)
             tail_summary = summarize_reference_error_distribution(reference_metrics)
             temporal_summary = summarize_temporal_reference_sequence(
+                estimated_poses,
+                canonical_frames,
+            )
+            flexion_summary = summarize_joint_flexion_sequence(
                 estimated_poses,
                 canonical_frames,
             )
@@ -362,6 +404,36 @@ def run_validation(
                         "mean_feet_estimated_jerk_m_per_s3"
                     ],
                     mean_joint_errors_m=mean_joint_errors_m,
+                    mean_left_elbow_flexion_error_deg=flexion_summary[
+                        "mean_left_elbow_flexion_error_deg"
+                    ],
+                    mean_right_elbow_flexion_error_deg=flexion_summary[
+                        "mean_right_elbow_flexion_error_deg"
+                    ],
+                    mean_elbow_flexion_error_deg=flexion_summary["mean_elbow_flexion_error_deg"],
+                    mean_left_knee_flexion_error_deg=flexion_summary[
+                        "mean_left_knee_flexion_error_deg"
+                    ],
+                    mean_right_knee_flexion_error_deg=flexion_summary[
+                        "mean_right_knee_flexion_error_deg"
+                    ],
+                    mean_knee_flexion_error_deg=flexion_summary["mean_knee_flexion_error_deg"],
+                    mean_joint_flexion_error_deg=flexion_summary["mean_joint_flexion_error_deg"],
+                    pct_left_elbow_flexion_over_limit=flexion_summary[
+                        "pct_left_elbow_flexion_over_limit"
+                    ],
+                    pct_right_elbow_flexion_over_limit=flexion_summary[
+                        "pct_right_elbow_flexion_over_limit"
+                    ],
+                    pct_elbow_flexion_over_limit=flexion_summary["pct_elbow_flexion_over_limit"],
+                    pct_left_knee_flexion_over_limit=flexion_summary[
+                        "pct_left_knee_flexion_over_limit"
+                    ],
+                    pct_right_knee_flexion_over_limit=flexion_summary[
+                        "pct_right_knee_flexion_over_limit"
+                    ],
+                    pct_knee_flexion_over_limit=flexion_summary["pct_knee_flexion_over_limit"],
+                    pct_joint_flexion_over_limit=flexion_summary["pct_joint_flexion_over_limit"],
                 )
             )
 
@@ -411,7 +483,11 @@ def run_validation(
         "mean_reference_error_m": _mean(result.mean_reference_error_m for result in clip_results),
         "mean_joint_errors_m": _mean_joint_errors(clip_results),
     }
-    for metric in (*REFERENCE_ERROR_DISTRIBUTION_FIELDS, *TEMPORAL_SUMMARY_FIELDS):
+    for metric in (
+        *REFERENCE_ERROR_DISTRIBUTION_FIELDS,
+        *TEMPORAL_SUMMARY_FIELDS,
+        *FLEXION_SUMMARY_FIELDS,
+    ):
         summary[metric] = _mean(float(getattr(result, metric)) for result in clip_results)
 
     return {

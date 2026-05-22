@@ -19,6 +19,7 @@ from validation.vr_pose_validation.baseline import EstimatorName, create_estimat
 from validation.vr_pose_validation.cmu_metadata import ActivityClass, EnvironmentSplit
 from validation.vr_pose_validation.geometry import Transform, add
 from validation.vr_pose_validation.metrics import (
+    FLEXION_SUMMARY_FIELDS,
     REFERENCE_ERROR_DISTRIBUTION_FIELDS,
     TEMPORAL_SUMMARY_FIELDS,
     ReferencePoseMetrics,
@@ -26,6 +27,7 @@ from validation.vr_pose_validation.metrics import (
     evaluate_frame,
     evaluate_reference_pose,
     infer_reference_floor_height,
+    summarize_joint_flexion_sequence,
     summarize_reference_error_distribution,
     summarize_reference_errors,
     summarize_target_errors,
@@ -38,7 +40,11 @@ from validation.vr_pose_validation.parquet_cache import (
     iter_cached_pose_frames,
     list_clip_cache_files,
 )
-from validation.vr_pose_validation.synthetic_trackers import SyntheticTrackerConfig
+from validation.vr_pose_validation.posture import summarize_reference_posture
+from validation.vr_pose_validation.synthetic_trackers import (
+    SyntheticTrackerConfig,
+    head_tracker_rotation_from_pose_frame,
+)
 from validation.vr_pose_validation.types import (
     AvatarCalibration,
     GroundingContext,
@@ -66,6 +72,7 @@ SUMMARY_METRICS = (
     "mean_reference_error_m",
     *REFERENCE_ERROR_DISTRIBUTION_FIELDS,
     *TEMPORAL_SUMMARY_FIELDS,
+    *FLEXION_SUMMARY_FIELDS,
     "mean_contact_foot_error_m",
     "mean_contact_slip_m_per_s",
 )
@@ -85,6 +92,12 @@ TOP_CLIP_METRICS = (
     "mean_joint_velocity_error_m_per_s",
     "mean_joint_acceleration_error_m_per_s2",
     "mean_joint_estimated_jerk_m_per_s3",
+    "mean_elbow_flexion_error_deg",
+    "mean_knee_flexion_error_deg",
+    "mean_joint_flexion_error_deg",
+    "pct_elbow_flexion_over_limit",
+    "pct_knee_flexion_over_limit",
+    "pct_joint_flexion_over_limit",
     "mean_contact_foot_error_m",
     "mean_contact_slip_m_per_s",
 )
@@ -258,9 +271,21 @@ def run_cached_validation(
             ),
             **{
                 metric: _mean_column(summary_frame, metric)
-                for metric in (*REFERENCE_ERROR_DISTRIBUTION_FIELDS, *TEMPORAL_SUMMARY_FIELDS)
+                for metric in (
+                    *REFERENCE_ERROR_DISTRIBUTION_FIELDS,
+                    *TEMPORAL_SUMMARY_FIELDS,
+                    *FLEXION_SUMMARY_FIELDS,
+                )
             },
             "mean_joint_errors_m": _mean_joint_errors(clip_results),
+            "posture_frame_counts": _posture_frame_counts(clip_results),
+            "posture_subset_counts": _posture_subset_counts(clip_results),
+            "posture_vr_candidate_clips": sum(
+                1 for result in clip_results if result.posture_vr_candidate
+            ),
+            "posture_vr_candidate_frames": sum(
+                result.evaluated_frames for result in clip_results if result.posture_vr_candidate
+            ),
             "grouped_metrics": _grouped_metrics(clip_results),
             "worst_clips": _worst_clips(clip_results, top_clip_count),
         },
@@ -303,10 +328,21 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         estimated_poses,
         reference_frames,
     )
+    flexion_summary = summarize_joint_flexion_sequence(
+        estimated_poses,
+        reference_frames,
+    )
     contact_summary = evaluate_foot_contact_sequence(
         estimated_poses,
         reference_frames,
         floor_height_m=inferred_floor_height_m,
+    )
+    posture_summary = summarize_reference_posture(
+        reference_frames,
+        environment_split=environment_split,
+        activity_class=activity_class,
+        floor_height_m=inferred_floor_height_m,
+        timestamps_seconds=(frame.timestamp_s for frame in cached_frame_list),
     )
     mean_joint_errors_m = cast(dict[str, float], reference_summary["mean_joint_errors_m"])
     subject, clip = _subject_and_clip_from_path(Path(task.path))
@@ -413,6 +449,42 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         activity_class=activity_class,
         activity_tags=activity_tags,
         motion_description=motion_description,
+        mean_left_elbow_flexion_error_deg=flexion_summary["mean_left_elbow_flexion_error_deg"],
+        mean_right_elbow_flexion_error_deg=flexion_summary["mean_right_elbow_flexion_error_deg"],
+        mean_elbow_flexion_error_deg=flexion_summary["mean_elbow_flexion_error_deg"],
+        mean_left_knee_flexion_error_deg=flexion_summary["mean_left_knee_flexion_error_deg"],
+        mean_right_knee_flexion_error_deg=flexion_summary["mean_right_knee_flexion_error_deg"],
+        mean_knee_flexion_error_deg=flexion_summary["mean_knee_flexion_error_deg"],
+        mean_joint_flexion_error_deg=flexion_summary["mean_joint_flexion_error_deg"],
+        pct_left_elbow_flexion_over_limit=flexion_summary["pct_left_elbow_flexion_over_limit"],
+        pct_right_elbow_flexion_over_limit=flexion_summary["pct_right_elbow_flexion_over_limit"],
+        pct_elbow_flexion_over_limit=flexion_summary["pct_elbow_flexion_over_limit"],
+        pct_left_knee_flexion_over_limit=flexion_summary["pct_left_knee_flexion_over_limit"],
+        pct_right_knee_flexion_over_limit=flexion_summary["pct_right_knee_flexion_over_limit"],
+        pct_knee_flexion_over_limit=flexion_summary["pct_knee_flexion_over_limit"],
+        pct_joint_flexion_over_limit=flexion_summary["pct_joint_flexion_over_limit"],
+        posture_class=posture_summary.posture_class,
+        posture_subset=posture_summary.posture_subset,
+        posture_vr_candidate=posture_summary.vr_candidate,
+        posture_frame_count=posture_summary.frame_count,
+        posture_upright_frames=posture_summary.upright_frames,
+        posture_crouched_frames=posture_summary.crouched_frames,
+        posture_sitting_frames=posture_summary.sitting_frames,
+        posture_reclined_frames=posture_summary.reclined_frames,
+        posture_floor_reclined_frames=posture_summary.floor_reclined_frames,
+        posture_unknown_frames=posture_summary.unknown_frames,
+        posture_upright_pct=posture_summary.upright_pct,
+        posture_crouched_pct=posture_summary.crouched_pct,
+        posture_sitting_pct=posture_summary.sitting_pct,
+        posture_reclined_pct=posture_summary.reclined_pct,
+        posture_floor_reclined_pct=posture_summary.floor_reclined_pct,
+        posture_unknown_pct=posture_summary.unknown_pct,
+        mean_head_height_m=posture_summary.mean_head_height_m,
+        mean_hip_height_m=posture_summary.mean_hip_height_m,
+        mean_torso_verticality=posture_summary.mean_torso_verticality,
+        hip_horizontal_displacement_m=posture_summary.hip_horizontal_displacement_m,
+        hip_horizontal_path_m=posture_summary.hip_horizontal_path_m,
+        mean_hip_horizontal_speed_m_per_s=posture_summary.mean_hip_horizontal_speed_m_per_s,
     )
 
 
@@ -428,9 +500,12 @@ def _tracked_sample_from_cached_frame(frame: CachedPoseFrame) -> TrackedPoseSamp
 def _tracker_state(role: TrackerRole, frame: CachedPoseFrame) -> TrackerState:
     attachment = DEFAULT_SYNTHETIC_TRACKER_CONFIG.attachments[role]
     source = frame.joints[attachment.source_joint]
+    rotation = (
+        head_tracker_rotation_from_pose_frame(frame.joints) if role == "head" else source.rotation
+    )
     transform = Transform(
         position=add(source.position, attachment.local_transform.position),
-        rotation=source.rotation,
+        rotation=rotation,
     )
     return TrackerState(
         role=role,
@@ -493,9 +568,19 @@ def _grouped_metrics(results: list[ClipResult]) -> dict[str, list[dict[str, obje
     return {
         "environment_split": _group_results(results, ("environment_split",)),
         "activity_class": _group_results(results, ("activity_class",)),
+        "posture_class": _group_results(results, ("posture_class",)),
+        "posture_subset": _group_results(results, ("posture_subset",)),
         "environment_split_activity_class": _group_results(
             results,
             ("environment_split", "activity_class"),
+        ),
+        "activity_class_posture_subset": _group_results(
+            results,
+            ("activity_class", "posture_subset"),
+        ),
+        "environment_split_posture_subset": _group_results(
+            results,
+            ("environment_split", "posture_subset"),
         ),
     }
 
@@ -529,6 +614,27 @@ def _summarize_result_group(
             "source_frames": sum(result.source_frames for result in results),
             "evaluated_frames": sum(result.evaluated_frames for result in results),
             "mean_joint_errors_m": _mean_joint_errors(results),
+            "posture_frame_counts": _posture_frame_counts(results),
+            "posture_subset_counts": _posture_subset_counts(results),
+            "posture_vr_candidate_clips": sum(
+                1 for result in results if result.posture_vr_candidate
+            ),
+            "posture_vr_candidate_frames": sum(
+                result.evaluated_frames for result in results if result.posture_vr_candidate
+            ),
+            "posture_upright_pct": _mean(result.posture_upright_pct for result in results),
+            "posture_crouched_pct": _mean(result.posture_crouched_pct for result in results),
+            "posture_sitting_pct": _mean(result.posture_sitting_pct for result in results),
+            "posture_reclined_pct": _mean(result.posture_reclined_pct for result in results),
+            "posture_floor_reclined_pct": _mean(
+                result.posture_floor_reclined_pct for result in results
+            ),
+            "mean_head_height_m": _mean(result.mean_head_height_m for result in results),
+            "mean_hip_height_m": _mean(result.mean_hip_height_m for result in results),
+            "mean_torso_verticality": _mean(result.mean_torso_verticality for result in results),
+            "mean_hip_horizontal_speed_m_per_s": _mean(
+                result.mean_hip_horizontal_speed_m_per_s for result in results
+            ),
         }
     )
     for metric in SUMMARY_METRICS:
@@ -561,10 +667,31 @@ def _clip_metric_summary(result: ClipResult, metric: str) -> dict[str, object]:
         "subject": result.subject,
         "environment_split": result.environment_split,
         "activity_class": result.activity_class,
+        "posture_class": result.posture_class,
+        "posture_subset": result.posture_subset,
         "motion_description": result.motion_description,
         "evaluated_frames": result.evaluated_frames,
         metric: float(getattr(result, metric)),
     }
+
+
+def _posture_frame_counts(results: Iterable[ClipResult]) -> dict[str, int]:
+    result_list = list(results)
+    return {
+        "upright": sum(result.posture_upright_frames for result in result_list),
+        "crouched": sum(result.posture_crouched_frames for result in result_list),
+        "sitting": sum(result.posture_sitting_frames for result in result_list),
+        "reclined": sum(result.posture_reclined_frames for result in result_list),
+        "floor_reclined": sum(result.posture_floor_reclined_frames for result in result_list),
+        "unknown": sum(result.posture_unknown_frames for result in result_list),
+    }
+
+
+def _posture_subset_counts(results: Iterable[ClipResult]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result.posture_subset] = counts.get(result.posture_subset, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 if __name__ == "__main__":

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from math import floor
+from math import acos, degrees, floor
 from statistics import fmean
 
 from validation.vr_pose_validation.geometry import (
     Transform,
     Vector3,
     distance,
+    dot,
     horizontal_distance,
     length,
     scale,
@@ -60,6 +61,39 @@ TEMPORAL_SUMMARY_FIELDS = tuple(
         f"mean_{region}_acceleration_error_m_per_s2",
         f"mean_{region}_estimated_jerk_m_per_s3",
     )
+)
+FLEXION_JOINTS = {
+    "left_elbow": ("left_shoulder", "left_elbow", "left_hand"),
+    "right_elbow": ("right_shoulder", "right_elbow", "right_hand"),
+    "left_knee": ("hips", "left_knee", "left_foot"),
+    "right_knee": ("hips", "right_knee", "right_foot"),
+}
+FLEXION_GROUPS = {
+    "elbow": ("left_elbow", "right_elbow"),
+    "knee": ("left_knee", "right_knee"),
+    "joint": tuple(FLEXION_JOINTS),
+}
+DEFAULT_FLEXION_LIMITS_DEG = {
+    "left_elbow": 150.0,
+    "right_elbow": 150.0,
+    "left_knee": 135.0,
+    "right_knee": 135.0,
+}
+FLEXION_SUMMARY_FIELDS = (
+    "mean_left_elbow_flexion_error_deg",
+    "mean_right_elbow_flexion_error_deg",
+    "mean_elbow_flexion_error_deg",
+    "mean_left_knee_flexion_error_deg",
+    "mean_right_knee_flexion_error_deg",
+    "mean_knee_flexion_error_deg",
+    "mean_joint_flexion_error_deg",
+    "pct_left_elbow_flexion_over_limit",
+    "pct_right_elbow_flexion_over_limit",
+    "pct_elbow_flexion_over_limit",
+    "pct_left_knee_flexion_over_limit",
+    "pct_right_knee_flexion_over_limit",
+    "pct_knee_flexion_over_limit",
+    "pct_joint_flexion_over_limit",
 )
 
 
@@ -406,6 +440,51 @@ def summarize_temporal_reference_sequence(
     }
 
 
+def summarize_joint_flexion_sequence(
+    poses: Iterable[HumanoidPoseFrame],
+    reference_frames: Iterable[dict[str, Transform]],
+    *,
+    flexion_limits_deg: Mapping[str, float] = DEFAULT_FLEXION_LIMITS_DEG,
+) -> dict[str, float]:
+    """Report position-derived elbow/knee flexion errors and coarse limit violations.
+
+    The canonical validation stream does not yet guarantee biomechanical
+    joint-local rotations. This derives a conservative flexion angle from three
+    joint positions instead, where a straight limb is 0 degrees and larger
+    values mean more bend.
+    """
+
+    angle_errors: dict[str, list[float]] = {joint_name: [] for joint_name in FLEXION_JOINTS}
+    over_limit: dict[str, list[float]] = {joint_name: [] for joint_name in FLEXION_JOINTS}
+    for pose, reference in zip(poses, reference_frames, strict=False):
+        for joint_name, joint_chain in FLEXION_JOINTS.items():
+            estimated_angle = _pose_flexion_angle_deg(pose, joint_chain)
+            reference_angle = _reference_flexion_angle_deg(reference, joint_chain)
+            if estimated_angle is None or reference_angle is None:
+                continue
+            angle_errors[joint_name].append(abs(estimated_angle - reference_angle))
+            limit = flexion_limits_deg.get(joint_name)
+            if limit is not None:
+                over_limit[joint_name].append(1.0 if estimated_angle > limit else 0.0)
+
+    return {
+        "mean_left_elbow_flexion_error_deg": _mean_values(angle_errors["left_elbow"]),
+        "mean_right_elbow_flexion_error_deg": _mean_values(angle_errors["right_elbow"]),
+        "mean_elbow_flexion_error_deg": _mean_flexion_group(angle_errors, "elbow"),
+        "mean_left_knee_flexion_error_deg": _mean_values(angle_errors["left_knee"]),
+        "mean_right_knee_flexion_error_deg": _mean_values(angle_errors["right_knee"]),
+        "mean_knee_flexion_error_deg": _mean_flexion_group(angle_errors, "knee"),
+        "mean_joint_flexion_error_deg": _mean_flexion_group(angle_errors, "joint"),
+        "pct_left_elbow_flexion_over_limit": _percent_flags(over_limit["left_elbow"]),
+        "pct_right_elbow_flexion_over_limit": _percent_flags(over_limit["right_elbow"]),
+        "pct_elbow_flexion_over_limit": _percent_flexion_group(over_limit, "elbow"),
+        "pct_left_knee_flexion_over_limit": _percent_flags(over_limit["left_knee"]),
+        "pct_right_knee_flexion_over_limit": _percent_flags(over_limit["right_knee"]),
+        "pct_knee_flexion_over_limit": _percent_flexion_group(over_limit, "knee"),
+        "pct_joint_flexion_over_limit": _percent_flexion_group(over_limit, "joint"),
+    }
+
+
 def infer_reference_floor_height(
     reference_frames: Iterable[dict[str, Transform]],
     *,
@@ -700,6 +779,59 @@ def _temporal_regions_for_joint(joint_name: str) -> tuple[str, ...]:
 
 def _finite_difference(current: Vector3, previous: Vector3, dt: float) -> Vector3:
     return scale(subtract(current, previous), 1.0 / dt)
+
+
+def _pose_flexion_angle_deg(
+    pose: HumanoidPoseFrame,
+    joint_chain: tuple[str, str, str],
+) -> float | None:
+    if any(joint_name not in pose.joints for joint_name in joint_chain):
+        return None
+    proximal, middle, distal = (
+        pose.joints[joint_name].transform.position for joint_name in joint_chain
+    )
+    return _flexion_angle_deg(proximal, middle, distal)
+
+
+def _reference_flexion_angle_deg(
+    reference: dict[str, Transform],
+    joint_chain: tuple[str, str, str],
+) -> float | None:
+    if any(joint_name not in reference for joint_name in joint_chain):
+        return None
+    proximal, middle, distal = (reference[joint_name].position for joint_name in joint_chain)
+    return _flexion_angle_deg(proximal, middle, distal)
+
+
+def _flexion_angle_deg(proximal: Vector3, middle: Vector3, distal: Vector3) -> float | None:
+    proximal_vector = subtract(proximal, middle)
+    distal_vector = subtract(distal, middle)
+    proximal_length = length(proximal_vector)
+    distal_length = length(distal_vector)
+    if proximal_length <= 1e-9 or distal_length <= 1e-9:
+        return None
+    cosine = dot(proximal_vector, distal_vector) / (proximal_length * distal_length)
+    interior_angle = degrees(acos(min(1.0, max(-1.0, cosine))))
+    return 180.0 - interior_angle
+
+
+def _mean_flexion_group(values_by_joint: Mapping[str, list[float]], group_name: str) -> float:
+    return _mean_values(
+        value for joint_name in FLEXION_GROUPS[group_name] for value in values_by_joint[joint_name]
+    )
+
+
+def _percent_flags(values: Iterable[float]) -> float:
+    value_list = list(values)
+    if not value_list:
+        return 0.0
+    return fmean(value_list) * 100.0
+
+
+def _percent_flexion_group(values_by_joint: Mapping[str, list[float]], group_name: str) -> float:
+    return _percent_flags(
+        value for joint_name in FLEXION_GROUPS[group_name] for value in values_by_joint[joint_name]
+    )
 
 
 def _frame_dt(previous_timestamp_seconds: float, timestamp_seconds: float) -> float:

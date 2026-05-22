@@ -14,6 +14,7 @@ from validation.vr_pose_validation.metrics import (
     evaluate_frame,
     evaluate_reference_pose,
     infer_reference_floor_height,
+    summarize_joint_flexion_sequence,
     summarize_reference_error_distribution,
     summarize_reference_errors,
     summarize_target_errors,
@@ -240,6 +241,53 @@ def test_foot_contact_metrics_measure_estimated_slip_during_reference_contact() 
     assert metrics.left_contact_frames == 3
     assert metrics.mean_left_contact_foot_error_m > 0.0
     assert metrics.left_contact_slip_m_per_s == approx(6.0)
+
+
+def test_joint_flexion_metrics_report_angle_error_and_limit_violations() -> None:
+    reference_frames = [
+        {
+            "left_shoulder": Transform(position=(-1.0, 0.0, 0.0)),
+            "left_elbow": Transform(position=(0.0, 0.0, 0.0)),
+            "left_hand": Transform(position=(1.0, 0.0, 0.0)),
+            "right_shoulder": Transform(position=(1.0, 0.0, 0.0)),
+            "right_elbow": Transform(position=(0.0, 0.0, 0.0)),
+            "right_hand": Transform(position=(-1.0, 0.0, 0.0)),
+            "hips": Transform(position=(0.0, 1.0, 0.0)),
+            "left_knee": Transform(position=(0.0, 0.0, 0.0)),
+            "left_foot": Transform(position=(0.0, -1.0, 0.0)),
+            "right_knee": Transform(position=(1.0, 0.0, 0.0)),
+            "right_foot": Transform(position=(1.0, -1.0, 0.0)),
+        }
+    ]
+    poses = [
+        HumanoidPoseFrame(
+            timestamp_seconds=0.0,
+            root=Transform(),
+            joints={
+                "left_shoulder": JointPose(Transform(position=(-1.0, 0.0, 0.0))),
+                "left_elbow": JointPose(Transform(position=(0.0, 0.0, 0.0))),
+                "left_hand": JointPose(Transform(position=(0.0, -1.0, 0.0))),
+                "right_shoulder": JointPose(Transform(position=(1.0, 0.0, 0.0))),
+                "right_elbow": JointPose(Transform(position=(0.0, 0.0, 0.0))),
+                "right_hand": JointPose(Transform(position=(0.1, 0.0, 0.0))),
+                "hips": JointPose(Transform(position=(0.0, 1.0, 0.0))),
+                "left_knee": JointPose(Transform(position=(0.0, 0.0, 0.0))),
+                "left_foot": JointPose(Transform(position=(0.0, -1.0, 0.0))),
+                "right_knee": JointPose(Transform(position=(1.0, 0.0, 0.0))),
+                "right_foot": JointPose(Transform(position=(1.0, -1.0, 0.0))),
+            },
+        )
+    ]
+
+    summary = summarize_joint_flexion_sequence(poses, reference_frames)
+
+    assert summary["mean_left_elbow_flexion_error_deg"] == approx(90.0)
+    assert summary["mean_right_elbow_flexion_error_deg"] == approx(180.0)
+    assert summary["mean_knee_flexion_error_deg"] == approx(0.0)
+    assert summary["pct_left_elbow_flexion_over_limit"] == 0.0
+    assert summary["pct_right_elbow_flexion_over_limit"] == 100.0
+    assert summary["pct_elbow_flexion_over_limit"] == approx(50.0)
+    assert summary["pct_joint_flexion_over_limit"] == approx(25.0)
 
 
 def _foot_pose(left_x: float, timestamp_seconds: float) -> HumanoidPoseFrame:

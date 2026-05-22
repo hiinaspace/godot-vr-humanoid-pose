@@ -6,9 +6,9 @@ const WORLD_FORWARD = Vector3(0.0, 0.0, 1.0)
 
 var settings = {
     "head_to_hips_ratio": 0.34,
-    "shoulder_width_ratio": 0.23,
-    "upper_arm_ratio": 0.19,
-    "lower_arm_ratio": 0.16,
+    "shoulder_width_ratio": 0.201,
+    "upper_arm_ratio": 0.161,
+    "lower_arm_ratio": 0.116,
     "upper_leg_ratio": 0.245,
     "lower_leg_ratio": 0.246,
     "head_to_neck_ratio": 0.04,
@@ -19,6 +19,14 @@ var settings = {
     "hip_width_ratio": 0.11,
     "hips_forward_bias_m": 0.02,
     "hips_xz_follow_blend": 0.35,
+    "support_hips_xz_follow_blend": 0.65,
+    "max_torso_lean_degrees": 35.0,
+    "controller_lateral_flip_threshold_m": 0.08,
+    "controller_lateral_flip_min_head_pitch": 0.20,
+    "neck_rotation_lerp_speed": 40.0,
+    "chest_rotation_lerp_speed": 25.0,
+    "spine_rotation_lerp_speed": 30.0,
+    "hips_rotation_lerp_speed": 20.0,
     "max_anchor_stretch_m": 0.12,
     "plant_velocity_threshold_m_s": 0.01,
     "release_velocity_multiplier": 2.0,
@@ -28,22 +36,46 @@ var settings = {
     "step_duration_s": 0.18,
     "step_lift_height_m": 0.06,
     "planted_foot_confidence": 0.75,
+    "shoulder_reach_engage_ratio": 0.7,
+    "shoulder_elevation_gain_m": 0.05,
+    "shoulder_protraction_gain_m": 0.04,
+    "shoulder_cross_body_gain_m": 0.025,
 }
 
 var _foot_states: Dictionary = {}
+var _torso_state: Dictionary = {
+    "neck_rotation": null,
+    "chest_rotation": null,
+    "spine_rotation": null,
+    "hips_rotation": null,
+    "previous_timestamp_seconds": null,
+}
 
 
 func reset() -> void:
     _foot_states.clear()
+    _torso_state = _new_torso_state()
 
 
 func estimate(sample: Dictionary, calibration: Dictionary, grounding: Dictionary) -> Dictionary:
+    var dt = _state_dt(_torso_state, sample["timestamp_seconds"])
+    _torso_state["previous_timestamp_seconds"] = sample["timestamp_seconds"]
     var head_source = _source_joint_position(sample["hmd"])
-    var forward = _head_forward(sample["hmd"])
-    var right = _normalize(WORLD_UP.cross(forward), Vector3(1.0, 0.0, 0.0))
+    var head_rotation = _quaternion_from_json(sample["hmd"]["transform"]["rotation"])
+    var forward = _disambiguate_body_forward(
+        sample,
+        _head_forward(sample["hmd"]),
+        settings["controller_lateral_flip_threshold_m"],
+        settings["controller_lateral_flip_min_head_pitch"]
+    )
+    var right = _normalize(forward.cross(WORLD_UP), Vector3(-1.0, 0.0, 0.0))
 
     var torso_lengths = _torso_chain_lengths(calibration)
-    var neck_position = head_source - WORLD_UP * torso_lengths["head_to_neck"]
+    var neck_position = _estimate_neck_position(
+        head_source,
+        head_rotation,
+        torso_lengths["head_to_neck"]
+    )
     var hips_position = _estimate_hips(
         sample,
         grounding,
@@ -59,7 +91,43 @@ func estimate(sample: Dictionary, calibration: Dictionary, grounding: Dictionary
         hips_position,
         torso_lengths["neck_to_spine"] / torso_lengths["neck_to_hips"]
     )
-    var torso_rotation = _yaw_rotation(forward)
+    var neck_rotation = _smooth_rotation(
+        _torso_state["neck_rotation"],
+        head_rotation,
+        settings["neck_rotation_lerp_speed"],
+        dt
+    )
+    var hips_rotation = _smooth_rotation(
+        _torso_state["hips_rotation"],
+        _yaw_rotation(forward),
+        settings["hips_rotation_lerp_speed"],
+        dt
+    )
+    var neck_yaw = _yaw_rotation(_horizontal_forward(neck_rotation))
+    var chest_rotation = _smooth_rotation(
+        _torso_state["chest_rotation"],
+        _nlerp_quaternion(
+            neck_yaw,
+            hips_rotation,
+            torso_lengths["neck_to_chest"] / torso_lengths["neck_to_hips"]
+        ),
+        settings["chest_rotation_lerp_speed"],
+        dt
+    )
+    var spine_rotation = _smooth_rotation(
+        _torso_state["spine_rotation"],
+        _nlerp_quaternion(
+            neck_yaw,
+            hips_rotation,
+            torso_lengths["neck_to_spine"] / torso_lengths["neck_to_hips"]
+        ),
+        settings["spine_rotation_lerp_speed"],
+        dt
+    )
+    _torso_state["neck_rotation"] = neck_rotation
+    _torso_state["chest_rotation"] = chest_rotation
+    _torso_state["spine_rotation"] = spine_rotation
+    _torso_state["hips_rotation"] = hips_rotation
     var shoulder_width = _calibrated_length(
         calibration,
         ["shoulder_width", "left_shoulder_to_right_shoulder"],
@@ -69,6 +137,23 @@ func estimate(sample: Dictionary, calibration: Dictionary, grounding: Dictionary
     var right_shoulder = chest_position + right * (shoulder_width * 0.5)
     var left_hand_source = _source_joint_position(sample["left_hand"])
     var right_hand_source = _source_joint_position(sample["right_hand"])
+    var arm_length = _arm_length(calibration)
+    left_shoulder = _estimate_shoulder_reach_offset(
+        left_shoulder,
+        left_hand_source,
+        right,
+        forward,
+        -1.0,
+        arm_length
+    )
+    right_shoulder = _estimate_shoulder_reach_offset(
+        right_shoulder,
+        right_hand_source,
+        right,
+        forward,
+        1.0,
+        arm_length
+    )
     var optional_trackers: Dictionary = sample.get("optional_trackers", {})
 
     var left_foot = _estimate_foot(
@@ -112,9 +197,10 @@ func estimate(sample: Dictionary, calibration: Dictionary, grounding: Dictionary
             "confidence": sample["right_hand"].get("confidence", 1.0),
             "estimated": false,
         },
-        "hips": {"transform": _transform(hips_position, torso_rotation), "estimated": true},
-        "chest": {"transform": _transform(chest_position, torso_rotation), "estimated": true},
-        "spine": {"transform": _transform(spine_position, torso_rotation), "estimated": true},
+        "hips": {"transform": _transform(hips_position, hips_rotation), "estimated": true},
+        "chest": {"transform": _transform(chest_position, chest_rotation), "estimated": true},
+        "neck": {"transform": _transform(neck_position, neck_rotation), "estimated": true},
+        "spine": {"transform": _transform(spine_position, spine_rotation), "estimated": true},
         "left_shoulder": {"transform": _transform(left_shoulder), "estimated": true},
         "right_shoulder": {"transform": _transform(right_shoulder), "estimated": true},
         "left_elbow": {
@@ -155,7 +241,7 @@ func estimate(sample: Dictionary, calibration: Dictionary, grounding: Dictionary
 
     return {
         "timestamp_seconds": sample["timestamp_seconds"],
-        "root": _transform(hips_position, torso_rotation),
+        "root": _transform(hips_position, hips_rotation),
         "joints": joints,
     }
 
@@ -219,18 +305,43 @@ func _estimate_hips(
         maxf(floor_y, neck_position.y - neck_to_hips_length),
         neck_position.z
     ) + forward * settings["hips_forward_bias_m"]
+    var support_center = _support_center()
+    if support_center != null:
+        var support_blend = float(settings["support_hips_xz_follow_blend"])
+        ideal = Vector3(
+            ideal.x + (support_center.x - ideal.x) * support_blend,
+            ideal.y,
+            ideal.z + (support_center.z - ideal.z) * support_blend
+        )
 
     var pelvis_tracker = sample.get("optional_trackers", {}).get("pelvis")
-    if pelvis_tracker == null or not pelvis_tracker.get("valid", true):
-        return ideal
+    if pelvis_tracker != null and pelvis_tracker.get("valid", true):
+        var pelvis_position = _source_joint_position(pelvis_tracker)
+        var blend = float(settings["hips_xz_follow_blend"])
+        ideal = Vector3(
+            ideal.x + (pelvis_position.x - ideal.x) * blend,
+            ideal.y,
+            ideal.z + (pelvis_position.z - ideal.z) * blend
+        )
 
-    var pelvis_position = _source_joint_position(pelvis_tracker)
-    var blend = float(settings["hips_xz_follow_blend"])
-    return Vector3(
-        ideal.x + (pelvis_position.x - ideal.x) * blend,
-        ideal.y,
-        ideal.z + (pelvis_position.z - ideal.z) * blend
-    )
+    return _clamp_hips_lateral(neck_position, ideal, settings["max_torso_lean_degrees"])
+
+
+func _support_center():
+    var positions: Array[Vector3] = []
+    for name in ["left_foot", "right_foot"]:
+        var state = _foot_states.get(name)
+        if state == null:
+            continue
+        var position = state["anchor_position"] if state["planted"] else state["current_position"]
+        if position != null:
+            positions.append(position)
+    if positions.is_empty():
+        return null
+    var total = Vector3.ZERO
+    for position in positions:
+        total += position
+    return total / positions.size()
 
 
 func _estimate_foot(
@@ -366,6 +477,62 @@ func _estimate_knee(
     return _solve_two_bone_midpoint(hip_position, foot_position, upper_leg, lower_leg, forward)
 
 
+func _arm_length(calibration: Dictionary) -> float:
+    var human_height = calibration.get("human_height_m", 1.7)
+    return (
+        _calibrated_length(
+            calibration,
+            ["upper_arm", "humerus"],
+            human_height * settings["upper_arm_ratio"]
+        )
+        + _calibrated_length(
+            calibration,
+            ["lower_arm", "forearm", "radius"],
+            human_height * settings["lower_arm_ratio"]
+        )
+    )
+
+
+func _estimate_shoulder_reach_offset(
+    shoulder_position: Vector3,
+    hand_position: Vector3,
+    right: Vector3,
+    forward: Vector3,
+    side: float,
+    arm_length: float
+) -> Vector3:
+    if arm_length <= 0.000001:
+        return shoulder_position
+
+    var shoulder_to_hand = hand_position - shoulder_position
+    var reach = shoulder_to_hand.length()
+    if reach <= 0.000001:
+        return shoulder_position
+
+    var reach_ratio = _shoulder_reach_ratio(
+        reach,
+        arm_length,
+        settings["shoulder_reach_engage_ratio"]
+    )
+    if reach_ratio <= 0.0:
+        return shoulder_position
+
+    var local_dir = _chest_local_direction(shoulder_to_hand, right, forward)
+    var elevation = _clamp01(local_dir.y) * reach_ratio
+    var protraction = _clamp01(local_dir.z) * reach_ratio
+    var cross_body = _clamp01(local_dir.x) if side < 0.0 else _clamp01(-local_dir.x)
+
+    return (
+        shoulder_position
+        + WORLD_UP * elevation * settings["shoulder_elevation_gain_m"]
+        + forward
+        * (protraction + cross_body * 0.5)
+        * reach_ratio
+        * settings["shoulder_protraction_gain_m"]
+        + right * -side * cross_body * reach_ratio * settings["shoulder_cross_body_gain_m"]
+    )
+
+
 func _estimate_elbow(
     shoulder_position: Vector3,
     hand_position: Vector3,
@@ -453,6 +620,15 @@ func _source_joint_position(tracker: Dictionary) -> Vector3:
     return _vector3_from_json(tracker["transform"]["position"]) - offset
 
 
+func _estimate_neck_position(
+    head_position: Vector3,
+    head_rotation: Quaternion,
+    head_to_neck_length: float
+) -> Vector3:
+    var head_up = _normalize(_rotate_vector(head_rotation, WORLD_UP), WORLD_UP)
+    return head_position - head_up * head_to_neck_length
+
+
 func _tracker_transform(tracker: Dictionary) -> Dictionary:
     return _transform(
         _vector3_from_json(tracker["transform"]["position"]),
@@ -462,6 +638,33 @@ func _tracker_transform(tracker: Dictionary) -> Dictionary:
 
 func _head_forward(tracker: Dictionary) -> Vector3:
     var forward = _rotate_vector(_quaternion_from_json(tracker["transform"]["rotation"]), WORLD_FORWARD)
+    return _normalize(Vector3(forward.x, 0.0, forward.z), WORLD_FORWARD)
+
+
+func _disambiguate_body_forward(
+    sample: Dictionary,
+    forward: Vector3,
+    controller_lateral_flip_threshold_m: float,
+    controller_lateral_flip_min_head_pitch: float
+) -> Vector3:
+    var head_forward = _rotate_vector(
+        _quaternion_from_json(sample["hmd"]["transform"]["rotation"]),
+        WORLD_FORWARD
+    )
+    if absf(head_forward.y) < controller_lateral_flip_min_head_pitch:
+        return forward
+
+    var right = _normalize(forward.cross(WORLD_UP), Vector3(-1.0, 0.0, 0.0))
+    var left_hand = _source_joint_position(sample["left_hand"])
+    var right_hand = _source_joint_position(sample["right_hand"])
+    var lateral_gap = (right_hand - left_hand).dot(right)
+    if lateral_gap < -controller_lateral_flip_threshold_m:
+        return -forward
+    return forward
+
+
+func _horizontal_forward(rotation: Quaternion) -> Vector3:
+    var forward = _rotate_vector(rotation, WORLD_FORWARD)
     return _normalize(Vector3(forward.x, 0.0, forward.z), WORLD_FORWARD)
 
 
@@ -494,6 +697,12 @@ func _exp_alpha(speed: float, dt: float) -> float:
 
 func _smooth_normal(current: Vector3, target: Vector3, alpha: float) -> Vector3:
     return _normalize(current.lerp(target, alpha), WORLD_UP)
+
+
+func _smooth_rotation(current, target: Quaternion, speed: float, dt: float) -> Quaternion:
+    if current == null:
+        return target
+    return _nlerp_quaternion(current, target, _exp_alpha(speed, dt))
 
 
 func _step_progress(
@@ -548,6 +757,49 @@ func _nlerp_quaternion(a: Quaternion, b: Quaternion, alpha: float) -> Quaternion
         blended.z / magnitude,
         blended.w / magnitude
     )
+
+
+func _clamp_hips_lateral(
+    neck_position: Vector3,
+    hips_position: Vector3,
+    max_lean_degrees: float
+) -> Vector3:
+    var vertical_drop = maxf(absf(neck_position.y - hips_position.y), 0.05)
+    var max_lateral = tan(deg_to_rad(max_lean_degrees)) * vertical_drop
+    var lateral = Vector3(
+        hips_position.x - neck_position.x,
+        0.0,
+        hips_position.z - neck_position.z
+    )
+    var lateral_length = lateral.length()
+    if lateral_length <= max_lateral or lateral_length <= 0.000000001:
+        return hips_position
+    var scale_factor = max_lateral / lateral_length
+    return Vector3(
+        neck_position.x + lateral.x * scale_factor,
+        hips_position.y,
+        neck_position.z + lateral.z * scale_factor
+    )
+
+
+func _chest_local_direction(vector: Vector3, right: Vector3, forward: Vector3) -> Vector3:
+    var direction = _normalize(vector, forward)
+    return Vector3(direction.dot(right), direction.dot(WORLD_UP), direction.dot(forward))
+
+
+func _shoulder_reach_ratio(reach: float, arm_length: float, engage_ratio: float) -> float:
+    var raw_reach_ratio = _clamp01(reach / maxf(arm_length * 1.1, 0.000001))
+    var engage = _clamp01(engage_ratio)
+    if raw_reach_ratio < engage:
+        return 0.0
+    if engage >= 1.0:
+        return 1.0
+    var t = (raw_reach_ratio - engage) / (1.0 - engage)
+    return t * t
+
+
+func _clamp01(value: float) -> float:
+    return minf(1.0, maxf(0.0, value))
 
 
 func _look_rotation(forward: Vector3, up = WORLD_UP) -> Quaternion:
@@ -642,6 +894,16 @@ func _new_foot_state(floor_normal: Vector3) -> Dictionary:
         "swing_start_time_seconds": null,
         "planted": false,
         "phase": "unplanted",
+    }
+
+
+func _new_torso_state() -> Dictionary:
+    return {
+        "neck_rotation": null,
+        "chest_rotation": null,
+        "spine_rotation": null,
+        "hips_rotation": null,
+        "previous_timestamp_seconds": null,
     }
 
 
