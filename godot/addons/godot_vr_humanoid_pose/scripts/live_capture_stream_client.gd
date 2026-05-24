@@ -9,6 +9,7 @@ var reconnect_interval_s = 1.0
 
 var _peer := StreamPeerTCP.new()
 var _next_reconnect_s = 0.0
+var _receive_buffer = ""
 
 
 func configure(stream_host: String, stream_port: int) -> void:
@@ -45,6 +46,33 @@ func send_message(message: Dictionary) -> bool:
     return result == OK
 
 
+func poll_messages() -> Array:
+    poll_connection()
+    var messages = []
+    if not is_stream_connected():
+        _receive_buffer = ""
+        return messages
+
+    while _peer.get_available_bytes() > 0:
+        var result = _peer.get_partial_data(_peer.get_available_bytes())
+        if result[0] != OK:
+            break
+        _receive_buffer += result[1].get_string_from_utf8()
+
+    while true:
+        var separator = _receive_buffer.find("\n")
+        if separator < 0:
+            break
+        var line = _receive_buffer.substr(0, separator).strip_edges()
+        _receive_buffer = _receive_buffer.substr(separator + 1)
+        if line.is_empty():
+            continue
+        var parsed = JSON.parse_string(line)
+        if parsed is Dictionary:
+            messages.append(parsed)
+    return messages
+
+
 func build_session_message(session_id: String, source: String) -> Dictionary:
     return {
         "format": CAPTURE_FORMAT,
@@ -69,6 +97,33 @@ func build_flush_message(
         "frame_index": frame_index,
         "reason": reason,
     }
+
+
+func build_estimate_request_message(
+    session_id: String,
+    request_id: int,
+    frame_index: int,
+    timestamp_seconds: float,
+    sample: Dictionary,
+    calibration: Dictionary,
+    grounding: Dictionary,
+    pose_universe := "standing",
+    clip_index := 0
+) -> Dictionary:
+    return _json_safe({
+        "format": CAPTURE_FORMAT,
+        "type": "estimate_request",
+        "session_id": session_id,
+        "request_id": request_id,
+        "frame_index": frame_index,
+        "clip_index": clip_index,
+        "timestamp_seconds": timestamp_seconds,
+        "source": "godot_live_overlay",
+        "pose_universe": pose_universe,
+        "sample": sample,
+        "calibration": calibration,
+        "grounding": grounding,
+    })
 
 
 func build_frame_message(

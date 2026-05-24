@@ -84,7 +84,7 @@ uv run python -m validation.scripts.run_cached_validation --cache-dir .cache/cmu
 
 Experimental estimator names are also available for targeted comparisons:
 `basis_knee_hint`, `basis_footstep`, `basis_arm_lookup`, `basis_arm_swivel`,
-and `basis_research`. The arm variants are research scaffolding for
+`basis_shrug`, and `basis_research`. The arm variants are research scaffolding for
 paper-inspired elbow/shoulder experiments, not promoted defaults.
 
 Research notes for the sparse-VR papers and implementation ideas live in
@@ -124,6 +124,22 @@ Build a compact CSV for manual outlier review from a cached validation JSON repo
 
 ```powershell
 uv run python -m validation.scripts.build_outlier_review validation/reports/outliers_basis_flat_current.json --output validation/reports/outlier_review_flat.csv
+```
+
+Run GT-only plausibility checks over cached CMU clips:
+
+```powershell
+uv run python -m validation.scripts.analyze_cmu_plausibility --cache-dir .cache/cmu/parquet/canonical_full --output validation/reports/cmu_reference_plausibility.json --csv-output validation/reports/cmu_reference_plausibility.csv --environment-split flat --workers 16
+```
+
+The plausibility report flags clips with reference-side issues such as head or
+hips below the inferred floor, repeated high-speed discontinuities, high
+acceleration spikes, and likely out-of-distribution posture. It can be merged
+into outlier review and filtered to keep qualitative videos focused on plausible
+GT clips:
+
+```powershell
+uv run python -m validation.scripts.build_outlier_review validation/reports/experiment_basis_shrug_flat_upper_clean.json --plausibility-report validation/reports/cmu_reference_plausibility_flat_upper_clean.json --exclude-reference-bucket implausible_reference --exclude-reference-bucket needs_review --output validation/reports/outlier_review_basis_shrug_flat_upper_plausible.csv
 ```
 
 Summarize a live VR capture session and, for new captures that include calibrated

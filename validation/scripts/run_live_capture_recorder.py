@@ -7,7 +7,9 @@ import signal
 from collections.abc import Sequence
 from pathlib import Path
 from threading import Event
+from typing import cast
 
+from validation.vr_pose_validation.baseline import EstimatorName
 from validation.vr_pose_validation.live_capture import (
     LiveCaptureParquetWriter,
     run_tcp_recorder,
@@ -16,6 +18,17 @@ from validation.vr_pose_validation.live_capture import (
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_OUTPUT_DIR = Path(".cache/live_capture")
+ESTIMATOR_CHOICES = (
+    "trivial",
+    "planted",
+    "basis",
+    "basis_knee_hint",
+    "basis_footstep",
+    "basis_arm_lookup",
+    "basis_arm_swivel",
+    "basis_shrug",
+    "basis_research",
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -24,6 +37,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--session-id")
+    parser.add_argument(
+        "--estimator",
+        choices=ESTIMATOR_CHOICES,
+        default="basis_research",
+        help="Python estimator used for live estimate_response messages.",
+    )
+    parser.add_argument(
+        "--no-estimation",
+        action="store_true",
+        help="Record incoming frames without answering live estimate requests.",
+    )
     parser.add_argument(
         "--stop-after-client",
         action="store_true",
@@ -47,6 +71,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             host=args.host,
             port=args.port,
             writer=writer,
+            estimator_name=None if args.no_estimation else cast(EstimatorName, args.estimator),
             stop_after_client=args.stop_after_client,
             stop_event=stop_event,
         )

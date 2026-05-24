@@ -239,6 +239,88 @@ def test_basis_body_forward_flips_when_controllers_would_cross_arms() -> None:
     )
 
 
+def test_basis_body_heading_keeps_state_when_head_yaw_is_degenerate() -> None:
+    estimator = BasisPortEstimator(
+        BasisEstimatorSettings(
+            body_heading_lerp_speed=100.0,
+            hips_forward_bias_m=0.10,
+        )
+    )
+    calibration = AvatarCalibration(human_height_m=1.8)
+    grounding = GroundingContext()
+    estimator.estimate(
+        _manual_sample(
+            (0.0, 1.6, 0.0),
+            timestamp_seconds=0.0,
+            forward=(0.0, 0.0, 1.0),
+        ),
+        calibration,
+        grounding,
+    )
+    nearly_down = TrackedPoseSample(
+        timestamp_seconds=1.0 / 120.0,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(
+                position=(0.0, 1.6, 0.0),
+                rotation=look_rotation(normalize((0.0, -1.0, -0.02))),
+            ),
+        ),
+        left_hand=TrackerState(
+            role="left_hand",
+            transform=Transform(position=(0.0, 1.2, 0.0)),
+        ),
+        right_hand=TrackerState(
+            role="right_hand",
+            transform=Transform(position=(0.0, 1.2, 0.0)),
+        ),
+    )
+
+    pose = estimator.estimate(nearly_down, calibration, grounding)
+
+    assert pose.joints["hips"].transform.position[2] > 0.0
+
+
+def test_basis_low_height_policy_reduces_foot_support_pull_for_sitting() -> None:
+    settings = BasisEstimatorSettings(
+        head_to_hips_ratio=0.3,
+        hips_forward_bias_m=0.0,
+        support_hips_xz_follow_blend=1.0,
+        body_heading_lerp_speed=100.0,
+    )
+    calibration = AvatarCalibration(human_height_m=2.0, foot_height_m=0.05)
+    grounding = GroundingContext()
+    standing_estimator = BasisPortEstimator(settings)
+    standing_estimator.estimate(
+        _manual_sample((0.0, 1.8, 0.0), timestamp_seconds=0.0),
+        calibration,
+        grounding,
+    )
+    standing_shift = standing_estimator.estimate(
+        _manual_sample((0.0, 1.8, 0.6), timestamp_seconds=1.0 / 120.0),
+        calibration,
+        grounding,
+    )
+
+    sitting_estimator = BasisPortEstimator(settings)
+    sitting_estimator.estimate(
+        _manual_sample((0.0, 1.8, 0.0), timestamp_seconds=0.0),
+        calibration,
+        grounding,
+    )
+    sitting_shift = sitting_estimator.estimate(
+        _manual_sample((0.0, 1.0, 0.6), timestamp_seconds=1.0 / 120.0),
+        calibration,
+        grounding,
+    )
+
+    assert standing_shift.joints["hips"].transform.position[2] < 0.30
+    assert sitting_shift.joints["hips"].transform.position[2] > 0.30
+    assert sitting_shift.joints["hips"].transform.position[2] > (
+        standing_shift.joints["hips"].transform.position[2] + 0.15
+    )
+
+
 def test_basis_sticky_feet_hold_until_anchor_stretch_exceeds_limit() -> None:
     estimator = BasisPortEstimator(
         BasisEstimatorSettings(
@@ -343,6 +425,64 @@ def test_basis_shoulder_follows_reaching_controller_to_preserve_arm_lengths() ->
     )
     assert distance(shoulder, elbow) == approx(upper_arm)
     assert distance(elbow, hand) <= lower_arm + estimator.settings.shoulder_reach_slack_m + 0.0002
+
+
+def test_basis_shrug_variant_raises_shoulder_for_high_controller() -> None:
+    sample = TrackedPoseSample(
+        timestamp_seconds=0.0,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(position=(0.0, 1.6, 0.0), rotation=look_rotation((0.0, 0.0, 1.0))),
+        ),
+        left_hand=TrackerState(
+            role="left_hand",
+            transform=Transform(position=(0.42, 1.66, 0.16)),
+        ),
+        right_hand=TrackerState(
+            role="right_hand",
+            transform=Transform(position=(-0.20, 1.18, 0.12)),
+        ),
+    )
+    calibration = AvatarCalibration(human_height_m=1.8)
+
+    default_pose = create_estimator("basis").estimate(sample, calibration, GroundingContext())
+    shrug_pose = create_estimator("basis_shrug").estimate(sample, calibration, GroundingContext())
+
+    assert isinstance(shrug_pose.joints["left_shoulder"].transform, Transform)
+    default_left = default_pose.joints["left_shoulder"].transform.position
+    shrug_left = shrug_pose.joints["left_shoulder"].transform.position
+    default_right = default_pose.joints["right_shoulder"].transform.position
+    shrug_right = shrug_pose.joints["right_shoulder"].transform.position
+
+    assert shrug_left[1] > default_left[1] + 0.04
+    assert abs(shrug_right[1] - default_right[1]) < 0.01
+
+
+def test_basis_shrug_variant_raises_shoulder_for_lateral_reach() -> None:
+    sample = TrackedPoseSample(
+        timestamp_seconds=0.0,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(position=(0.0, 1.6, 0.0), rotation=look_rotation((0.0, 0.0, 1.0))),
+        ),
+        left_hand=TrackerState(
+            role="left_hand",
+            transform=Transform(position=(0.48, 1.32, 0.12)),
+        ),
+        right_hand=TrackerState(
+            role="right_hand",
+            transform=Transform(position=(-0.34, 1.18, 0.12)),
+        ),
+    )
+    calibration = AvatarCalibration(human_height_m=1.8)
+
+    default_pose = create_estimator("basis").estimate(sample, calibration, GroundingContext())
+    shrug_pose = create_estimator("basis_shrug").estimate(sample, calibration, GroundingContext())
+
+    default_left = default_pose.joints["left_shoulder"].transform.position
+    shrug_left = shrug_pose.joints["left_shoulder"].transform.position
+
+    assert shrug_left[1] > default_left[1] + 0.025
 
 
 def test_basis_elbow_bend_hint_points_behind_controller_reach() -> None:

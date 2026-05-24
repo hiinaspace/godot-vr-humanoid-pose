@@ -24,7 +24,18 @@ DEFAULT_REVIEW_METRICS = (
     "mean_elbow_error_m",
     "pct_elbow_flexion_over_limit",
     "mean_shoulder_error_m",
+    "head_forward_error_p95_deg",
+    "pct_head_forward_error_over_90deg",
+    "head_up_error_p95_deg",
+    "pct_head_up_error_over_90deg",
+    "mean_neck_axis_error_deg",
+    "mean_spine_axis_error_deg",
+    "max_head_forward_angular_speed_deg_s",
     "mean_joint_estimated_jerk_m_per_s3",
+    "avatar_implausibility_score_0_100",
+    "avatar_joint_limit_penalty",
+    "avatar_endpoint_stretch_penalty",
+    "avatar_temporal_jerk_penalty",
 )
 REVIEW_FIELDS = (
     "clip",
@@ -41,6 +52,26 @@ REVIEW_FIELDS = (
     "activity_tags",
     "posture_subset",
     "posture_vr_candidate",
+    "reference_plausibility_bucket",
+    "reference_plausibility_tags",
+    "avatar_plausibility_bucket",
+    "avatar_plausibility_tags",
+    "avatar_plausibility_score_0_100",
+    "avatar_implausibility_score_0_100",
+    "avatar_joint_limit_penalty",
+    "avatar_sustained_awkwardness_penalty",
+    "avatar_endpoint_stretch_penalty",
+    "avatar_temporal_jerk_penalty",
+    "avatar_pct_joint_limit_violation_frames",
+    "avatar_pct_sustained_awkward_frames",
+    "avatar_max_endpoint_stretch_ratio",
+    "avatar_p95_endpoint_stretch_ratio",
+    "avatar_p95_joint_jerk_m_per_s3",
+    "avatar_max_joint_jerk_m_per_s3",
+    "reference_max_joint_speed_m_per_s",
+    "reference_pct_frames_over_20m_s",
+    "reference_min_head_height_m",
+    "reference_max_bone_length_cv",
     "reference_error_p95_m",
     "mean_reference_error_m",
     "mean_contact_foot_error_m",
@@ -53,17 +84,35 @@ REVIEW_FIELDS = (
     "mean_elbow_flexion_error_deg",
     "pct_elbow_flexion_over_limit",
     "mean_shoulder_error_m",
+    "mean_head_forward_error_deg",
+    "head_forward_error_p95_deg",
+    "pct_head_forward_error_over_90deg",
+    "mean_head_up_error_deg",
+    "head_up_error_p95_deg",
+    "pct_head_up_error_over_90deg",
+    "mean_neck_axis_error_deg",
+    "neck_axis_error_p95_deg",
+    "pct_neck_axis_error_over_45deg",
+    "mean_spine_axis_error_deg",
+    "spine_axis_error_p95_deg",
+    "pct_spine_axis_error_over_45deg",
+    "p95_head_forward_angular_speed_deg_s",
+    "max_head_forward_angular_speed_deg_s",
+    "pct_head_forward_angular_speed_over_720deg_s",
     "mean_joint_estimated_jerk_m_per_s3",
     "hip_horizontal_path_m",
     "mean_hip_horizontal_speed_m_per_s",
     "posture_reclined_pct",
     "posture_floor_reclined_pct",
+    "posture_inverted_pct",
     "fixture_command",
 )
 BAD_DATA_TAGS = frozenset({"data_issue", "parse_issue", "sideways_t_pose"})
 BAD_DATA_DESCRIPTION_TERMS = ("motorcycle", "t pose", "t-pose")
 OOD_ACTIVITY_CLASSES = frozenset({"dance_exercise", "floor_pose", "sports", "swimming"})
-OOD_POSTURE_SUBSETS = frozenset({"dynamic_ood", "floor_reclined_ood", "nonflat_ood"})
+OOD_POSTURE_SUBSETS = frozenset(
+    {"dynamic_ood", "floor_reclined_ood", "inverted_ood", "nonflat_ood"}
+)
 VR_CANDIDATE_ACTIVITY_CLASSES = frozenset(
     {"idle_standing", "sitting", "stationary_upper_body", "locomotion"}
 )
@@ -81,6 +130,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("report", nargs="?", type=Path, default=DEFAULT_REPORT_PATH)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--json-output", type=Path)
+    parser.add_argument("--plausibility-report", type=Path)
+    parser.add_argument(
+        "--exclude-reference-bucket",
+        action="append",
+        dest="excluded_reference_buckets",
+        help="Reference plausibility bucket to exclude after optional plausibility merge.",
+    )
     parser.add_argument("--top-per-metric", type=int, default=12)
     parser.add_argument(
         "--metric",
@@ -91,10 +147,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     clips = load_report_clips(args.report)
+    if args.plausibility_report is not None:
+        merge_plausibility_report(clips, args.plausibility_report)
     rows = build_outlier_review(
         clips,
         metrics=tuple(args.metrics or DEFAULT_REVIEW_METRICS),
         top_per_metric=max(0, args.top_per_metric),
+        excluded_reference_buckets=set(args.excluded_reference_buckets or ()),
     )
     write_outlier_review_csv(args.output, rows)
     if args.json_output is not None:
@@ -123,20 +182,46 @@ def load_report_clips(report_path: Path) -> list[dict[str, Any]]:
     return [cast(dict[str, Any], clip) for clip in clips if isinstance(clip, dict)]
 
 
+def merge_plausibility_report(clips: Sequence[dict[str, Any]], report_path: Path) -> None:
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    plausibility_clips = payload.get("clips")
+    if not isinstance(plausibility_clips, list):
+        raise ValueError(f"{report_path} does not contain a clips list")
+    plausibility_by_key = {
+        _clip_key(cast(dict[str, Any], clip)): cast(dict[str, Any], clip)
+        for clip in plausibility_clips
+        if isinstance(clip, dict)
+    }
+    for clip in clips:
+        plausibility = plausibility_by_key.get(_clip_key(clip))
+        if plausibility is None:
+            continue
+        for key, value in plausibility.items():
+            if key.startswith("reference_"):
+                clip[key] = value
+
+
 def build_outlier_review(
     clips: Sequence[dict[str, Any]],
     *,
     metrics: Sequence[str] = DEFAULT_REVIEW_METRICS,
     top_per_metric: int = 12,
+    excluded_reference_buckets: set[str] | None = None,
 ) -> list[dict[str, object]]:
     if top_per_metric <= 0:
         return []
 
+    excluded_buckets = excluded_reference_buckets or set()
+    candidate_clips = [
+        clip
+        for clip in clips
+        if str(clip.get("reference_plausibility_bucket", "")) not in excluded_buckets
+    ]
     clips_by_key = {_clip_key(clip): clip for clip in clips}
     selections_by_key: dict[str, list[MetricSelection]] = {}
     for metric in metrics:
         ranked_clips = sorted(
-            (clip for clip in clips if _number(clip.get(metric)) is not None),
+            (clip for clip in candidate_clips if _number(clip.get(metric)) is not None),
             key=lambda clip: cast(float, _number(clip.get(metric))),
             reverse=True,
         )
@@ -225,10 +310,16 @@ def _classify_outlier(clip: dict[str, Any], *, primary_metric: str = "") -> tupl
 
     if tags & BAD_DATA_TAGS or any(term in description for term in BAD_DATA_DESCRIPTION_TERMS):
         return "possible_bad_data", sorted(tags & BAD_DATA_TAGS) or ["description_keyword"]
+    reference_bucket = str(clip.get("reference_plausibility_bucket", ""))
+    if reference_bucket == "implausible_reference":
+        reference_tags = _strings(clip.get("reference_plausibility_tags"))
+        return "possible_bad_reference", reference_tags or ["reference_plausibility"]
     if environment_split != "flat":
         return "likely_ood_environment", [f"environment_split={environment_split}"]
     if activity_class in OOD_ACTIVITY_CLASSES:
         return "likely_ood_activity", [f"activity_class={activity_class}"]
+    if _metric_at_least(clip, "posture_inverted_pct", 5.0):
+        return "likely_ood_posture", ["inverted head/hip frames"]
     if posture_subset in OOD_POSTURE_SUBSETS:
         return "likely_ood_posture", [f"posture_subset={posture_subset}"]
 
@@ -247,8 +338,19 @@ def _classify_outlier(clip: dict[str, Any], *, primary_metric: str = "") -> tupl
         clip, "mean_knee_error_m", 0.35
     ):
         candidate_reasons.append(("candidate_knee_solver_failure", "knee error"))
+    if (
+        _metric_at_least(clip, "pct_head_forward_error_over_90deg", 5.0)
+        or _metric_at_least(clip, "pct_head_up_error_over_90deg", 5.0)
+        or _metric_at_least(clip, "pct_neck_axis_error_over_45deg", 10.0)
+        or _metric_at_least(clip, "pct_spine_axis_error_over_45deg", 10.0)
+    ):
+        candidate_reasons.append(("candidate_head_torso_failure", "head/torso orientation"))
     if _metric_at_least(clip, "mean_joint_estimated_jerk_m_per_s3", 3000.0):
         candidate_reasons.append(("candidate_temporal_failure", "temporal jerk"))
+    if str(clip.get("avatar_plausibility_bucket", "")) == "implausible_output" or _metric_at_least(
+        clip, "avatar_implausibility_score_0_100", 25.0
+    ):
+        candidate_reasons.append(("candidate_avatar_plausibility_failure", "avatar plausibility"))
     if candidate_reasons:
         reasons = [reason for _hint, reason in candidate_reasons]
         preferred_hint = _hint_from_primary_metric(primary_metric)
@@ -269,6 +371,10 @@ def _classify_outlier(clip: dict[str, Any], *, primary_metric: str = "") -> tupl
 
 
 def _hint_from_primary_metric(metric: str) -> str | None:
+    if metric.startswith("avatar_"):
+        return "candidate_avatar_plausibility_failure"
+    if "head" in metric or "neck" in metric or "spine_axis" in metric:
+        return "candidate_head_torso_failure"
     if "elbow" in metric or "shoulder" in metric:
         return "candidate_arm_solver_failure"
     if "knee" in metric:

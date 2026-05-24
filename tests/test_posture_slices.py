@@ -72,6 +72,22 @@ def test_posture_summary_separates_vr_stationary_locomotion_and_ood() -> None:
     assert nonflat.vr_candidate is False
 
 
+def test_posture_summary_rejects_inverted_head_hip_order() -> None:
+    inverted = summarize_reference_posture(
+        [
+            _reference_frame(head=(0.0, 0.75, 0.0), hips=(0.0, 1.05, 0.0)),
+            _reference_frame(head=(0.0, 0.70, 0.0), hips=(0.0, 1.00, 0.0)),
+        ],
+        environment_split="flat",
+        activity_class="stationary_upper_body",
+    )
+
+    assert inverted.posture_class == "inverted"
+    assert inverted.posture_subset == "inverted_ood"
+    assert inverted.vr_candidate is False
+    assert inverted.inverted_pct == approx(100.0)
+
+
 def test_cached_validation_report_groups_posture_slices(tmp_path) -> None:
     cache_dir = tmp_path / "cache"
     _write_cached_clip(
@@ -102,6 +118,7 @@ def test_cached_validation_report_groups_posture_slices(tmp_path) -> None:
     )
     summary = cast(dict[str, object], result["summary"])
     grouped = cast(dict[str, list[dict[str, object]]], summary["grouped_metrics"])
+    posture_frame_counts = cast(dict[str, int], summary["posture_frame_counts"])
     clips = cast(list[dict[str, object]], result["clips"])
 
     assert summary["posture_subset_counts"] == {
@@ -109,6 +126,7 @@ def test_cached_validation_report_groups_posture_slices(tmp_path) -> None:
         "vr_stationary": 1,
     }
     assert summary["posture_vr_candidate_clips"] == 1
+    assert posture_frame_counts["inverted"] == 0
     assert grouped["posture_subset"][0]["posture_subset"] == "floor_reclined_ood"
     assert {clip["clip"]: clip["posture_subset"] for clip in clips} == {
         "01_01": "vr_stationary",

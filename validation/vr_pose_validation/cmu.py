@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CMU_SCALE_TO_METERS = (1.0 / 0.45) * 2.54 / 100.0
+CMU_FRAME_RATE_HZ = 120.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +149,12 @@ def scaled_root_translation(frame: CmuFrame, root: CmuRoot) -> tuple[float, floa
             if value_index < len(values):
                 result[axis_index] = values[value_index] * CMU_SCALE_TO_METERS
     return (result[0], result[1], result[2])
+
+
+def cmu_frame_timestamp_seconds(frame_index: int) -> float:
+    """Return the zero-based timestamp for CMU's one-based AMC frame ids."""
+
+    return (frame_index - 1) / CMU_FRAME_RATE_HZ
 
 
 def ordered_joint_rotation(

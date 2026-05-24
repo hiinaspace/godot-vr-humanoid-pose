@@ -17,6 +17,7 @@ from validation.vr_pose_validation.geometry import (
     Vector3,
     add,
     axis_name_quaternion,
+    conjugate_quaternion,
     euler_quaternion,
     multiply_quaternion,
     rotate_vector,
@@ -49,6 +50,7 @@ class CompiledCmuFkBone:
     parent_name: str
     offset_m: Vector3
     axis_rotation: Quaternion
+    inverse_axis_rotation: Quaternion
     dof_axes: tuple[str, ...]
 
 
@@ -113,11 +115,12 @@ def solve_cmu_pose_frame(
     for bone in effective_plan.bones:
         parent_position = transforms[bone.parent_name].position
         parent_rotation = rotations[bone.parent_name]
-        position = add(parent_position, rotate_vector(parent_rotation, bone.offset_m))
+        local_rotation = _bone_local_rotation(frame, bone)
         rotation = multiply_quaternion(
             parent_rotation,
-            _bone_local_rotation(frame, bone),
+            local_rotation,
         )
+        position = add(parent_position, rotate_vector(rotation, bone.offset_m))
         transforms[bone.name] = Transform(position=position, rotation=rotation)
         rotations[bone.name] = rotation
     return transforms
@@ -138,15 +141,17 @@ def _compile_child(
     bones: list[CompiledCmuFkBone],
 ) -> None:
     bone = skeleton.bones[bone_name]
+    axis_rotation = euler_quaternion(
+        tuple(f"r{axis_name.lower()}" for axis_name in bone.axis_order),
+        bone.axis,
+    )
     bones.append(
         CompiledCmuFkBone(
             name=bone_name,
             parent_name=parent_name,
             offset_m=scale(bone.direction, bone.length_m),
-            axis_rotation=euler_quaternion(
-                tuple(f"r{axis_name.lower()}" for axis_name in bone.axis_order),
-                bone.axis,
-            ),
+            axis_rotation=axis_rotation,
+            inverse_axis_rotation=conjugate_quaternion(axis_rotation),
             dof_axes=tuple(
                 axis for channel in bone.dof if (axis := _axis_name_from_channel(channel))
             ),
@@ -167,20 +172,21 @@ def _root_rotation(frame: CmuFrame, plan: CompiledCmuFkPlan) -> Quaternion:
     ):
         if value_index < len(root_values):
             result = multiply_quaternion(
-                result,
                 axis_name_quaternion(axis, root_values[value_index]),
+                result,
             )
     return result
 
 
 def _bone_local_rotation(frame: CmuFrame, bone: CompiledCmuFkBone) -> Quaternion:
-    if not bone.dof_axes:
-        return bone.axis_rotation
     joint_values = frame.values.get(bone.name, ())
     dof_rotation = IDENTITY_QUATERNION
     for axis, value in zip(bone.dof_axes, joint_values, strict=False):
-        dof_rotation = multiply_quaternion(dof_rotation, axis_name_quaternion(axis, value))
-    return multiply_quaternion(bone.axis_rotation, dof_rotation)
+        dof_rotation = multiply_quaternion(axis_name_quaternion(axis, value), dof_rotation)
+    return multiply_quaternion(
+        multiply_quaternion(bone.axis_rotation, dof_rotation),
+        bone.inverse_axis_rotation,
+    )
 
 
 def _axis_name_from_channel(channel: str) -> str | None:

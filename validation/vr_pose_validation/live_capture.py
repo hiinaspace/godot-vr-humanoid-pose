@@ -10,10 +10,23 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from threading import Event
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import polars as pl
+
+from validation.vr_pose_validation.baseline import EstimatorName, create_estimator
+from validation.vr_pose_validation.geometry import Transform
+from validation.vr_pose_validation.types import (
+    AvatarCalibration,
+    GroundingContext,
+    HumanoidPoseFrame,
+    PoseEstimator,
+    TrackedPoseSample,
+    TrackerAttachment,
+    TrackerRole,
+    TrackerState,
+)
 
 CAPTURE_FORMAT = "godot_vr_humanoid_pose.live_capture.v1"
 TRANSFORM_COMPONENTS = ("px", "py", "pz", "qx", "qy", "qz", "qw")
@@ -265,10 +278,12 @@ def run_tcp_recorder(
     host: str,
     port: int,
     writer: LiveCaptureParquetWriter,
+    estimator_name: EstimatorName | None = None,
     stop_after_client: bool = False,
     stop_event: Event | None = None,
     accept_timeout_seconds: float = 0.5,
 ) -> LiveCaptureSummary:
+    estimator = create_estimator(estimator_name) if estimator_name is not None else None
     with socket.create_server((host, port), reuse_port=False) as server:
         server.settimeout(accept_timeout_seconds)
         while True:
@@ -294,25 +309,254 @@ def run_tcp_recorder(
                         buffer += chunk
                         while b"\n" in buffer:
                             raw_line, buffer = buffer.split(b"\n", 1)
-                            _append_socket_line(raw_line, writer)
+                            response = _handle_socket_line(
+                                raw_line,
+                                writer,
+                                estimator=estimator,
+                                estimator_name=estimator_name,
+                            )
+                            _send_socket_response(client, response)
                 except (ConnectionResetError, BrokenPipeError):
                     pass
                 finally:
                     if buffer.strip():
-                        _append_socket_line(buffer, writer)
+                        response = _handle_socket_line(
+                            buffer,
+                            writer,
+                            estimator=estimator,
+                            estimator_name=estimator_name,
+                        )
+                        _send_socket_response(client, response)
                     writer.flush()
             if stop_after_client:
                 return writer.flush()
 
 
-def _append_socket_line(raw_line: bytes, writer: LiveCaptureParquetWriter) -> None:
+def _send_socket_response(client: socket.socket, response: Mapping[str, Any] | None) -> None:
+    if response is None:
+        return
+    payload = json.dumps(response, separators=(",", ":")).encode("utf-8") + b"\n"
+    client.sendall(payload)
+
+
+def _handle_socket_line(
+    raw_line: bytes,
+    writer: LiveCaptureParquetWriter,
+    *,
+    estimator: PoseEstimator | None,
+    estimator_name: EstimatorName | None,
+) -> Mapping[str, Any] | None:
     line = raw_line.strip()
     if not line:
-        return
+        return None
     parsed = json.loads(line.decode("utf-8"))
     if not isinstance(parsed, Mapping):
         raise ValueError("Live capture socket records must be JSON objects")
-    writer.append_message(parsed)
+    return _handle_socket_message(
+        parsed,
+        writer,
+        estimator=estimator,
+        estimator_name=estimator_name,
+    )
+
+
+def _handle_socket_message(
+    message: Mapping[str, Any],
+    writer: LiveCaptureParquetWriter,
+    *,
+    estimator: PoseEstimator | None,
+    estimator_name: EstimatorName | None,
+) -> Mapping[str, Any] | None:
+    message_type = str(message.get("type", "frame"))
+    if message_type == "reset_estimator":
+        reset = getattr(estimator, "reset", None)
+        if callable(reset):
+            reset()
+        return {
+            "format": CAPTURE_FORMAT,
+            "type": "estimator_reset",
+            "session_id": str(message.get("session_id", "")),
+            "request_id": _int_or_default(message.get("request_id"), 0),
+        }
+    if message_type not in {"estimate_request", "frame"}:
+        writer.append_message(message)
+        return None
+
+    if estimator is None:
+        if message_type == "frame":
+            writer.append_message(message)
+        return _estimate_error_response(message, "estimation is disabled")
+
+    estimated_frame = _estimate_frame_from_message(message, estimator)
+    if message_type == "frame":
+        enriched = dict(message)
+        enriched["estimated_frame"] = estimated_frame
+        writer.append_message(enriched)
+    return _estimate_response(message, estimated_frame, estimator_name=estimator_name)
+
+
+def _estimate_response(
+    message: Mapping[str, Any],
+    estimated_frame: Mapping[str, Any],
+    *,
+    estimator_name: EstimatorName | None,
+) -> Mapping[str, Any]:
+    return {
+        "format": CAPTURE_FORMAT,
+        "type": "estimate_response",
+        "session_id": str(message.get("session_id", "")),
+        "request_id": _int_or_default(message.get("request_id"), 0),
+        "frame_index": _int_or_default(message.get("frame_index"), 0),
+        "clip_index": _int_or_default(message.get("clip_index"), 0),
+        "timestamp_seconds": _float_or_default(message.get("timestamp_seconds"), 0.0),
+        "estimator": estimator_name or "",
+        "estimated_frame": estimated_frame,
+    }
+
+
+def _estimate_error_response(
+    message: Mapping[str, Any],
+    error: str,
+) -> Mapping[str, Any]:
+    return {
+        "format": CAPTURE_FORMAT,
+        "type": "estimate_error",
+        "session_id": str(message.get("session_id", "")),
+        "request_id": _int_or_default(message.get("request_id"), 0),
+        "frame_index": _int_or_default(message.get("frame_index"), 0),
+        "clip_index": _int_or_default(message.get("clip_index"), 0),
+        "timestamp_seconds": _float_or_default(message.get("timestamp_seconds"), 0.0),
+        "error": error,
+    }
+
+
+def _estimate_frame_from_message(
+    message: Mapping[str, Any],
+    estimator: PoseEstimator,
+) -> Mapping[str, Any]:
+    sample = _sample_from_message(message)
+    calibration = _calibration_from_message(_mapping_or_empty(message.get("calibration")))
+    grounding = _grounding_from_message(_mapping_or_empty(message.get("grounding")))
+    return _pose_frame_to_json(estimator.estimate(sample, calibration, grounding))
+
+
+def _sample_from_message(message: Mapping[str, Any]) -> TrackedPoseSample:
+    sample = _mapping_or_empty(message.get("sample"))
+    optional_trackers = sample.get("optional_trackers")
+    optional: dict[TrackerRole, TrackerState] = {}
+    if isinstance(optional_trackers, Mapping):
+        optional = {
+            cast(TrackerRole, str(role)): _tracker_from_message(tracker, fallback_role=str(role))
+            for role, tracker in optional_trackers.items()
+            if isinstance(tracker, Mapping)
+        }
+    return TrackedPoseSample(
+        timestamp_seconds=_float_or_default(
+            sample.get("timestamp_seconds"),
+            _float_or_default(message.get("timestamp_seconds"), 0.0),
+        ),
+        hmd=_tracker_from_message(_mapping_or_empty(sample.get("hmd")), fallback_role="head"),
+        left_hand=_tracker_from_message(
+            _mapping_or_empty(sample.get("left_hand")),
+            fallback_role="left_hand",
+        ),
+        right_hand=_tracker_from_message(
+            _mapping_or_empty(sample.get("right_hand")),
+            fallback_role="right_hand",
+        ),
+        optional_trackers=optional,
+        character_velocity=_vector_from_value(sample.get("character_velocity")),
+    )
+
+
+def _tracker_from_message(
+    value: Mapping[str, Any],
+    *,
+    fallback_role: str,
+) -> TrackerState:
+    return TrackerState(
+        role=cast(TrackerRole, str(value.get("role", fallback_role))),
+        transform=_transform_from_message(_mapping_or_empty(value.get("transform"))),
+        confidence=_float_or_default(value.get("confidence"), 1.0),
+        valid=bool(value.get("valid", True)),
+        attachment=_attachment_from_message(value.get("attachment")),
+    )
+
+
+def _attachment_from_message(value: Any) -> TrackerAttachment | None:
+    if not isinstance(value, Mapping):
+        return None
+    return TrackerAttachment(
+        role=cast(TrackerRole, str(value.get("role", "head"))),
+        source_joint=str(value.get("source_joint", "")),
+        local_transform=_transform_from_message(
+            _mapping_or_empty(value.get("local_transform")),
+        ),
+        confidence=_float_or_default(value.get("confidence"), 1.0),
+        latency_seconds=_float_or_default(value.get("latency_seconds"), 0.0),
+        noise_profile_id=str(value.get("noise_profile_id", "clean")),
+    )
+
+
+def _calibration_from_message(value: Mapping[str, Any]) -> AvatarCalibration:
+    bone_lengths = value.get("bone_lengths_m")
+    return AvatarCalibration(
+        bone_lengths_m={
+            str(key): float(length)
+            for key, length in bone_lengths.items()
+            if isinstance(bone_lengths, Mapping) and isinstance(length, int | float)
+        }
+        if isinstance(bone_lengths, Mapping)
+        else {},
+        avatar_scale=_float_or_default(value.get("avatar_scale"), 1.0),
+        eye_to_head=_transform_from_message(_mapping_or_empty(value.get("eye_to_head"))),
+        left_controller_to_wrist=_transform_from_message(
+            _mapping_or_empty(value.get("left_controller_to_wrist")),
+        ),
+        right_controller_to_wrist=_transform_from_message(
+            _mapping_or_empty(value.get("right_controller_to_wrist")),
+        ),
+        foot_height_m=_float_or_default(value.get("foot_height_m"), 0.08),
+        human_height_m=_float_or_default(value.get("human_height_m"), 1.7),
+    )
+
+
+def _grounding_from_message(value: Mapping[str, Any]) -> GroundingContext:
+    return GroundingContext(
+        floor_height_m=_float_or_default(value.get("floor_height_m"), 0.0),
+        floor_normal=_vector_from_value(value.get("floor_normal"), fallback=(0.0, 1.0, 0.0)),
+        character_velocity=_vector_from_value(value.get("character_velocity")),
+        locomotion_state=str(value.get("locomotion_state", "unknown")),
+    )
+
+
+def _pose_frame_to_json(frame: HumanoidPoseFrame) -> dict[str, Any]:
+    return {
+        "timestamp_seconds": frame.timestamp_seconds,
+        "root": _transform_to_json(frame.root),
+        "joints": {
+            name: {
+                "transform": _transform_to_json(joint.transform),
+                "confidence": joint.confidence,
+                "estimated": joint.estimated,
+            }
+            for name, joint in frame.joints.items()
+        },
+    }
+
+
+def _transform_to_json(transform: Transform) -> dict[str, list[float]]:
+    return {
+        "position": list(transform.position),
+        "rotation": list(transform.rotation),
+    }
+
+
+def _transform_from_message(value: Mapping[str, Any]) -> Transform:
+    return Transform(
+        position=_vector_from_value(value.get("position")),
+        rotation=_quaternion_from_value(value.get("rotation")),
+    )
 
 
 def _devices_from_sample(sample: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -379,6 +623,28 @@ def _float_sequence_or_none(value: Any, length: int) -> tuple[float, ...] | None
     if not isinstance(value, list | tuple) or len(value) != length:
         return None
     return tuple(float(component) for component in value)
+
+
+def _vector_from_value(
+    value: Any,
+    *,
+    fallback: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> tuple[float, float, float]:
+    values = _float_sequence_or_none(value, 3)
+    if values is None:
+        return fallback
+    return (values[0], values[1], values[2])
+
+
+def _quaternion_from_value(
+    value: Any,
+    *,
+    fallback: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+) -> tuple[float, float, float, float]:
+    values = _float_sequence_or_none(value, 4)
+    if values is None:
+        return fallback
+    return (values[0], values[1], values[2], values[3])
 
 
 def _mapping_or_empty(value: Any) -> Mapping[str, Any]:

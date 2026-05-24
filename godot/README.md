@@ -2,11 +2,14 @@
 
 This project hosts the Godot-side sparse VR humanoid pose runtime and debug harness.
 
-The first automated check is parity against a Python-exported fixture:
+The Godot live overlay deliberately does not carry a separate estimator port.
+Run the Python sidecar while the scene is open; it owns the estimator state,
+returns `estimate_response` messages over the same localhost socket used for
+capture, and writes completed clips to Parquet.
 
 ```powershell
-uv run python -m validation.scripts.export_godot_parity_fixture
-& 'S:\lib\godot\bin\godot.windows.editor.x86_64.console.exe' --headless --path godot --script res://tests/run_parity_tests.gd
+uv run python -m validation.scripts.run_live_capture_recorder --estimator basis_research
+& 'S:\lib\godot\bin\godot.windows.editor.x86_64.console.exe' --headless --path godot --script res://tests/run_live_capture_tests.gd
 ```
 
 The current target is Godot 4.6 compatibility, with local verification using the 4.7 development build in `S:\lib\godot\bin`.
@@ -23,23 +26,23 @@ $out = (Resolve-Path .cache\cmu\rendered).Path + '\pose_replay_debug.avi'
 
 ## Live Overlay Capture
 
-The first live-capture path keeps visualization in Godot and durable recording in Python:
+The first live-capture path keeps visualization in Godot and estimation plus
+durable recording in Python:
 
 - Godot scene: `res://scenes/live_overlay_debug.tscn`
-- Recorder sidecar: `uv run python -m validation.scripts.run_live_capture_recorder`
-- Wire protocol: newline-delimited JSON over localhost, formatted as `godot_vr_humanoid_pose.live_capture.v1`
+- Estimator/recorder sidecar: `uv run python -m validation.scripts.run_live_capture_recorder --estimator basis_research`
+- Wire protocol: bidirectional newline-delimited JSON over localhost, formatted as `godot_vr_humanoid_pose.live_capture.v1`
 - Output: `.cache/live_capture/session=<id>/frames.parquet`, `devices.parquet`, and `joints.parquet`
 - Clip grouping: repeated calibrations within one Godot run stay in the same
   session directory and are separated by `clip_index` columns in all Parquet
   tables.
 - Calibration: look at the floor target until it fills, then use the 3-second
   countdown to stand in a T-pose with trackers visible. The snapshot labels
-  anonymous generic trackers by T-pose position and feeds calibrated foot/hip
-  trackers into the capture data. The live estimator defaults to 3-point
-  HMD/controller input with the procedural footstep planner enabled, so the
-  mirror shows the lower-body estimate instead of tracked feet; pass
-  `-- --use-calibrated-trackers-for-estimation` to feed calibrated trackers into
-  the estimator for debugging.
+  anonymous generic trackers by T-pose position and feeds calibrated trackers
+  into the capture data. The live estimate defaults to 3-point HMD/controller
+  input, so the mirror shows the lower-body estimate instead of tracked feet;
+  pass `-- --use-calibrated-trackers-for-estimation` to include calibrated
+  trackers in the Python estimator request for debugging.
 - Recording: after calibration there is a short neutral-stance settle phase,
   then the scene records a 10-second clip at 30 Hz. The Godot scene sends a
   flush message when the clip completes, so the Python sidecar can stay running
@@ -56,7 +59,7 @@ list.
 
 ```powershell
 New-Item -ItemType Junction -Path godot\addons\godot-openvr-overlay -Target S:\code\godot-openvr-overlay\project\addons\godot-openvr-overlay
-uv run python -m validation.scripts.run_live_capture_recorder
+uv run python -m validation.scripts.run_live_capture_recorder --estimator basis_research
 & 'S:\lib\godot\bin\godot.windows.editor.x86_64.console.exe' --path godot --scene res://scenes/live_overlay_debug.tscn
 ```
 

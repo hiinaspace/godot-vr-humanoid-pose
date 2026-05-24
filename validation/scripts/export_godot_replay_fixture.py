@@ -40,6 +40,7 @@ DEFAULT_OUTPUT = Path("godot/tests/fixtures/cmu_walk_replay_fixture.json")
 WORLD_UP: Vector3 = (0.0, 1.0, 0.0)
 WORLD_FORWARD: Vector3 = (0.0, 0.0, 1.0)
 VISUAL_HAND_LENGTH_M = 0.09
+VISUAL_HAND_FORWARD_LENGTH_M = 0.18
 VISUAL_HEAD_FORWARD_LENGTH_M = 0.22
 DEFAULT_BONES = (
     ("hips", "spine"),
@@ -51,10 +52,12 @@ DEFAULT_BONES = (
     ("left_shoulder", "left_elbow"),
     ("left_elbow", "left_wrist"),
     ("left_wrist", "left_hand"),
+    ("left_hand", "left_hand_forward"),
     ("chest", "right_shoulder"),
     ("right_shoulder", "right_elbow"),
     ("right_elbow", "right_wrist"),
     ("right_wrist", "right_hand"),
+    ("right_hand", "right_hand_forward"),
     ("hips", "left_knee"),
     ("left_knee", "left_foot"),
     ("hips", "right_knee"),
@@ -72,7 +75,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--frame-stride", type=int, default=2)
     parser.add_argument(
         "--estimator",
-        choices=("trivial", "planted", "basis", "basis_knee_hint", "basis_footstep"),
+        choices=(
+            "trivial",
+            "planted",
+            "basis",
+            "basis_knee_hint",
+            "basis_footstep",
+            "basis_arm_lookup",
+            "basis_arm_swivel",
+            "basis_shrug",
+            "basis_research",
+        ),
         default="basis",
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -256,6 +269,16 @@ def _with_visual_helper_joints(joints: dict[str, Transform]) -> dict[str, Transf
         visual_joints[wrist_name] = Transform(
             position=wrist,
             rotation=visual_joints[hand_name].rotation,
+        )
+        hand_forward_name = f"{side}_hand_forward"
+        hand = visual_joints[hand_name]
+        hand_forward = normalize(
+            rotate_vector(hand.rotation, WORLD_FORWARD),
+            fallback=WORLD_FORWARD,
+        )
+        visual_joints[hand_forward_name] = Transform(
+            position=add(hand.position, scale(hand_forward, VISUAL_HAND_FORWARD_LENGTH_M)),
+            rotation=hand.rotation,
         )
     return visual_joints
 

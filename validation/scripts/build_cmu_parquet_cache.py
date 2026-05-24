@@ -14,6 +14,7 @@ from zipfile import ZipFile
 
 from validation.vr_pose_validation.cmu import (
     CmuSkeleton,
+    cmu_frame_timestamp_seconds,
     parse_amc_text_sampled,
     parse_asf_text,
 )
@@ -38,7 +39,6 @@ from validation.vr_pose_validation.parquet_cache import (
 
 DEFAULT_ARCHIVE_PATH = Path(".cache/cmu/allasfamc.zip")
 DEFAULT_CACHE_DIR = Path(".cache/cmu/parquet/canonical")
-CMU_FRAME_RATE_HZ = 120.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +161,7 @@ def build_cache(
                     subject=subject,
                     clip=clip,
                     frame_index=frame.index,
-                    timestamp_s=(frame.index - 1) / CMU_FRAME_RATE_HZ,
+                    timestamp_s=cmu_frame_timestamp_seconds(frame.index),
                     joints=pose,
                     environment_split=metadata.environment_split,
                     environment_tags=metadata.environment_tags,

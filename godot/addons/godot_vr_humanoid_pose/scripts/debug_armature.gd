@@ -7,6 +7,7 @@ const DEFAULT_BONE_RADIUS = 0.025
 var bone_pairs: Array = []
 var color: Color = Color(0.2, 0.65, 1.0, 1.0)
 var bone_radius = DEFAULT_BONE_RADIUS
+var pose_origin = Vector3.ZERO
 var _mesh_instance: MeshInstance3D
 
 
@@ -46,8 +47,8 @@ func _rebuild_mesh(frame: Dictionary) -> void:
             continue
         _add_octahedral_bone(
             mesh,
-            _position_from_transform(joints[start_name]),
-            _position_from_transform(joints[end_name]),
+            _position_from_transform(joints[start_name]) - pose_origin,
+            _position_from_transform(joints[end_name]) - pose_origin,
             bone_radius
         )
     mesh.surface_end()

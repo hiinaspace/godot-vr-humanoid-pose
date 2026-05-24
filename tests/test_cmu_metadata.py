@@ -39,6 +39,27 @@ MOTORCYCLE_SUBJECT_HTML = """
 </table>
 """
 
+SHOULDER_WALK_SUBJECT_HTML = """
+<table>
+<tr><td>Subject #114 (Pregnant Woman) file index</td></tr>
+<tr><td></td><td>15</td><td>Walk</td></tr>
+</table>
+"""
+
+SWEEP_FLOOR_SUBJECT_HTML = """
+<table>
+<tr><td>Subject #14 (range of motion) file index</td></tr>
+<tr><td></td><td>16</td><td>sweep floor</td></tr>
+</table>
+"""
+
+QUARREL_SUBJECT_HTML = """
+<table>
+<tr><td>Subject #18 (two-person interaction) file index</td></tr>
+<tr><td></td><td>10</td><td>quarrel - angry hand gestures</td></tr>
+</table>
+"""
+
 
 def test_label_environment_marks_motion_description_nonflat() -> None:
     split, tags, source = label_environment("Walking up and down stairs")
@@ -135,6 +156,22 @@ def test_parse_subject_page_applies_motorcycle_data_issue_clip_override() -> Non
     assert row.activity_label_source == "manual_clip_override"
 
 
+def test_parse_subject_page_applies_visual_review_clip_overrides() -> None:
+    shoulder_walk = clip_metadata_from_subject_page("114", SHOULDER_WALK_SUBJECT_HTML)[0]
+    sweep_floor = clip_metadata_from_subject_page("14", SWEEP_FLOOR_SUBJECT_HTML)[0]
+    quarrel = clip_metadata_from_subject_page("18", QUARREL_SUBJECT_HTML)[0]
+
+    assert shoulder_walk.environment_split == "unknown"
+    assert shoulder_walk.environment_tags == ("data_issue", "inverted_segment")
+    assert shoulder_walk.activity_class == "unknown"
+    assert sweep_floor.environment_split == "unknown"
+    assert sweep_floor.environment_tags == ("borderline_ood", "deep_forward_lean")
+    assert sweep_floor.activity_class == "unknown"
+    assert quarrel.environment_split == "unknown"
+    assert quarrel.environment_tags == ("data_issue", "inverted_segment")
+    assert quarrel.activity_class == "unknown"
+
+
 def test_generic_motion_description_can_inherit_subject_label() -> None:
     rows = clip_metadata_from_subject_page("122", GENERIC_SUBJECT_HTML)
 
@@ -155,6 +192,12 @@ def test_committed_cmu_metadata_file_is_readable() -> None:
     assert metadata["126_04"].activity_class == "swimming"
     assert metadata["104_18"].environment_split == "nonflat"
     assert metadata["104_18"].environment_tags == ("suspended",)
+    assert metadata["14_16"].environment_split == "unknown"
+    assert metadata["14_16"].environment_tags == ("borderline_ood", "deep_forward_lean")
+    assert metadata["18_10"].environment_split == "unknown"
+    assert metadata["18_10"].environment_tags == ("data_issue", "inverted_segment")
+    assert metadata["114_15"].environment_split == "unknown"
+    assert metadata["114_15"].environment_tags == ("data_issue", "inverted_segment")
     assert metadata["133_25"].environment_split == "unknown"
     assert metadata["133_25"].environment_tags == ("data_issue", "sideways_t_pose")
     assert metadata["133_25"].activity_class == "unknown"

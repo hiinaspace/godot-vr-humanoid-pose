@@ -153,6 +153,70 @@ def test_tcp_recorder_stop_event_exits_with_connected_client(tmp_path) -> None:
     assert summary.frames == 0
 
 
+def test_tcp_recorder_replies_to_live_estimate_requests(tmp_path) -> None:
+    writer = LiveCaptureParquetWriter(tmp_path, session_id="estimate-request")
+    port = _free_tcp_port()
+    result: dict[str, object] = {}
+    request = _frame_message(frame_index=7, timestamp_seconds=1.0)
+    request["type"] = "estimate_request"
+    request["request_id"] = 42
+    request.pop("estimated_frame")
+
+    def run_server() -> None:
+        result["summary"] = run_tcp_recorder(
+            host="127.0.0.1",
+            port=port,
+            writer=writer,
+            estimator_name="basis",
+            stop_after_client=True,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    with socket.create_connection(("127.0.0.1", port), timeout=5.0) as client:
+        client.sendall((json.dumps(request) + "\n").encode())
+        response = json.loads(client.makefile("r", encoding="utf-8").readline())
+
+    thread.join(timeout=5.0)
+
+    assert response["type"] == "estimate_response"
+    assert response["request_id"] == 42
+    assert "hips" in response["estimated_frame"]["joints"]
+    summary = cast(LiveCaptureSummary, result["summary"])
+    assert summary.frames == 0
+
+
+def test_tcp_recorder_enriches_recorded_frames_with_python_estimates(tmp_path) -> None:
+    writer = LiveCaptureParquetWriter(tmp_path, session_id="estimate-frame")
+    port = _free_tcp_port()
+    result: dict[str, object] = {}
+    request = _frame_message(frame_index=0, timestamp_seconds=1.0)
+    request.pop("estimated_frame")
+
+    def run_server() -> None:
+        result["summary"] = run_tcp_recorder(
+            host="127.0.0.1",
+            port=port,
+            writer=writer,
+            estimator_name="basis",
+            stop_after_client=True,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    with socket.create_connection(("127.0.0.1", port), timeout=5.0) as client:
+        client.sendall((json.dumps(request) + "\n").encode())
+        response = json.loads(client.makefile("r", encoding="utf-8").readline())
+
+    thread.join(timeout=5.0)
+
+    assert response["type"] == "estimate_response"
+    summary = cast(LiveCaptureSummary, result["summary"])
+    assert summary.frames == 1
+    joints = pl.read_parquet(summary.session_dir / "joints.parquet")
+    assert "hips" in joints["joint"].to_list()
+
+
 def _session_message() -> dict[str, object]:
     return {
         "format": CAPTURE_FORMAT,

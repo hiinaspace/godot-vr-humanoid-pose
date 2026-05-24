@@ -1,7 +1,6 @@
 extends Node3D
 class_name VRHumanoidLiveOverlayDebug
 
-const BasisEstimator = preload("res://addons/godot_vr_humanoid_pose/scripts/basis_port_estimator.gd")
 const DebugArmature = preload("res://addons/godot_vr_humanoid_pose/scripts/debug_armature.gd")
 const StreamClient = preload("res://addons/godot_vr_humanoid_pose/scripts/live_capture_stream_client.gd")
 const TrackerCalibration = preload("res://addons/godot_vr_humanoid_pose/scripts/live_tracker_calibration.gd")
@@ -41,6 +40,7 @@ const DEFAULT_BONES = [
 @export var post_calibration_settle_seconds = 2.0
 @export var clip_duration_seconds = 10.0
 @export var capture_sample_rate_hz = 30.0
+@export var estimate_sample_rate_hz = 30.0
 @export var tracker_marker_radius_m = 0.028
 @export var tracker_label_font_size = 10
 @export var mirror_x_axis_enabled = true
@@ -61,11 +61,11 @@ var grounding = {
 	"locomotion_state": "unknown",
 }
 
-var _estimator = BasisEstimator.new()
 var _stream_client = StreamClient.new()
 var _tracker_calibrator = TrackerCalibration.new()
 var _session_id = ""
 var _frame_index = 0
+var _estimate_request_index = 0
 var _xr_interface
 var _origin: XROrigin3D
 var _camera: XRCamera3D
@@ -82,16 +82,18 @@ var _calibration_dwell_s = 0.0
 var _capture_phase = "idle"
 var _phase_remaining_s = 0.0
 var _last_stream_timestamp_s = -INF
+var _last_estimate_request_timestamp_s = -INF
 var _clip_index = 0
 var _last_flushed_clip_index = -1
 var _requires_gaze_release = false
 var _headlocked_prompt_root: Node3D
 var _headlocked_prompt: Label3D
+var _latest_estimated_frame: Dictionary = {}
+var _last_estimate_error = ""
 
 
 func _ready() -> void:
 	_apply_user_args()
-	_configure_live_estimator()
 	_session_id = _new_session_id()
 	_stream_client.configure(stream_host, stream_port)
 	_setup_xr_nodes()
@@ -100,33 +102,9 @@ func _ready() -> void:
 		_initialize_openvr_overlay()
 
 
-func _configure_live_estimator() -> void:
-	_estimator.settings["footstep_planner_enabled"] = true
-	_estimator.settings["stance_width_ratio"] = 0.22
-	_estimator.settings["support_hips_xz_follow_blend"] = 0.0
-	_estimator.settings["max_anchor_stretch_m"] = 0.14
-	_estimator.settings["footstep_release_stretch_m"] = 0.20
-	_estimator.settings["footstep_speed_release_reduction_s"] = 0.02
-	_estimator.settings["footstep_forward_lead_m"] = 0.22
-	_estimator.settings["footstep_speed_lead_s"] = 0.05
-	_estimator.settings["footstep_max_forward_lead_m"] = 0.42
-	_estimator.settings["footstep_max_step_length_m"] = 0.72
-	_estimator.settings["footstep_swing_retarget_stretch_m"] = 0.24
-	_estimator.settings["footstep_max_neutral_stretch_m"] = 0.58
-	_estimator.settings["footstep_min_lateral_ratio"] = 0.45
-	_estimator.settings["footstep_min_interval_s"] = 0.20
-	_estimator.settings["footstep_catchup_release_stretch_m"] = 0.48
-	_estimator.settings["footstep_trailing_release_stretch_m"] = 0.28
-	_estimator.settings["footstep_stop_speed_m_s"] = 0.10
-	_estimator.settings["footstep_catchup_duration_s"] = 0.28
-	_estimator.settings["footstep_speed_duration_reduction_s"] = 0.0
-	_estimator.settings["step_duration_s"] = 0.36
-	_estimator.settings["step_lift_height_m"] = 0.075
-	_estimator.settings["arm_bend_lookup_blend"] = 0.75
-
-
 func _process(delta: float) -> void:
-	_stream_client.poll_connection()
+	for message in _stream_client.poll_messages():
+		_handle_stream_message(message)
 	if _stream_client.is_stream_connected() and not _session_message_sent:
 		_session_message_sent = _stream_client.send_message(
 			_stream_client.build_session_message(_session_id, "godot_live_overlay")
@@ -146,8 +124,13 @@ func _process(delta: float) -> void:
 		_tracker_calibration
 	)
 	var estimator_sample = _estimator_sample(sample)
+	_send_estimation_or_recording_message(sample, estimator_sample, devices)
 
-	var estimated_frame: Dictionary = _estimator.estimate(estimator_sample, calibration, grounding)
+	var estimated_frame: Dictionary = _latest_estimated_frame
+	if estimated_frame.is_empty():
+		_update_headlocked_prompt()
+		_status.text = "%s | waiting for Python estimator" % _status_text(devices)
+		return
 	var debug_frame = _debug_frame_from_estimate(estimated_frame)
 	var display_forward = _display_forward(devices)
 	var display_frame = _mirror_display_frame(debug_frame, display_forward)
@@ -156,24 +139,6 @@ func _process(delta: float) -> void:
 	_update_tracker_markers(devices, estimated_frame, display_forward)
 	_update_headlocked_prompt()
 	_status.text = _status_text(devices)
-
-	if _should_stream_frame(sample["timestamp_seconds"]):
-		var message = _stream_client.build_frame_message(
-			_session_id,
-			_frame_index,
-			sample["timestamp_seconds"],
-			sample,
-			estimated_frame,
-			calibration,
-			grounding,
-			devices,
-			"standing",
-			_raw_to_standing_transform(),
-			_clip_index
-		)
-		_stream_client.send_message(message)
-		_last_stream_timestamp_s = sample["timestamp_seconds"]
-		_frame_index += 1
 
 
 func _setup_xr_nodes() -> void:
@@ -297,6 +262,62 @@ func _estimator_sample(sample: Dictionary) -> Dictionary:
 	var estimator_sample = sample.duplicate(true)
 	estimator_sample["optional_trackers"] = {}
 	return estimator_sample
+
+
+func _send_estimation_or_recording_message(
+	sample: Dictionary,
+	estimator_sample: Dictionary,
+	devices: Array
+) -> void:
+	var timestamp_seconds = float(sample["timestamp_seconds"])
+	if _should_stream_frame(timestamp_seconds):
+		var message = _stream_client.build_frame_message(
+			_session_id,
+			_frame_index,
+			timestamp_seconds,
+			estimator_sample,
+			{},
+			calibration,
+			grounding,
+			devices,
+			"standing",
+			_raw_to_standing_transform(),
+			_clip_index
+		)
+		if _stream_client.send_message(message):
+			_last_stream_timestamp_s = timestamp_seconds
+			_frame_index += 1
+			return
+
+	if not _should_request_estimate(timestamp_seconds):
+		return
+	var request = _stream_client.build_estimate_request_message(
+		_session_id,
+		_estimate_request_index,
+		_frame_index,
+		timestamp_seconds,
+		estimator_sample,
+		calibration,
+		grounding,
+		"standing",
+		_clip_index
+	)
+	if _stream_client.send_message(request):
+		_last_estimate_request_timestamp_s = timestamp_seconds
+		_estimate_request_index += 1
+
+
+func _handle_stream_message(message: Dictionary) -> void:
+	if str(message.get("session_id", "")) != _session_id:
+		return
+	var message_type = str(message.get("type", ""))
+	if message_type == "estimate_response":
+		var estimated = message.get("estimated_frame", {})
+		if estimated is Dictionary and not estimated.is_empty():
+			_latest_estimated_frame = estimated
+			_last_estimate_error = ""
+	elif message_type == "estimate_error":
+		_last_estimate_error = str(message.get("error", "estimate_error"))
 
 
 func _sample_from_devices(timestamp_seconds: float, devices: Array) -> Dictionary:
@@ -598,7 +619,15 @@ func _update_countdown_capture_state(
 	var calibration_sample = sample.duplicate(true)
 	calibration_sample["hmd"] = head_tracker
 	_tracker_calibration = _tracker_calibrator.build_calibration(calibration_sample, devices)
-	_estimator.reset()
+	_latest_estimated_frame = {}
+	_last_estimate_request_timestamp_s = -INF
+	_stream_client.send_message({
+		"format": StreamClient.CAPTURE_FORMAT,
+		"type": "reset_estimator",
+		"session_id": _session_id,
+		"request_id": _estimate_request_index,
+	})
+	_estimate_request_index += 1
 	_capture_phase = "settle"
 	_phase_remaining_s = post_calibration_settle_seconds
 	_clip_index += 1
@@ -663,10 +692,20 @@ func _capture_progress() -> float:
 
 
 func _status_text(devices: Array) -> String:
-	var recorder = "recorder connected" if _stream_client.is_stream_connected() else "recorder offline"
+	var recorder = "sidecar connected" if _stream_client.is_stream_connected() else "sidecar offline"
 	var tracker_count = _generic_tracker_count(devices)
 	var estimator_mode = "calibrated estimate" if use_calibrated_trackers_for_estimation else "3-point estimate"
-	var prefix = "%s | live %d targets | %s" % [recorder, tracker_count, estimator_mode]
+	var estimator_status = "python estimate"
+	if _latest_estimated_frame.is_empty():
+		estimator_status = "waiting python estimate"
+	if not _last_estimate_error.is_empty():
+		estimator_status = "estimate error: %s" % _last_estimate_error
+	var prefix = "%s | live %d targets | %s | %s" % [
+		recorder,
+		tracker_count,
+		estimator_mode,
+		estimator_status,
+	]
 	if _capture_phase == "idle":
 		if _requires_gaze_release:
 			return "%s | release gaze target" % prefix
@@ -713,6 +752,16 @@ func _should_stream_frame(timestamp_seconds: float) -> bool:
 	return (
 		_last_stream_timestamp_s == -INF
 		or timestamp_seconds - _last_stream_timestamp_s >= min_interval
+	)
+
+
+func _should_request_estimate(timestamp_seconds: float) -> bool:
+	if estimate_sample_rate_hz <= 0.0:
+		return true
+	var min_interval = 1.0 / estimate_sample_rate_hz
+	return (
+		_last_estimate_request_timestamp_s == -INF
+		or timestamp_seconds - _last_estimate_request_timestamp_s >= min_interval
 	)
 
 

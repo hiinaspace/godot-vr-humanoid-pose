@@ -45,21 +45,33 @@ def test_build_outlier_review_selects_metric_union_and_buckets() -> None:
                 "reference_error_p95_m": 0.9,
                 "mean_contact_slip_m_per_s": 0.2,
             },
+            {
+                "clip": "143_27",
+                "subject": "143",
+                "motion_description": "Washing Window",
+                "environment_split": "flat",
+                "activity_class": "stationary_upper_body",
+                "posture_subset": "vr_stationary",
+                "posture_inverted_pct": 8.0,
+                "reference_error_p95_m": 0.8,
+                "mean_contact_slip_m_per_s": 0.0,
+            },
         ],
         metrics=(
             "reference_error_p95_m",
             "mean_contact_slip_m_per_s",
             "pct_elbow_flexion_over_limit",
         ),
-        top_per_metric=2,
+        top_per_metric=3,
     )
 
     by_clip = {str(row["clip"]): row for row in rows}
 
-    assert set(by_clip) == {"07_12", "105_50", "133_25"}
+    assert set(by_clip) == {"07_12", "105_50", "133_25", "143_27"}
     assert by_clip["07_12"]["review_hint"] == "candidate_footstep_failure"
     assert by_clip["105_50"]["review_hint"] == "candidate_arm_solver_failure"
     assert by_clip["133_25"]["review_hint"] == "possible_bad_data"
+    assert by_clip["143_27"]["review_hint"] == "likely_ood_posture"
     assert "reference_error_p95_m#1" in str(by_clip["07_12"]["selection_metrics"])
     assert "pct_elbow_flexion_over_limit#1" in str(by_clip["105_50"]["selection_metrics"])
 
@@ -84,3 +96,69 @@ def test_write_outlier_review_csv_serializes_tags(tmp_path) -> None:
 
     assert rows[0]["environment_tags"] == "data_issue;sideways_t_pose"
     assert rows[0]["activity_tags"] == "parse_issue"
+
+
+def test_build_outlier_review_can_bucket_and_exclude_bad_reference_clips() -> None:
+    clips = [
+        {
+            "clip": "82_01",
+            "subject": "82",
+            "motion_description": "static pose",
+            "environment_split": "flat",
+            "activity_class": "idle_standing",
+            "posture_subset": "vr_stationary",
+            "reference_plausibility_bucket": "implausible_reference",
+            "reference_plausibility_tags": ("head_below_floor",),
+            "mean_elbow_error_m": 1.0,
+        },
+        {
+            "clip": "80_16",
+            "subject": "80",
+            "motion_description": "mixing batter",
+            "environment_split": "flat",
+            "activity_class": "stationary_upper_body",
+            "posture_subset": "vr_stationary",
+            "reference_plausibility_bucket": "plausible",
+            "mean_elbow_error_m": 0.8,
+        },
+    ]
+
+    unfiltered = build_outlier_review(
+        clips,
+        metrics=("mean_elbow_error_m",),
+        top_per_metric=2,
+    )
+    filtered = build_outlier_review(
+        clips,
+        metrics=("mean_elbow_error_m",),
+        top_per_metric=2,
+        excluded_reference_buckets={"implausible_reference"},
+    )
+
+    assert {row["clip"]: row["review_hint"] for row in unfiltered}["82_01"] == (
+        "possible_bad_reference"
+    )
+    assert [row["clip"] for row in filtered] == ["80_16"]
+
+
+def test_build_outlier_review_buckets_head_torso_orientation_failures() -> None:
+    rows = build_outlier_review(
+        [
+            {
+                "clip": "22_17",
+                "subject": "22",
+                "motion_description": "arm wrestle",
+                "environment_split": "flat",
+                "activity_class": "stationary_upper_body",
+                "posture_subset": "vr_stationary",
+                "head_forward_error_p95_deg": 145.0,
+                "pct_head_forward_error_over_90deg": 12.0,
+                "mean_neck_axis_error_deg": 50.0,
+            }
+        ],
+        metrics=("head_forward_error_p95_deg",),
+        top_per_metric=1,
+    )
+
+    assert rows[0]["review_hint"] == "candidate_head_torso_failure"
+    assert rows[0]["primary_metric"] == "head_forward_error_p95_deg"

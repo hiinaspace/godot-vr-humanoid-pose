@@ -68,3 +68,16 @@ def test_replay_visual_helpers_add_reference_neck_when_missing() -> None:
     assert "neck" in visual_joints
     assert visual_joints["chest"].position[1] < visual_joints["neck"].position[1]
     assert visual_joints["neck"].position[1] < visual_joints["head"].position[1]
+
+
+def test_replay_visual_helpers_add_hand_forward_marker() -> None:
+    hand_rotation = look_rotation(WORLD_FORWARD)
+    joints = {
+        "left_elbow": Transform(position=(-0.35, 1.2, 0.0)),
+        "left_hand": Transform(position=(-0.55, 1.0, 0.0), rotation=hand_rotation),
+    }
+
+    visual_joints = _with_visual_helper_joints(joints)
+
+    assert "left_hand_forward" in visual_joints
+    assert visual_joints["left_hand_forward"].position[2] > visual_joints["left_hand"].position[2]

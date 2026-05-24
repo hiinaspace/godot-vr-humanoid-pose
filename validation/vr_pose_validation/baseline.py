@@ -28,6 +28,7 @@ type EstimatorName = Literal[
     "basis_footstep",
     "basis_arm_lookup",
     "basis_arm_swivel",
+    "basis_shrug",
     "basis_research",
 ]
 
@@ -141,6 +142,8 @@ def create_estimator(name: EstimatorName) -> PoseEstimator:
         return BasisPortEstimator(BasisEstimatorSettings(arm_bend_strategy="basis_lookup"))
     if name == "basis_arm_swivel":
         return BasisPortEstimator(BasisEstimatorSettings(arm_bend_strategy="manikin_swivel"))
+    if name == "basis_shrug":
+        return BasisPortEstimator(_shoulder_shrug_settings())
     if name == "basis_footstep":
         return BasisPortEstimator(_footstep_settings())
     if name == "basis_research":
@@ -150,6 +153,20 @@ def create_estimator(name: EstimatorName) -> PoseEstimator:
             )
         )
     raise ValueError(f"Unknown estimator: {name}")
+
+
+def _shoulder_shrug_settings() -> BasisEstimatorSettings:
+    return BasisEstimatorSettings(
+        shoulder_shrug_enabled=True,
+        shoulder_shrug_start_ratio=0.26,
+        shoulder_shrug_full_ratio=0.78,
+        shoulder_shrug_min_reach_ratio=0.25,
+        shoulder_shrug_full_reach_ratio=0.86,
+        shoulder_shrug_abduction_start_ratio=0.24,
+        shoulder_shrug_abduction_full_ratio=0.78,
+        shoulder_shrug_max_elevation_m=0.08,
+        shoulder_shrug_forward_gain_m=0.05,
+    )
 
 
 def _footstep_settings(

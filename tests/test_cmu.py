@@ -4,6 +4,7 @@ from pytest import approx
 
 from validation.vr_pose_validation.cmu import (
     CMU_SCALE_TO_METERS,
+    cmu_frame_timestamp_seconds,
     ordered_joint_rotation,
     parse_amc_text,
     parse_amc_text_sampled,
@@ -85,3 +86,9 @@ def test_parse_amc_text_sampled_counts_source_frames() -> None:
 
     assert selection.source_frame_count == 2
     assert [frame.index for frame in selection.frames] == [1]
+
+
+def test_cmu_frame_timestamp_seconds_uses_one_based_120hz_frame_ids() -> None:
+    assert cmu_frame_timestamp_seconds(1) == 0.0
+    assert cmu_frame_timestamp_seconds(2) == approx(1.0 / 120.0)
+    assert cmu_frame_timestamp_seconds(10) == approx(9.0 / 120.0)

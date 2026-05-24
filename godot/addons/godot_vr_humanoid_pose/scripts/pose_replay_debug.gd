@@ -8,8 +8,10 @@ const DEFAULT_FIXTURE_PATH = "res://tests/fixtures/cmu_walk_replay_fixture.json"
 @export var playback_fps = 30.0
 @export var lane_offset_m = 0.85
 @export var view_row_gap_m = 1.9
-@export var camera_padding = 1.18
-@export var minimum_camera_size_m = 4.6
+@export var camera_padding = 1.30
+@export var minimum_camera_size_m = 4.4
+@export var center_on_pose = true
+@export var fixed_window_camera = true
 
 var fixture: Dictionary = {}
 var frame_index = 0
@@ -20,6 +22,7 @@ var _reference_side_armature
 var _estimated_side_armature
 var _camera: Camera3D
 var _light: DirectionalLight3D
+var _fixture_bounds: Dictionary = {}
 
 
 func _ready() -> void:
@@ -51,6 +54,7 @@ func load_fixture(path: String) -> void:
         fixture = {}
         return
     fixture = parsed
+    _fixture_bounds = {}
 
 
 func set_frame_index(index: int) -> void:
@@ -63,11 +67,16 @@ func set_frame_index(index: int) -> void:
     var pairs: Array = fixture.get("bone_pairs", [])
     var reference_frame: Dictionary = reference_frames[frame_index]
     var estimated_frame: Dictionary = estimated_frames[frame_index]
+    var pose_origin = _pose_origin(reference_frame, estimated_frame)
 
     _position_armature(_reference_front_armature, -lane_offset_m, view_row_gap_m * 0.5, 0.0)
     _position_armature(_estimated_front_armature, lane_offset_m, view_row_gap_m * 0.5, 0.0)
     _position_armature(_reference_side_armature, -lane_offset_m, -view_row_gap_m * 0.5, 90.0)
     _position_armature(_estimated_side_armature, lane_offset_m, -view_row_gap_m * 0.5, 90.0)
+    _set_pose_origin(_reference_front_armature, pose_origin)
+    _set_pose_origin(_estimated_front_armature, pose_origin)
+    _set_pose_origin(_reference_side_armature, pose_origin)
+    _set_pose_origin(_estimated_side_armature, pose_origin)
 
     _reference_front_armature.set_pose_frame(reference_frame, pairs, Color(0.15, 0.55, 1.0, 1.0))
     _estimated_front_armature.set_pose_frame(estimated_frame, pairs, Color(1.0, 0.35, 0.18, 1.0))
@@ -99,12 +108,8 @@ func _setup_scene() -> void:
 
 
 func _update_camera(reference_frame: Dictionary, estimated_frame: Dictionary) -> void:
-    var bounds = _pose_bounds(reference_frame, _reference_front_armature)
-    bounds = _merge_bounds(bounds, _pose_bounds(estimated_frame, _estimated_front_armature))
-    bounds = _merge_bounds(bounds, _pose_bounds(reference_frame, _reference_side_armature))
-    bounds = _merge_bounds(bounds, _pose_bounds(estimated_frame, _estimated_side_armature))
+    var bounds = _camera_bounds(reference_frame, estimated_frame)
     var target = (bounds["min"] + bounds["max"]) * 0.5
-    target.y -= view_row_gap_m * 0.05
     var span = bounds["max"] - bounds["min"]
     _camera.projection = Camera3D.PROJECTION_ORTHOGONAL
     var viewport_size = Vector2(1600.0, 1200.0)
@@ -148,18 +153,91 @@ func _position_armature(armature: Node3D, x: float, y: float, yaw_degrees: float
     armature.rotation_degrees = Vector3(0.0, yaw_degrees, 0.0)
 
 
+func _set_pose_origin(armature: Node3D, pose_origin: Vector3) -> void:
+    armature.set("pose_origin", pose_origin)
+
+
+func _pose_origin(reference_frame: Dictionary, estimated_frame: Dictionary) -> Vector3:
+    if not center_on_pose:
+        return Vector3.ZERO
+    var centers: Array[Vector3] = []
+    _append_center_joint(centers, reference_frame, "hips")
+    _append_center_joint(centers, estimated_frame, "hips")
+    _append_center_joint(centers, reference_frame, "head")
+    _append_center_joint(centers, estimated_frame, "head")
+    if centers.is_empty():
+        return Vector3.ZERO
+    var total = Vector3.ZERO
+    for center in centers:
+        total += center
+    var origin = total / float(centers.size())
+    origin.y = 0.0
+    return origin
+
+
+func _append_center_joint(centers: Array[Vector3], frame: Dictionary, joint_name: String) -> void:
+    var joints: Dictionary = frame.get("joints", {})
+    if joints.has(joint_name):
+        centers.append(_position_from_transform(joints[joint_name]))
+
+
 func _pose_bounds(frame: Dictionary, armature: Node3D) -> Dictionary:
     var joints: Dictionary = frame.get("joints", {})
     var min_position = Vector3(INF, INF, INF)
     var max_position = Vector3(-INF, -INF, -INF)
+    var pose_origin = _armature_pose_origin(armature)
     for joint in joints.values():
-        var position = armature.basis * _position_from_transform(joint) + armature.position
+        var position = (
+            armature.basis * (_position_from_transform(joint) - pose_origin)
+            + armature.position
+        )
         min_position = min_position.min(position)
         max_position = max_position.max(position)
     if joints.is_empty():
         min_position = armature.position
         max_position = armature.position
     return {"min": min_position, "max": max_position}
+
+
+func _armature_pose_origin(armature: Node3D) -> Vector3:
+    var value = armature.get("pose_origin")
+    if value is Vector3:
+        return value
+    return Vector3.ZERO
+
+
+func _camera_bounds(reference_frame: Dictionary, estimated_frame: Dictionary) -> Dictionary:
+    if fixed_window_camera:
+        if _fixture_bounds.is_empty():
+            _fixture_bounds = _compute_fixture_bounds()
+        if not _fixture_bounds.is_empty():
+            return _fixture_bounds
+    return _frame_pair_bounds(reference_frame, estimated_frame)
+
+
+func _compute_fixture_bounds() -> Dictionary:
+    var reference_frames: Array = fixture.get("reference_frames", [])
+    var estimated_frames: Array = fixture.get("estimated_frames", [])
+    var frame_count = mini(reference_frames.size(), estimated_frames.size())
+    if frame_count <= 0:
+        return {}
+    var bounds = {}
+    for index in range(frame_count):
+        var frame_bounds = _frame_pair_bounds(reference_frames[index], estimated_frames[index])
+        bounds = frame_bounds if bounds.is_empty() else _merge_bounds(bounds, frame_bounds)
+    return bounds
+
+
+func _frame_pair_bounds(reference_frame: Dictionary, estimated_frame: Dictionary) -> Dictionary:
+    var pose_origin = _pose_origin(reference_frame, estimated_frame)
+    _set_pose_origin(_reference_front_armature, pose_origin)
+    _set_pose_origin(_estimated_front_armature, pose_origin)
+    _set_pose_origin(_reference_side_armature, pose_origin)
+    _set_pose_origin(_estimated_side_armature, pose_origin)
+    var bounds = _pose_bounds(reference_frame, _reference_front_armature)
+    bounds = _merge_bounds(bounds, _pose_bounds(estimated_frame, _estimated_front_armature))
+    bounds = _merge_bounds(bounds, _pose_bounds(reference_frame, _reference_side_armature))
+    return _merge_bounds(bounds, _pose_bounds(estimated_frame, _estimated_side_armature))
 
 
 func _merge_bounds(a: Dictionary, b: Dictionary) -> Dictionary:

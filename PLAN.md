@@ -274,7 +274,7 @@ src/
     tracked_pose_sample.*
     avatar_calibration.*
     humanoid_pose_frame.*
-    basis_port_estimator.*
+    sparse_pose_estimator.*
     foot_grounding.*
     vmc_adapter.*
 validation/

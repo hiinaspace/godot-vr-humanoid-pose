@@ -40,6 +40,7 @@ WORLD_UP: Vector3 = (0.0, 1.0, 0.0)
 WORLD_FORWARD: Vector3 = (0.0, 0.0, 1.0)
 type FootPhase = Literal["unplanted", "planted", "swing", "settle"]
 type ArmBendStrategy = Literal["default", "basis_lookup", "manikin_swivel"]
+type TorsoHeightPolicy = Literal["standing", "crouch", "sitting"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,20 @@ class BasisEstimatorSettings:
     hips_xz_follow_blend: float = 0.35
     support_hips_xz_follow_blend: float = 0.65
     max_torso_lean_degrees: float = 35.0
+    crouch_head_height_ratio: float = 0.82
+    sitting_head_height_ratio: float = 0.64
+    crouch_max_torso_lean_degrees: float = 45.0
+    sitting_max_torso_lean_degrees: float = 70.0
+    crouch_support_follow_scale: float = 0.60
+    sitting_support_follow_scale: float = 0.25
+    body_heading_lerp_speed: float = 12.0
+    body_heading_head_weight: float = 1.0
+    body_heading_state_weight: float = 1.2
+    body_heading_hand_weight: float = 0.25
+    body_heading_velocity_weight: float = 0.70
+    body_heading_min_head_horizontal: float = 0.20
+    body_heading_full_head_horizontal: float = 0.55
+    body_heading_flip_deadzone: float = -0.15
     controller_lateral_flip_threshold_m: float = 0.08
     controller_lateral_flip_min_head_pitch: float = 0.20
     neck_rotation_lerp_speed: float = 40.0
@@ -110,6 +125,15 @@ class BasisEstimatorSettings:
     shoulder_cross_body_gain_m: float = 0.025
     shoulder_reach_slack_m: float = 0.02
     max_shoulder_reach_shift_m: float = 0.16
+    shoulder_shrug_enabled: bool = False
+    shoulder_shrug_start_ratio: float = 0.30
+    shoulder_shrug_full_ratio: float = 0.85
+    shoulder_shrug_min_reach_ratio: float = 0.45
+    shoulder_shrug_full_reach_ratio: float = 0.90
+    shoulder_shrug_abduction_start_ratio: float = 0.25
+    shoulder_shrug_abduction_full_ratio: float = 0.80
+    shoulder_shrug_max_elevation_m: float = 0.12
+    shoulder_shrug_forward_gain_m: float = 0.06
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +180,7 @@ class _FootTarget:
 
 @dataclass(slots=True)
 class _TorsoState:
+    body_forward: Vector3 | None = None
     neck_rotation: Quaternion | None = None
     chest_rotation: Quaternion | None = None
     spine_rotation: Quaternion | None = None
@@ -198,11 +223,17 @@ class BasisPortEstimator:
         self._torso_state.previous_timestamp_seconds = sample.timestamp_seconds
         head_source = _source_joint_position(sample.hmd)
         head_rotation = sample.hmd.transform.rotation
-        forward = _disambiguate_body_forward(
+        height_policy = _torso_height_policy(
+            head_source,
+            calibration,
+            grounding,
+            self.settings,
+        )
+        forward = self._estimate_body_forward(
             sample,
             _head_forward(sample.hmd),
-            self.settings.controller_lateral_flip_threshold_m,
-            self.settings.controller_lateral_flip_min_head_pitch,
+            grounding,
+            dt,
         )
         right = normalize(cross(forward, WORLD_UP), fallback=(-1.0, 0.0, 0.0))
 
@@ -218,6 +249,7 @@ class BasisPortEstimator:
             neck_position,
             forward,
             torso_lengths.neck_to_hips,
+            height_policy,
         )
         chest_position = lerp(
             neck_position,
@@ -458,6 +490,44 @@ class BasisPortEstimator:
             spine_to_hips=spine_to_hips,
         )
 
+    def _estimate_body_forward(
+        self,
+        sample: TrackedPoseSample,
+        head_forward: Vector3,
+        grounding: GroundingContext,
+        dt: float,
+    ) -> Vector3:
+        candidate = _disambiguate_body_forward(
+            sample,
+            head_forward,
+            self.settings.controller_lateral_flip_threshold_m,
+            self.settings.controller_lateral_flip_min_head_pitch,
+        )
+        previous = self._torso_state.body_forward
+        target = _body_forward_evidence(
+            sample,
+            grounding,
+            candidate,
+            previous,
+            self.settings,
+        )
+        if (
+            previous is not None
+            and dot(target, previous) < self.settings.body_heading_flip_deadzone
+        ):
+            target = previous
+        forward = (
+            target
+            if previous is None
+            else _smooth_direction(
+                previous,
+                target,
+                _exp_alpha(self.settings.body_heading_lerp_speed, dt),
+            )
+        )
+        self._torso_state.body_forward = forward
+        return forward
+
     def _estimate_hips(
         self,
         sample: TrackedPoseSample,
@@ -465,6 +535,7 @@ class BasisPortEstimator:
         neck_position: Vector3,
         forward: Vector3,
         neck_to_hips_length: float,
+        height_policy: TorsoHeightPolicy,
     ) -> Vector3:
         floor_y = grounding.floor_height_m
         ideal = add(
@@ -477,7 +548,10 @@ class BasisPortEstimator:
         )
         support_center = self._support_center()
         if support_center is not None:
-            blend = self.settings.support_hips_xz_follow_blend
+            blend = self.settings.support_hips_xz_follow_blend * _support_follow_scale(
+                height_policy,
+                self.settings,
+            )
             ideal = (
                 ideal[0] + (support_center[0] - ideal[0]) * blend,
                 ideal[1],
@@ -497,7 +571,7 @@ class BasisPortEstimator:
         return _clamp_hips_lateral(
             neck_position,
             ideal,
-            self.settings.max_torso_lean_degrees,
+            _max_torso_lean_degrees(height_policy, self.settings),
         )
 
     def _support_center(self) -> Vector3 | None:
@@ -1099,26 +1173,38 @@ class BasisPortEstimator:
             arm_length,
             self.settings.shoulder_reach_engage_ratio,
         )
-        if reach_ratio <= 0.0:
-            return shoulder_position
 
         local_dir = _chest_local_direction(shoulder_to_hand, right, forward)
         local_x, local_y, local_z = local_dir
         elevation = _clamp01(local_y) * reach_ratio
         protraction = _clamp01(local_z) * reach_ratio
+        outward = _clamp01(side * local_x)
         cross_body = _clamp01(local_x) if side < 0.0 else _clamp01(-local_x)
+        shrug = self._shoulder_shrug(
+            shoulder_to_hand=shoulder_to_hand,
+            reach=reach,
+            arm_length=arm_length,
+            outward_ratio=outward,
+        )
+        if reach_ratio <= 0.0 and shrug <= 0.0:
+            return shoulder_position
 
         shoulder = add(
             add(
                 add(
                     shoulder_position,
-                    scale(WORLD_UP, elevation * self.settings.shoulder_elevation_gain_m),
+                    scale(
+                        WORLD_UP,
+                        elevation * self.settings.shoulder_elevation_gain_m
+                        + shrug * self.settings.shoulder_shrug_max_elevation_m,
+                    ),
                 ),
                 scale(
                     forward,
                     (protraction + cross_body * 0.5)
                     * reach_ratio
-                    * self.settings.shoulder_protraction_gain_m,
+                    * self.settings.shoulder_protraction_gain_m
+                    + shrug * _clamp01(local_z) * self.settings.shoulder_shrug_forward_gain_m,
                 ),
             ),
             scale(
@@ -1127,6 +1213,35 @@ class BasisPortEstimator:
             ),
         )
         return self._shift_shoulder_to_reachable_hand(shoulder, hand_position, arm_length)
+
+    def _shoulder_shrug(
+        self,
+        *,
+        shoulder_to_hand: Vector3,
+        reach: float,
+        arm_length: float,
+        outward_ratio: float,
+    ) -> float:
+        if not self.settings.shoulder_shrug_enabled or arm_length <= 1e-6:
+            return 0.0
+
+        upward_ratio = dot(shoulder_to_hand, WORLD_UP) / arm_length
+        height_t = _smoothstep(
+            self.settings.shoulder_shrug_start_ratio,
+            self.settings.shoulder_shrug_full_ratio,
+            upward_ratio,
+        )
+        reach_t = _smoothstep(
+            self.settings.shoulder_shrug_min_reach_ratio,
+            self.settings.shoulder_shrug_full_reach_ratio,
+            reach / arm_length,
+        )
+        abduction_t = _smoothstep(
+            self.settings.shoulder_shrug_abduction_start_ratio,
+            self.settings.shoulder_shrug_abduction_full_ratio,
+            outward_ratio,
+        )
+        return max(height_t * (0.45 + 0.55 * reach_t), abduction_t * reach_t)
 
     def _shift_shoulder_to_reachable_hand(
         self,
@@ -1226,6 +1341,123 @@ def _source_joint_position(tracker: TrackerState) -> Vector3:
     return subtract(tracker.transform.position, offset)
 
 
+def _torso_height_policy(
+    head_position: Vector3,
+    calibration: AvatarCalibration,
+    grounding: GroundingContext,
+    settings: BasisEstimatorSettings,
+) -> TorsoHeightPolicy:
+    head_height = head_position[1] - grounding.floor_height_m
+    height_ratio = head_height / max(calibration.human_height_m, 0.1)
+    if height_ratio <= settings.sitting_head_height_ratio:
+        return "sitting"
+    if height_ratio <= settings.crouch_head_height_ratio:
+        return "crouch"
+    return "standing"
+
+
+def _max_torso_lean_degrees(
+    height_policy: TorsoHeightPolicy,
+    settings: BasisEstimatorSettings,
+) -> float:
+    if height_policy == "sitting":
+        return settings.sitting_max_torso_lean_degrees
+    if height_policy == "crouch":
+        return settings.crouch_max_torso_lean_degrees
+    return settings.max_torso_lean_degrees
+
+
+def _support_follow_scale(
+    height_policy: TorsoHeightPolicy,
+    settings: BasisEstimatorSettings,
+) -> float:
+    if height_policy == "sitting":
+        return settings.sitting_support_follow_scale
+    if height_policy == "crouch":
+        return settings.crouch_support_follow_scale
+    return 1.0
+
+
+def _body_forward_evidence(
+    sample: TrackedPoseSample,
+    grounding: GroundingContext,
+    candidate: Vector3,
+    previous: Vector3 | None,
+    settings: BasisEstimatorSettings,
+) -> Vector3:
+    raw_head_forward = rotate_vector(sample.hmd.transform.rotation, WORLD_FORWARD)
+    head_horizontal = _horizontal_vector(raw_head_forward)
+    head_strength = _length(head_horizontal)
+    head_weight = settings.body_heading_head_weight * _smoothstep(
+        settings.body_heading_min_head_horizontal,
+        settings.body_heading_full_head_horizontal,
+        head_strength,
+    )
+    weighted = scale(candidate, head_weight)
+    total_weight = head_weight
+
+    if previous is not None:
+        state_weight = settings.body_heading_state_weight * (1.0 - _clamp01(head_weight))
+        weighted = add(weighted, scale(previous, state_weight))
+        total_weight += state_weight
+
+    hand_hint = _hand_midpoint_forward(sample)
+    if hand_hint is not None:
+        hand_forward, hand_distance = hand_hint
+        hand_weight = settings.body_heading_hand_weight * _smoothstep(
+            0.12,
+            0.45,
+            hand_distance,
+        )
+        weighted = add(weighted, scale(hand_forward, hand_weight))
+        total_weight += hand_weight
+
+    velocity = _heading_velocity(sample, grounding)
+    if velocity is not None:
+        velocity_forward, velocity_speed = velocity
+        velocity_weight = settings.body_heading_velocity_weight * _smoothstep(
+            0.08,
+            0.35,
+            velocity_speed,
+        )
+        weighted = add(weighted, scale(velocity_forward, velocity_weight))
+        total_weight += velocity_weight
+
+    if total_weight <= 1e-9:
+        return previous if previous is not None else candidate
+    return normalize(weighted, fallback=previous if previous is not None else candidate)
+
+
+def _hand_midpoint_forward(sample: TrackedPoseSample) -> tuple[Vector3, float] | None:
+    head = _source_joint_position(sample.hmd)
+    left_hand = _source_joint_position(sample.left_hand)
+    right_hand = _source_joint_position(sample.right_hand)
+    midpoint = (
+        (left_hand[0] + right_hand[0]) * 0.5,
+        (left_hand[1] + right_hand[1]) * 0.5,
+        (left_hand[2] + right_hand[2]) * 0.5,
+    )
+    forward = _horizontal_vector(subtract(midpoint, head))
+    distance_m = _length(forward)
+    if distance_m <= 1e-6:
+        return None
+    return normalize(forward, fallback=WORLD_FORWARD), distance_m
+
+
+def _heading_velocity(
+    sample: TrackedPoseSample,
+    grounding: GroundingContext,
+) -> tuple[Vector3, float] | None:
+    velocity = sample.character_velocity
+    if _length(_horizontal_vector(velocity)) <= 1e-6:
+        velocity = grounding.character_velocity
+    horizontal_velocity = _horizontal_vector(velocity)
+    speed = _length(horizontal_velocity)
+    if speed <= 1e-6:
+        return None
+    return normalize(horizontal_velocity, fallback=WORLD_FORWARD), speed
+
+
 def _estimate_neck_position(
     head_position: Vector3,
     head_rotation: Quaternion,
@@ -1261,7 +1493,11 @@ def _disambiguate_body_forward(
 
 def _horizontal_forward(rotation: Quaternion) -> Vector3:
     forward = rotate_vector(rotation, WORLD_FORWARD)
-    return normalize((forward[0], 0.0, forward[2]), fallback=WORLD_FORWARD)
+    return normalize(_horizontal_vector(forward), fallback=WORLD_FORWARD)
+
+
+def _horizontal_vector(vector: Vector3) -> Vector3:
+    return (vector[0], 0.0, vector[2])
 
 
 def _yaw_rotation(forward: Vector3) -> Quaternion:
@@ -1544,6 +1780,13 @@ def _shoulder_reach_ratio(reach: float, arm_length: float, engage_ratio: float) 
         return 1.0
     t = (raw_reach_ratio - engage) / (1.0 - engage)
     return t * t
+
+
+def _smoothstep(edge0: float, edge1: float, value: float) -> float:
+    if edge1 <= edge0:
+        return 1.0 if value >= edge1 else 0.0
+    t = _clamp01((value - edge0) / (edge1 - edge0))
+    return t * t * (3.0 - 2.0 * t)
 
 
 def _clamp01(value: float) -> float:

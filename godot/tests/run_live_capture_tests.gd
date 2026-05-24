@@ -1,6 +1,5 @@
 extends SceneTree
 
-const BasisEstimator = preload("res://addons/godot_vr_humanoid_pose/scripts/basis_port_estimator.gd")
 const LiveOverlayDebug = preload("res://addons/godot_vr_humanoid_pose/scripts/live_overlay_debug.gd")
 const StreamClient = preload("res://addons/godot_vr_humanoid_pose/scripts/live_capture_stream_client.gd")
 const TrackerCalibration = preload("res://addons/godot_vr_humanoid_pose/scripts/live_tracker_calibration.gd")
@@ -10,9 +9,9 @@ var _failures: Array[String] = []
 
 func _init() -> void:
 	_test_stream_message_is_json_safe()
+	_test_stream_estimate_request_is_json_safe()
 	_test_tracker_calibration_infers_common_t_pose_roles()
 	_test_live_estimator_sample_uses_three_point_input_by_default()
-	_test_live_estimator_enables_footstep_planner()
 	_test_live_sample_prefers_openvr_devices()
 	_test_live_tracker_marker_uses_calibrated_role_and_mirror_space()
 	_test_live_debug_mirror_negates_display_x_only()
@@ -20,10 +19,7 @@ func _init() -> void:
 	_test_live_stream_rate_limit_records_only_during_clip()
 	_test_live_stream_flush_message_is_json_safe()
 	_test_live_headlocked_prompt_names_capture_phase()
-	_test_basis_estimator_shoulder_moves_for_reaching_controller()
-	_test_basis_estimator_footstep_planner_releases_one_foot()
-	_test_basis_estimator_elbow_bends_behind_controller_reach()
-	_test_basis_estimator_arm_bend_lookup_lowers_forward_elbow()
+	_test_live_estimate_response_updates_latest_frame()
 	_test_live_head_rotation_bridge_maps_estimator_forward_to_godot_view_forward()
 	_test_live_debug_frame_flattens_estimator_output()
 	_finish()
@@ -60,6 +56,25 @@ func _test_stream_message_is_json_safe() -> void:
 	_assert_eq("clip index default", message["clip_index"], 0)
 	_assert_close("vector conversion", message["sample"]["hmd"]["transform"]["position"][1], 1.6)
 	_assert_eq("quaternion conversion", message["estimated_frame"]["root"]["rotation"][3], 1.0)
+
+
+func _test_stream_estimate_request_is_json_safe() -> void:
+	var client = StreamClient.new()
+	var identity = Quaternion(0.0, 0.0, 0.0, 1.0)
+	var transform = {"position": Vector3(0.0, 1.6, 0.0), "rotation": identity}
+	var sample = {
+		"timestamp_seconds": 1.0,
+		"hmd": {"transform": transform},
+		"left_hand": {"transform": transform},
+		"right_hand": {"transform": transform},
+		"optional_trackers": {},
+	}
+	var message = client.build_estimate_request_message("test", 4, 8, 1.0, sample, {}, {})
+
+	_assert_eq("estimate request format", message["format"], StreamClient.CAPTURE_FORMAT)
+	_assert_eq("estimate request type", message["type"], "estimate_request")
+	_assert_eq("estimate request id", message["request_id"], 4)
+	_assert_close("estimate request vector conversion", message["sample"]["hmd"]["transform"]["position"][1], 1.6)
 
 
 func _test_live_stream_flush_message_is_json_safe() -> void:
@@ -149,6 +164,32 @@ func _test_live_debug_frame_flattens_estimator_output() -> void:
 	_assert_true("head forward helper", debug_frame["joints"].has("head_forward"))
 	_assert_true("wrist helper", debug_frame["joints"].has("left_wrist"))
 	_assert_close("root-relative head height", debug_frame["joints"]["head"]["position"].y, 0.6)
+	overlay.free()
+
+
+func _test_live_estimate_response_updates_latest_frame() -> void:
+	var overlay = LiveOverlayDebug.new()
+	overlay._session_id = "test-session"
+	var identity = [0.0, 0.0, 0.0, 1.0]
+	var estimated = {
+		"timestamp_seconds": 1.0,
+		"root": {"position": [0.0, 1.0, 0.0], "rotation": identity},
+		"joints": {
+			"head": {
+				"transform": {"position": [0.0, 1.6, 0.0], "rotation": identity},
+				"estimated": false,
+			},
+		},
+	}
+
+	overlay._handle_stream_message({
+		"type": "estimate_response",
+		"session_id": "test-session",
+		"estimated_frame": estimated,
+	})
+
+	_assert_eq("latest estimate timestamp", overlay._latest_estimated_frame["timestamp_seconds"], 1.0)
+	_assert_eq("estimate error cleared", overlay._last_estimate_error, "")
 	overlay.free()
 
 
@@ -272,175 +313,6 @@ func _test_live_headlocked_prompt_names_capture_phase() -> void:
 	overlay._capture_phase = "idle"
 	_assert_eq("idle prompt hidden", overlay._headlocked_prompt_text(), "")
 	overlay.free()
-
-
-func _test_basis_estimator_shoulder_moves_for_reaching_controller() -> void:
-	var estimator = BasisEstimator.new()
-	var identity = [0.0, 0.0, 0.0, 1.0]
-	var sample = {
-		"timestamp_seconds": 0.0,
-		"hmd": {
-			"role": "head",
-			"confidence": 1.0,
-			"transform": {"position": [0.0, 1.6, 0.0], "rotation": identity},
-		},
-		"left_hand": {
-			"role": "left_hand",
-			"confidence": 1.0,
-			"transform": {"position": [0.85, 1.22, 0.18], "rotation": identity},
-		},
-		"right_hand": {
-			"role": "right_hand",
-			"confidence": 1.0,
-			"transform": {"position": [-0.3, 1.22, 0.18], "rotation": identity},
-		},
-		"optional_trackers": {},
-	}
-	var calibration = {"human_height_m": 1.8, "avatar_scale": 1.0, "bone_lengths_m": {}}
-	var grounding = {
-		"floor_height_m": 0.0,
-		"floor_normal": [0.0, 1.0, 0.0],
-		"character_velocity": [0.0, 0.0, 0.0],
-	}
-
-	var pose = estimator.estimate(sample, calibration, grounding)
-	var shoulder = _position_from_transform(pose["joints"]["left_shoulder"]["transform"])
-	var elbow = _position_from_transform(pose["joints"]["left_elbow"]["transform"])
-	var hand = _position_from_transform(pose["joints"]["left_hand"]["transform"])
-	var upper_arm = calibration["human_height_m"] * estimator.settings["upper_arm_ratio"]
-	var lower_arm = calibration["human_height_m"] * estimator.settings["lower_arm_ratio"]
-	var reach_slack = estimator.settings["shoulder_reach_slack_m"]
-
-	_assert_true("reaching shoulder moves", shoulder.x > 0.22)
-	_assert_true("reaching shoulder keeps arm reachable", shoulder.distance_to(hand) <= upper_arm + lower_arm + reach_slack + 0.00001)
-	_assert_close("upper arm length", shoulder.distance_to(elbow), upper_arm)
-	_assert_true("forearm does not over-stretch", elbow.distance_to(hand) <= lower_arm + reach_slack + 0.0002)
-
-
-func _test_live_estimator_enables_footstep_planner() -> void:
-	var overlay = LiveOverlayDebug.new()
-	overlay._configure_live_estimator()
-
-	_assert_true("live footstep planner enabled", overlay._estimator.settings["footstep_planner_enabled"])
-	_assert_true("live footstep release is deliberate", overlay._estimator.settings["footstep_release_stretch_m"] >= 0.18)
-	_assert_true("live footstep swing is slower", overlay._estimator.settings["step_duration_s"] >= 0.3)
-	_assert_true("live arm lookup enabled", overlay._estimator.settings["arm_bend_lookup_blend"] > 0.0)
-	overlay.free()
-
-
-func _test_basis_estimator_footstep_planner_releases_one_foot() -> void:
-	var estimator = BasisEstimator.new()
-	estimator.settings["footstep_planner_enabled"] = true
-	estimator.settings["support_hips_xz_follow_blend"] = 0.0
-	estimator.settings["stance_width_ratio"] = 0.2
-	estimator.settings["footstep_release_stretch_m"] = 0.1
-	estimator.settings["footstep_forward_lead_m"] = 0.2
-	estimator.settings["footstep_speed_lead_s"] = 0.0
-	estimator.settings["footstep_max_neutral_stretch_m"] = 2.0
-	estimator.settings["footstep_min_interval_s"] = 0.0
-	estimator.settings["step_duration_s"] = 0.4
-	estimator.settings["step_lift_height_m"] = 0.08
-	var calibration = {"human_height_m": 2.0, "avatar_scale": 1.0, "bone_lengths_m": {}, "foot_height_m": 0.05}
-	var grounding = {"floor_height_m": 0.0, "floor_normal": [0.0, 1.0, 0.0]}
-
-	var first = estimator.estimate(
-		_three_point_sample(Vector3(0.0, 1.6, 0.0), 0.0),
-		calibration,
-		grounding
-	)
-	estimator.estimate(
-		_three_point_sample(Vector3(0.0, 1.6, 0.35), 0.1),
-		calibration,
-		grounding
-	)
-	var third = estimator.estimate(
-		_three_point_sample(Vector3(0.0, 1.6, 0.45), 0.2),
-		calibration,
-		grounding
-	)
-
-	_assert_eq("swinging foot", estimator._active_swing_foot, "left_foot")
-	_assert_eq("left foot phase", estimator._foot_states["left_foot"]["phase"], "swing")
-	_assert_eq("right foot phase", estimator._foot_states["right_foot"]["phase"], "planted")
-	_assert_true(
-		"stepping foot lifts",
-		_position_from_transform(third["joints"]["left_foot"]["transform"]).y > calibration["foot_height_m"]
-	)
-	_assert_true(
-		"stepping foot advances",
-		_position_from_transform(third["joints"]["left_foot"]["transform"]).z
-		> _position_from_transform(first["joints"]["left_foot"]["transform"]).z
-	)
-
-
-func _test_basis_estimator_elbow_bends_behind_controller_reach() -> void:
-	var estimator = BasisEstimator.new()
-	var identity = [0.0, 0.0, 0.0, 1.0]
-	var sample = {
-		"timestamp_seconds": 0.0,
-		"hmd": {
-			"role": "head",
-			"confidence": 1.0,
-			"transform": {"position": [0.0, 1.6, 0.0], "rotation": identity},
-		},
-		"left_hand": {
-			"role": "left_hand",
-			"confidence": 1.0,
-			"transform": {"position": [0.4, 1.2, 0.1], "rotation": identity},
-		},
-		"right_hand": {
-			"role": "right_hand",
-			"confidence": 1.0,
-			"transform": {"position": [-0.3, 1.22, 0.18], "rotation": identity},
-		},
-		"optional_trackers": {},
-	}
-	var calibration = {"human_height_m": 1.8, "avatar_scale": 1.0, "bone_lengths_m": {}}
-	var grounding = {"floor_height_m": 0.0, "floor_normal": [0.0, 1.0, 0.0]}
-
-	var pose = estimator.estimate(sample, calibration, grounding)
-	var shoulder = _position_from_transform(pose["joints"]["left_shoulder"]["transform"])
-	var elbow = _position_from_transform(pose["joints"]["left_elbow"]["transform"])
-	var hand = _position_from_transform(pose["joints"]["left_hand"]["transform"])
-
-	_assert_true("elbow bends behind shoulder", elbow.z < shoulder.z)
-	_assert_true("elbow bends behind hand", elbow.z < hand.z)
-
-
-func _test_basis_estimator_arm_bend_lookup_lowers_forward_elbow() -> void:
-	var identity = [0.0, 0.0, 0.0, 1.0]
-	var sample = {
-		"timestamp_seconds": 0.0,
-		"hmd": {
-			"role": "head",
-			"confidence": 1.0,
-			"transform": {"position": [0.0, 1.6, 0.0], "rotation": identity},
-		},
-		"left_hand": {
-			"role": "left_hand",
-			"confidence": 1.0,
-			"transform": {"position": [-0.34, 1.05, 0.42], "rotation": identity},
-		},
-		"right_hand": {
-			"role": "right_hand",
-			"confidence": 1.0,
-			"transform": {"position": [0.34, 1.05, 0.42], "rotation": identity},
-		},
-		"optional_trackers": {},
-	}
-	var calibration = {"human_height_m": 1.8, "avatar_scale": 1.0, "bone_lengths_m": {}}
-	var grounding = {"floor_height_m": 0.0, "floor_normal": [0.0, 1.0, 0.0]}
-	var default_estimator = BasisEstimator.new()
-	var lookup_estimator = BasisEstimator.new()
-	lookup_estimator.settings["arm_bend_lookup_blend"] = 1.0
-
-	var default_pose = default_estimator.estimate(sample, calibration, grounding)
-	var lookup_pose = lookup_estimator.estimate(sample, calibration, grounding)
-	var default_elbow = _position_from_transform(default_pose["joints"]["left_elbow"]["transform"])
-	var lookup_elbow = _position_from_transform(lookup_pose["joints"]["left_elbow"]["transform"])
-
-	_assert_true("lookup elbow bends lower", lookup_elbow.y < default_elbow.y)
-	_assert_true("lookup elbow stays behind hand", lookup_elbow.z < sample["left_hand"]["transform"]["position"][2])
 
 
 func _assert_false(label: String, value: bool) -> void:

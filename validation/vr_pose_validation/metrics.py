@@ -14,6 +14,7 @@ from validation.vr_pose_validation.geometry import (
     dot,
     horizontal_distance,
     length,
+    rotate_vector,
     scale,
     subtract,
 )
@@ -24,6 +25,8 @@ from validation.vr_pose_validation.types import (
 )
 
 FOOT_JOINTS = ("left_foot", "right_foot")
+WORLD_FORWARD: Vector3 = (0.0, 0.0, 1.0)
+WORLD_UP: Vector3 = (0.0, 1.0, 0.0)
 JOINT_PAIR_METRICS = {
     "shoulder": ("left_shoulder", "right_shoulder"),
     "elbow": ("left_elbow", "right_elbow"),
@@ -140,6 +143,23 @@ GAIT_PLAUSIBILITY_SUMMARY_FIELDS = (
     "pct_estimated_stance_width_over_90cm",
     "mean_estimated_leg_reach_m",
     "pct_estimated_leg_reach_over_110cm",
+)
+ORIENTATION_SUMMARY_FIELDS = (
+    "mean_head_forward_error_deg",
+    "head_forward_error_p95_deg",
+    "pct_head_forward_error_over_90deg",
+    "mean_head_up_error_deg",
+    "head_up_error_p95_deg",
+    "pct_head_up_error_over_90deg",
+    "mean_neck_axis_error_deg",
+    "neck_axis_error_p95_deg",
+    "pct_neck_axis_error_over_45deg",
+    "mean_spine_axis_error_deg",
+    "spine_axis_error_p95_deg",
+    "pct_spine_axis_error_over_45deg",
+    "p95_head_forward_angular_speed_deg_s",
+    "max_head_forward_angular_speed_deg_s",
+    "pct_head_forward_angular_speed_over_720deg_s",
 )
 
 
@@ -585,6 +605,101 @@ def summarize_joint_flexion_sequence(
         "pct_right_knee_flexion_over_limit": _percent_flags(over_limit["right_knee"]),
         "pct_knee_flexion_over_limit": _percent_flexion_group(over_limit, "knee"),
         "pct_joint_flexion_over_limit": _percent_flexion_group(over_limit, "joint"),
+    }
+
+
+def summarize_orientation_sequence(
+    poses: Iterable[HumanoidPoseFrame],
+    reference_frames: Iterable[dict[str, Transform]],
+    *,
+    head_error_threshold_deg: float = 90.0,
+    axis_error_threshold_deg: float = 45.0,
+    head_angular_speed_threshold_deg_s: float = 720.0,
+) -> dict[str, float]:
+    """Report head and upper-torso orientation errors from sparse canonical joints."""
+
+    head_forward_errors: list[float] = []
+    head_up_errors: list[float] = []
+    neck_axis_errors: list[float] = []
+    spine_axis_errors: list[float] = []
+    head_forward_speeds: list[float] = []
+    previous_head_forward: Vector3 | None = None
+    previous_timestamp_seconds: float | None = None
+
+    for pose, reference in zip(poses, reference_frames, strict=False):
+        estimated_head = pose.joints.get("head")
+        reference_head = reference.get("head")
+        estimated_head_forward: Vector3 | None = None
+        if estimated_head is not None and reference_head is not None:
+            estimated_head_forward = rotate_vector(
+                estimated_head.transform.rotation,
+                WORLD_FORWARD,
+            )
+            reference_head_forward = rotate_vector(reference_head.rotation, WORLD_FORWARD)
+            head_forward_errors.append(
+                _vector_angle_deg(estimated_head_forward, reference_head_forward)
+            )
+            head_up_errors.append(
+                _vector_angle_deg(
+                    rotate_vector(estimated_head.transform.rotation, WORLD_UP),
+                    rotate_vector(reference_head.rotation, WORLD_UP),
+                )
+            )
+
+        neck_error = _segment_axis_error_deg(
+            _pose_segment_axis(pose, "chest", "head"),
+            _reference_segment_axis(reference, "chest", "head"),
+        )
+        if neck_error is not None:
+            neck_axis_errors.append(neck_error)
+
+        spine_error = _segment_axis_error_deg(
+            _pose_segment_axis(pose, "hips", "chest"),
+            _reference_segment_axis(reference, "hips", "chest"),
+        )
+        if spine_error is not None:
+            spine_axis_errors.append(spine_error)
+
+        if estimated_head_forward is not None:
+            if previous_head_forward is not None and previous_timestamp_seconds is not None:
+                dt = _frame_dt(previous_timestamp_seconds, pose.timestamp_seconds)
+                head_forward_speeds.append(
+                    _vector_angle_deg(estimated_head_forward, previous_head_forward) / dt
+                )
+            previous_head_forward = estimated_head_forward
+            previous_timestamp_seconds = pose.timestamp_seconds
+
+    return {
+        "mean_head_forward_error_deg": _mean_values(head_forward_errors),
+        "head_forward_error_p95_deg": _quantile(head_forward_errors, 0.95),
+        "pct_head_forward_error_over_90deg": _percent_over(
+            head_forward_errors,
+            head_error_threshold_deg,
+        ),
+        "mean_head_up_error_deg": _mean_values(head_up_errors),
+        "head_up_error_p95_deg": _quantile(head_up_errors, 0.95),
+        "pct_head_up_error_over_90deg": _percent_over(
+            head_up_errors,
+            head_error_threshold_deg,
+        ),
+        "mean_neck_axis_error_deg": _mean_values(neck_axis_errors),
+        "neck_axis_error_p95_deg": _quantile(neck_axis_errors, 0.95),
+        "pct_neck_axis_error_over_45deg": _percent_over(
+            neck_axis_errors,
+            axis_error_threshold_deg,
+        ),
+        "mean_spine_axis_error_deg": _mean_values(spine_axis_errors),
+        "spine_axis_error_p95_deg": _quantile(spine_axis_errors, 0.95),
+        "pct_spine_axis_error_over_45deg": _percent_over(
+            spine_axis_errors,
+            axis_error_threshold_deg,
+        ),
+        "p95_head_forward_angular_speed_deg_s": _quantile(head_forward_speeds, 0.95),
+        "max_head_forward_angular_speed_deg_s": max(head_forward_speeds, default=0.0),
+        "pct_head_forward_angular_speed_over_720deg_s": _percent_over(
+            head_forward_speeds,
+            head_angular_speed_threshold_deg_s,
+        ),
     }
 
 
@@ -1066,6 +1181,49 @@ def _temporal_regions_for_joint(joint_name: str) -> tuple[str, ...]:
 
 def _finite_difference(current: Vector3, previous: Vector3, dt: float) -> Vector3:
     return scale(subtract(current, previous), 1.0 / dt)
+
+
+def _vector_angle_deg(a: Vector3, b: Vector3) -> float:
+    a_length = length(a)
+    b_length = length(b)
+    if a_length <= 1e-9 or b_length <= 1e-9:
+        return 0.0
+    cosine = dot(a, b) / (a_length * b_length)
+    return degrees(acos(min(1.0, max(-1.0, cosine))))
+
+
+def _pose_segment_axis(
+    pose: HumanoidPoseFrame,
+    start_joint: str,
+    end_joint: str,
+) -> Vector3 | None:
+    if start_joint not in pose.joints or end_joint not in pose.joints:
+        return None
+    return subtract(
+        pose.joints[end_joint].transform.position,
+        pose.joints[start_joint].transform.position,
+    )
+
+
+def _reference_segment_axis(
+    reference: dict[str, Transform],
+    start_joint: str,
+    end_joint: str,
+) -> Vector3 | None:
+    if start_joint not in reference or end_joint not in reference:
+        return None
+    return subtract(reference[end_joint].position, reference[start_joint].position)
+
+
+def _segment_axis_error_deg(
+    estimated_axis: Vector3 | None,
+    reference_axis: Vector3 | None,
+) -> float | None:
+    if estimated_axis is None or reference_axis is None:
+        return None
+    if length(estimated_axis) <= 1e-9 or length(reference_axis) <= 1e-9:
+        return None
+    return _vector_angle_deg(estimated_axis, reference_axis)
 
 
 def _pose_flexion_angle_deg(

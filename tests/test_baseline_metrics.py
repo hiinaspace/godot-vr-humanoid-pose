@@ -7,7 +7,7 @@ from validation.vr_pose_validation.baseline import (
     PlantedFeetBaselineEstimator,
     TrivialBaselineEstimator,
 )
-from validation.vr_pose_validation.geometry import Transform
+from validation.vr_pose_validation.geometry import Transform, axis_name_quaternion
 from validation.vr_pose_validation.metrics import (
     ReferencePoseMetrics,
     evaluate_foot_contact_sequence,
@@ -16,6 +16,7 @@ from validation.vr_pose_validation.metrics import (
     evaluate_reference_pose,
     infer_reference_floor_height,
     summarize_joint_flexion_sequence,
+    summarize_orientation_sequence,
     summarize_reference_error_distribution,
     summarize_reference_errors,
     summarize_target_errors,
@@ -336,6 +337,41 @@ def test_joint_flexion_metrics_report_angle_error_and_limit_violations() -> None
     assert summary["pct_joint_flexion_over_limit"] == approx(25.0)
 
 
+def test_orientation_metrics_report_head_flip_and_torso_axis_error() -> None:
+    reference_frames = [
+        _orientation_reference(),
+        _orientation_reference(),
+    ]
+    poses = [
+        _orientation_pose(
+            timestamp_seconds=0.0,
+            head_rotation=Transform().rotation,
+            hips=(0.0, 0.0, 0.0),
+            chest=(0.0, 1.0, 0.0),
+            head=(0.0, 2.0, 0.0),
+        ),
+        _orientation_pose(
+            timestamp_seconds=0.1,
+            head_rotation=axis_name_quaternion("y", 180.0),
+            hips=(0.0, 0.0, 0.0),
+            chest=(2.0, 1.0, 0.0),
+            head=(0.0, 2.0, 0.0),
+        ),
+    ]
+
+    summary = summarize_orientation_sequence(poses, reference_frames)
+
+    assert summary["mean_head_forward_error_deg"] == approx(90.0)
+    assert summary["pct_head_forward_error_over_90deg"] == approx(50.0)
+    assert summary["mean_head_up_error_deg"] == approx(0.0)
+    assert summary["mean_neck_axis_error_deg"] == approx(31.717474, abs=1e-6)
+    assert summary["mean_spine_axis_error_deg"] == approx(31.717474, abs=1e-6)
+    assert summary["pct_neck_axis_error_over_45deg"] == approx(50.0)
+    assert summary["pct_spine_axis_error_over_45deg"] == approx(50.0)
+    assert summary["max_head_forward_angular_speed_deg_s"] == approx(1800.0)
+    assert summary["pct_head_forward_angular_speed_over_720deg_s"] == approx(100.0)
+
+
 def _foot_pose(left_x: float, timestamp_seconds: float) -> HumanoidPoseFrame:
     joints = {
         "left_foot": JointPose(Transform(position=(left_x, 0.0, 0.0))),
@@ -364,4 +400,31 @@ def _gait_pose(
         timestamp_seconds=timestamp_seconds,
         root=Transform(position=hips),
         joints=joints,
+    )
+
+
+def _orientation_reference() -> dict[str, Transform]:
+    return {
+        "hips": Transform(position=(0.0, 0.0, 0.0)),
+        "chest": Transform(position=(0.0, 1.0, 0.0)),
+        "head": Transform(position=(0.0, 2.0, 0.0)),
+    }
+
+
+def _orientation_pose(
+    *,
+    timestamp_seconds: float,
+    head_rotation: tuple[float, float, float, float],
+    hips: tuple[float, float, float],
+    chest: tuple[float, float, float],
+    head: tuple[float, float, float],
+) -> HumanoidPoseFrame:
+    return HumanoidPoseFrame(
+        timestamp_seconds=timestamp_seconds,
+        root=Transform(position=hips),
+        joints={
+            "hips": JointPose(Transform(position=hips)),
+            "chest": JointPose(Transform(position=chest)),
+            "head": JointPose(Transform(position=head, rotation=head_rotation)),
+        },
     )

@@ -166,7 +166,7 @@ def euler_quaternion(channels: tuple[str, ...], values: tuple[float, ...]) -> Qu
         axis = _axis_for_channel(channel)
         if axis is None:
             continue
-        result = multiply_quaternion(result, axis_angle_quaternion(axis, value))
+        result = multiply_quaternion(axis_angle_quaternion(axis, value), result)
     return result
 
 

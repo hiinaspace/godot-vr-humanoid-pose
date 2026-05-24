@@ -18,6 +18,7 @@ type PostureClass = Literal[
     "sitting",
     "reclined",
     "floor_reclined",
+    "inverted",
     "unknown",
 ]
 type PostureSubset = Literal[
@@ -26,6 +27,7 @@ type PostureSubset = Literal[
     "vr_other_upright",
     "sitting",
     "floor_reclined_ood",
+    "inverted_ood",
     "nonflat_ood",
     "dynamic_ood",
     "unknown_ood",
@@ -37,11 +39,13 @@ POSTURE_CLASSES: tuple[PostureClass, ...] = (
     "sitting",
     "reclined",
     "floor_reclined",
+    "inverted",
     "unknown",
 )
 VR_POSTURE_SUBSETS: frozenset[PostureSubset] = frozenset(
     ("vr_stationary", "vr_locomotion", "vr_other_upright")
 )
+INVERTED_OOD_PCT_THRESHOLD = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,12 +67,14 @@ class PostureSummary:
     sitting_frames: int
     reclined_frames: int
     floor_reclined_frames: int
+    inverted_frames: int
     unknown_frames: int
     upright_pct: float
     crouched_pct: float
     sitting_pct: float
     reclined_pct: float
     floor_reclined_pct: float
+    inverted_pct: float
     unknown_pct: float
     mean_head_height_m: float
     mean_hip_height_m: float
@@ -122,12 +128,14 @@ def summarize_reference_posture(
         sitting_frames=counts["sitting"],
         reclined_frames=counts["reclined"],
         floor_reclined_frames=counts["floor_reclined"],
+        inverted_frames=counts["inverted"],
         unknown_frames=counts["unknown"],
         upright_pct=_percent(counts["upright"], frame_count),
         crouched_pct=_percent(counts["crouched"], frame_count),
         sitting_pct=_percent(counts["sitting"], frame_count),
         reclined_pct=_percent(counts["reclined"], frame_count),
         floor_reclined_pct=_percent(counts["floor_reclined"], frame_count),
+        inverted_pct=_percent(counts["inverted"], frame_count),
         unknown_pct=_percent(counts["unknown"], frame_count),
         mean_head_height_m=_mean(posture.head_height_m for posture in frame_postures),
         mean_hip_height_m=_mean(posture.hip_height_m for posture in frame_postures),
@@ -186,6 +194,8 @@ def _classify_features(
 ) -> PostureClass:
     if head_height_m <= 0.0 and hip_height_m <= 0.0:
         return "unknown"
+    if head_height_m < hip_height_m - 0.10:
+        return "inverted"
     if (
         head_height_m < 0.95
         or hip_height_m < 0.35
@@ -217,11 +227,14 @@ def _posture_subset(
         counts["floor_reclined"] + counts["reclined"],
         frame_count,
     )
+    inverted_pct = _percent(counts["inverted"], frame_count)
     sitting_pct = _percent(counts["sitting"], frame_count)
     upright_like_pct = _percent(counts["upright"] + counts["crouched"], frame_count)
 
     if environment_split == "nonflat":
         return "nonflat_ood"
+    if inverted_pct >= INVERTED_OOD_PCT_THRESHOLD:
+        return "inverted_ood"
     if activity_class == "floor_pose" or floor_reclined_pct >= 20.0:
         return "floor_reclined_ood"
     if activity_class == "sitting" or sitting_pct >= 30.0:

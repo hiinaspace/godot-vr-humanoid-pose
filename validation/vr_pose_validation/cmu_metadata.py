@@ -415,6 +415,15 @@ class ClipLabelOverride:
 
 
 KNOWN_CLIP_LABEL_OVERRIDES: Mapping[str, ClipLabelOverride] = {
+    # Visual review: GT contains a flip/inversion segment in what should be a walking clip.
+    "114_15": ClipLabelOverride(
+        environment_split="unknown",
+        environment_tags=("data_issue", "inverted_segment"),
+        label_source="manual_clip_override",
+        activity_class="unknown",
+        activity_tags=("data_issue", "inverted_segment"),
+        activity_label_source="manual_clip_override",
+    ),
     # Visual review: ground truth appears suspended/floating rather than flat-floor locomotion.
     "104_17": ClipLabelOverride(
         environment_split="nonflat",
@@ -425,6 +434,24 @@ KNOWN_CLIP_LABEL_OVERRIDES: Mapping[str, ClipLabelOverride] = {
         environment_split="nonflat",
         environment_tags=("suspended",),
         label_source="manual_clip_override",
+    ),
+    # Visual review: GT has a table/floor-lean posture with horizontal spine/neck/head.
+    "14_16": ClipLabelOverride(
+        environment_split="unknown",
+        environment_tags=("borderline_ood", "deep_forward_lean"),
+        label_source="manual_clip_override",
+        activity_class="unknown",
+        activity_tags=("borderline_ood", "deep_forward_lean"),
+        activity_label_source="manual_clip_override",
+    ),
+    # Visual review: GT contains an inversion/flip segment during a two-subject gesture clip.
+    "18_10": ClipLabelOverride(
+        environment_split="unknown",
+        environment_tags=("data_issue", "inverted_segment"),
+        label_source="manual_clip_override",
+        activity_class="unknown",
+        activity_tags=("data_issue", "inverted_segment"),
+        activity_label_source="manual_clip_override",
     ),
     # Visual review: ground truth appears to be a sideways T-pose translating through space.
     "133_25": ClipLabelOverride(

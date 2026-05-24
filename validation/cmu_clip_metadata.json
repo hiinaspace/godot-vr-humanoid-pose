@@ -2559,15 +2559,19 @@
       "trial": 15
     },
     {
-      "activity_class": "stationary_upper_body",
-      "activity_label_source": "motion_description",
+      "activity_class": "unknown",
+      "activity_label_source": "manual_clip_override",
       "activity_tags": [
-        "daily_action"
+        "borderline_ood",
+        "deep_forward_lean"
       ],
       "clip": "14_16",
-      "environment_split": "flat",
-      "environment_tags": [],
-      "label_source": "motion_description",
+      "environment_split": "unknown",
+      "environment_tags": [
+        "borderline_ood",
+        "deep_forward_lean"
+      ],
+      "label_source": "manual_clip_override",
       "motion_description": "sweep floor",
       "subject": "14",
       "subject_description": "various everyday behaviors",
@@ -4313,15 +4317,19 @@
       "trial": 9
     },
     {
-      "activity_class": "stationary_upper_body",
-      "activity_label_source": "motion_description",
+      "activity_class": "unknown",
+      "activity_label_source": "manual_clip_override",
       "activity_tags": [
-        "gesture"
+        "data_issue",
+        "inverted_segment"
       ],
       "clip": "18_10",
-      "environment_split": "flat",
-      "environment_tags": [],
-      "label_source": "motion_description",
+      "environment_split": "unknown",
+      "environment_tags": [
+        "data_issue",
+        "inverted_segment"
+      ],
+      "label_source": "manual_clip_override",
       "motion_description": "quarrel - angry hand gestures (2 subjects - subject A)",
       "subject": "18",
       "subject_description": "human interaction and communication (2 subjects - subject A",
@@ -27885,15 +27893,19 @@
       "trial": 14
     },
     {
-      "activity_class": "locomotion",
-      "activity_label_source": "motion_description",
+      "activity_class": "unknown",
+      "activity_label_source": "manual_clip_override",
       "activity_tags": [
-        "walk"
+        "data_issue",
+        "inverted_segment"
       ],
       "clip": "114_15",
-      "environment_split": "flat",
-      "environment_tags": [],
-      "label_source": "motion_description",
+      "environment_split": "unknown",
+      "environment_tags": [
+        "data_issue",
+        "inverted_segment"
+      ],
+      "label_source": "manual_clip_override",
       "motion_description": "Walk",
       "subject": "114",
       "subject_description": "Pregnant Woman",
@@ -38161,7 +38173,7 @@
       "trial": 42
     }
   ],
-  "generated_at_utc": "2026-05-22T04:56:16.716270+00:00",
+  "generated_at_utc": "2026-05-24T02:21:27.886393+00:00",
   "label_rules": {
     "activity_keywords": {
       "dance_exercise": {
@@ -38579,6 +38591,20 @@
         ],
         "label_source": "manual_clip_override"
       },
+      "114_15": {
+        "activity_class": "unknown",
+        "activity_label_source": "manual_clip_override",
+        "activity_tags": [
+          "data_issue",
+          "inverted_segment"
+        ],
+        "environment_split": "unknown",
+        "environment_tags": [
+          "data_issue",
+          "inverted_segment"
+        ],
+        "label_source": "manual_clip_override"
+      },
       "133_25": {
         "activity_class": "unknown",
         "activity_label_source": "manual_clip_override",
@@ -38590,6 +38616,34 @@
         "environment_tags": [
           "data_issue",
           "sideways_t_pose"
+        ],
+        "label_source": "manual_clip_override"
+      },
+      "14_16": {
+        "activity_class": "unknown",
+        "activity_label_source": "manual_clip_override",
+        "activity_tags": [
+          "borderline_ood",
+          "deep_forward_lean"
+        ],
+        "environment_split": "unknown",
+        "environment_tags": [
+          "borderline_ood",
+          "deep_forward_lean"
+        ],
+        "label_source": "manual_clip_override"
+      },
+      "18_10": {
+        "activity_class": "unknown",
+        "activity_label_source": "manual_clip_override",
+        "activity_tags": [
+          "data_issue",
+          "inverted_segment"
+        ],
+        "environment_split": "unknown",
+        "environment_tags": [
+          "data_issue",
+          "inverted_segment"
         ],
         "label_source": "manual_clip_override"
       }
