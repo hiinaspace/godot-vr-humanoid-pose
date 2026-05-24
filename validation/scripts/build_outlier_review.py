@@ -438,7 +438,7 @@ def _fixture_command(clip: dict[str, Any]) -> str:
         "uv run python -m validation.scripts.export_godot_replay_fixture "
         "--cache-dir .cache/cmu/parquet/canonical_full "
         f"--subject {subject} --clip {clip_name} "
-        "--max-frames 180 --frame-stride 2 --estimator basis"
+        "--max-frames 180 --frame-stride 2 --estimator basis_research"
     )
 
 
