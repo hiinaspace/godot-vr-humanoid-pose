@@ -6,9 +6,13 @@ config_version=5
 [application]
 
 config/name="Godot VR Humanoid Pose"
-run/main_scene=""
+run/main_scene="res://scenes/live_overlay_debug.tscn"
 config/features=PackedStringArray("4.6")
 config/icon="res://icon.svg"
+
+[autoload]
+
+OpenVROverlayAutoload="*res://addons/godot-openvr-overlay/openvr_overlay_autoloader.gd"
 
 [display]
 
@@ -17,4 +21,9 @@ window/size/viewport_height=1200
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/godot_vr_humanoid_pose/plugin.cfg")
+enabled=PackedStringArray("res://addons/godot-openvr-overlay/plugin.cfg", "res://addons/godot_vr_humanoid_pose/plugin.cfg")
+
+[xr]
+
+openxr/enabled=false
+shaders/enabled=true

@@ -10,6 +10,10 @@ __pycache__/
 godot/.godot/
 godot/.import/
 godot/export_presets.cfg
+godot/openxr_action_map.tres
+godot/**/*.uid
+godot/**/*.import
+godot/addons/godot-openvr-overlay/
 
 # Generated validation artifacts.
 validation/cmu_manifest.json

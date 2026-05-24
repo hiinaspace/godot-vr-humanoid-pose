@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/godot_vr_humanoid_pose/scripts/live_overlay_debug.gd" id="1_live_overlay"]
+
+[node name="LiveOverlayDebug" type="Node3D"]
+script = ExtResource("1_live_overlay")

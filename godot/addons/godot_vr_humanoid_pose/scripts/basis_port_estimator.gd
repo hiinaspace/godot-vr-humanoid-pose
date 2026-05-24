@@ -7,8 +7,8 @@ const WORLD_FORWARD = Vector3(0.0, 0.0, 1.0)
 var settings = {
     "head_to_hips_ratio": 0.34,
     "shoulder_width_ratio": 0.201,
-    "upper_arm_ratio": 0.161,
-    "lower_arm_ratio": 0.116,
+    "upper_arm_ratio": 0.174,
+    "lower_arm_ratio": 0.151,
     "upper_leg_ratio": 0.245,
     "lower_leg_ratio": 0.246,
     "head_to_neck_ratio": 0.04,
@@ -36,10 +36,30 @@ var settings = {
     "step_duration_s": 0.18,
     "step_lift_height_m": 0.06,
     "planted_foot_confidence": 0.75,
+    "footstep_planner_enabled": false,
+    "footstep_release_stretch_m": 0.24,
+    "footstep_speed_release_reduction_s": 0.0,
+    "footstep_forward_lead_m": 0.16,
+    "footstep_speed_lead_s": 0.05,
+    "footstep_max_forward_lead_m": 0.28,
+    "footstep_max_step_length_m": 0.55,
+    "footstep_swing_retarget_stretch_m": 0.22,
+    "footstep_max_neutral_stretch_m": 0.60,
+    "footstep_min_lateral_ratio": 0.35,
+    "footstep_min_interval_s": 0.12,
+    "footstep_startup_align_s": 0.0,
+    "footstep_catchup_release_stretch_m": 0.52,
+    "footstep_trailing_release_stretch_m": 0.34,
+    "footstep_stop_speed_m_s": 0.10,
+    "footstep_catchup_duration_s": 0.16,
+    "footstep_speed_duration_reduction_s": 0.0,
+    "arm_bend_lookup_blend": 0.0,
     "shoulder_reach_engage_ratio": 0.7,
     "shoulder_elevation_gain_m": 0.05,
     "shoulder_protraction_gain_m": 0.04,
     "shoulder_cross_body_gain_m": 0.025,
+    "shoulder_reach_slack_m": 0.02,
+    "max_shoulder_reach_shift_m": 0.16,
 }
 
 var _foot_states: Dictionary = {}
@@ -50,11 +70,17 @@ var _torso_state: Dictionary = {
     "hips_rotation": null,
     "previous_timestamp_seconds": null,
 }
+var _active_swing_foot = null
+var _last_stepped_foot = null
+var _last_step_time_seconds = null
 
 
 func reset() -> void:
     _foot_states.clear()
     _torso_state = _new_torso_state()
+    _active_swing_foot = null
+    _last_stepped_foot = null
+    _last_step_time_seconds = null
 
 
 func estimate(sample: Dictionary, calibration: Dictionary, grounding: Dictionary) -> Dictionary:
@@ -393,6 +419,20 @@ func _estimate_foot(
         state["current_position"] = target
     if state["current_rotation"] == null:
         state["current_rotation"] = _foot_rotation(forward, state["filtered_normal"])
+    if bool(settings["footstep_planner_enabled"]):
+        return _estimate_planned_foot(
+            name,
+            state,
+            target,
+            speed,
+            right,
+            side,
+            forward,
+            stance_width,
+            grounding,
+            timestamp_seconds,
+            dt
+        )
 
     if state["planted"] and state["anchor_position"] != null:
         var stretch = _horizontal_distance(state["anchor_position"], target)
@@ -455,6 +495,324 @@ func _estimate_foot(
         _exp_alpha(settings["foot_position_lerp_speed"], dt)
     )
     return {"position": state["current_position"], "rotation": state["current_rotation"]}
+
+
+func _estimate_planned_foot(
+    name: String,
+    state: Dictionary,
+    neutral_target: Vector3,
+    neutral_speed: float,
+    right: Vector3,
+    side: float,
+    forward: Vector3,
+    stance_width: float,
+    grounding: Dictionary,
+    timestamp_seconds: float,
+    dt: float
+) -> Dictionary:
+    if state["first_timestamp_seconds"] == null:
+        state["first_timestamp_seconds"] = timestamp_seconds
+
+    if state["phase"] == "unplanted":
+        _plant_planned_foot(state, neutral_target, grounding, forward)
+
+    if (
+        settings["footstep_startup_align_s"] > 0.0
+        and state["first_timestamp_seconds"] != null
+        and timestamp_seconds - state["first_timestamp_seconds"] < settings["footstep_startup_align_s"]
+    ):
+        _plant_planned_foot(state, neutral_target, grounding, forward)
+        state["previous_target"] = neutral_target
+        state["previous_timestamp_seconds"] = timestamp_seconds
+        return {"position": state["current_position"], "rotation": state["current_rotation"]}
+
+    var desired_position: Vector3
+    if state["phase"] == "swing":
+        _retarget_planned_step(state, neutral_target, neutral_speed, right, side, forward, stance_width)
+        desired_position = _planned_swing_position(state, timestamp_seconds)
+    else:
+        var anchor_stretch = (
+            _horizontal_distance(state["anchor_position"], neutral_target)
+            if state["anchor_position"] != null
+            else 0.0
+        )
+        var needs_catchup = anchor_stretch > settings["footstep_catchup_release_stretch_m"]
+        var needs_trailing_recovery = (
+            neutral_speed <= settings["footstep_stop_speed_m_s"]
+            and anchor_stretch > settings["footstep_trailing_release_stretch_m"]
+        )
+        var needs_regular_step = anchor_stretch > _planned_release_stretch(neutral_speed)
+        var force_recovery = needs_catchup or needs_trailing_recovery
+        if (
+            state["planted"]
+            and state["anchor_position"] != null
+            and (force_recovery or needs_regular_step)
+            and _can_begin_planned_step(name, timestamp_seconds, force_recovery)
+        ):
+            _begin_planned_step(
+                name,
+                state,
+                neutral_target,
+                neutral_speed,
+                right,
+                side,
+                forward,
+                stance_width,
+                timestamp_seconds,
+                needs_catchup,
+                0.0 if needs_trailing_recovery else 1.0
+            )
+            desired_position = _planned_swing_position(state, timestamp_seconds)
+        elif state["anchor_position"] != null:
+            desired_position = state["anchor_position"]
+        else:
+            _plant_planned_foot(state, neutral_target, grounding, forward)
+            desired_position = neutral_target
+
+    desired_position = _constrain_planned_foot_to_neutral(
+        state,
+        desired_position,
+        neutral_target,
+        grounding
+    )
+    var progress = _step_progress(
+        timestamp_seconds,
+        state["swing_start_time_seconds"],
+        state["swing_duration_s"] if state["swing_duration_s"] != null else settings["step_duration_s"]
+    )
+    if state["phase"] == "swing" and progress >= 1.0 and state["swing_target_position"] != null:
+        desired_position = state["swing_target_position"]
+        state["anchor_position"] = state["swing_target_position"]
+        state["anchor_normal"] = _vector3_from_json(grounding.get("floor_normal", [0.0, 1.0, 0.0]))
+        state["swing_start_position"] = null
+        state["swing_start_time_seconds"] = null
+        state["swing_target_position"] = null
+        state["swing_forward_lead_scale"] = 1.0
+        state["swing_duration_s"] = null
+        state["planted"] = true
+        state["phase"] = "planted"
+        if _active_swing_foot == name:
+            _active_swing_foot = null
+
+    state["previous_target"] = neutral_target
+    state["previous_timestamp_seconds"] = timestamp_seconds
+    state["current_position"] = desired_position
+    var desired_rotation = _foot_rotation(
+        forward,
+        state["anchor_normal"] if state["planted"] else state["filtered_normal"]
+    )
+    state["current_rotation"] = _nlerp_quaternion(
+        state["current_rotation"] if state["current_rotation"] != null else desired_rotation,
+        desired_rotation,
+        _exp_alpha(settings["foot_position_lerp_speed"], dt)
+    )
+    return {"position": state["current_position"], "rotation": state["current_rotation"]}
+
+
+func _plant_planned_foot(
+    state: Dictionary,
+    neutral_target: Vector3,
+    grounding: Dictionary,
+    forward: Vector3
+) -> void:
+    var floor_normal = _vector3_from_json(grounding.get("floor_normal", [0.0, 1.0, 0.0]))
+    state["anchor_position"] = neutral_target
+    state["anchor_normal"] = floor_normal
+    state["filtered_normal"] = floor_normal
+    state["current_position"] = neutral_target
+    state["current_rotation"] = _foot_rotation(forward, state["anchor_normal"])
+    state["swing_start_position"] = null
+    state["swing_start_time_seconds"] = null
+    state["swing_target_position"] = null
+    state["swing_forward_lead_scale"] = 1.0
+    state["swing_duration_s"] = null
+    state["planted"] = true
+    state["phase"] = "planted"
+
+
+func _retarget_planned_step(
+    state: Dictionary,
+    neutral_target: Vector3,
+    neutral_speed: float,
+    right: Vector3,
+    side: float,
+    forward: Vector3,
+    stance_width: float
+) -> void:
+    if state["swing_target_position"] == null:
+        return
+    if (
+        _horizontal_distance(state["swing_target_position"], neutral_target)
+        <= settings["footstep_swing_retarget_stretch_m"]
+    ):
+        return
+    var start = (
+        state["swing_start_position"]
+        if state["swing_start_position"] != null
+        else state["current_position"] if state["current_position"] != null else neutral_target
+    )
+    state["swing_target_position"] = _planned_step_target(
+        start,
+        neutral_target,
+        neutral_speed,
+        right,
+        side,
+        forward,
+        stance_width,
+        state["swing_forward_lead_scale"]
+    )
+
+
+func _constrain_planned_foot_to_neutral(
+    state: Dictionary,
+    desired_position: Vector3,
+    neutral_target: Vector3,
+    grounding: Dictionary
+) -> Vector3:
+    var constrained = _clamp_horizontal_delta(
+        neutral_target,
+        desired_position,
+        settings["footstep_max_neutral_stretch_m"]
+    )
+    if constrained == desired_position:
+        return desired_position
+
+    if state["phase"] == "swing" and state["swing_target_position"] != null:
+        state["swing_target_position"] = _clamp_horizontal_delta(
+            neutral_target,
+            state["swing_target_position"],
+            settings["footstep_max_neutral_stretch_m"]
+        )
+    elif state["phase"] == "planted":
+        state["anchor_position"] = constrained
+        state["anchor_normal"] = _vector3_from_json(grounding.get("floor_normal", [0.0, 1.0, 0.0]))
+
+    return constrained
+
+
+func _can_begin_planned_step(
+    name: String,
+    timestamp_seconds: float,
+    force_recovery: bool
+) -> bool:
+    if _active_swing_foot != null and _active_swing_foot != name:
+        return false
+
+    var other_state = _foot_states.get(_opposite_foot_name(name))
+    if other_state != null and other_state["phase"] == "swing":
+        return false
+
+    if not force_recovery:
+        if (
+            _last_step_time_seconds != null
+            and timestamp_seconds - _last_step_time_seconds < settings["footstep_min_interval_s"]
+        ):
+            return false
+
+        if _last_stepped_foot == name and other_state != null and other_state["planted"]:
+            return false
+
+    return true
+
+
+func _begin_planned_step(
+    name: String,
+    state: Dictionary,
+    neutral_target: Vector3,
+    neutral_speed: float,
+    right: Vector3,
+    side: float,
+    forward: Vector3,
+    stance_width: float,
+    timestamp_seconds: float,
+    catchup: bool,
+    forward_lead_scale: float
+) -> void:
+    var start = (
+        state["current_position"]
+        if state["current_position"] != null
+        else state["anchor_position"] if state["anchor_position"] != null else neutral_target
+    )
+    state["swing_start_position"] = start
+    state["swing_start_time_seconds"] = timestamp_seconds
+    state["swing_forward_lead_scale"] = forward_lead_scale
+    state["swing_duration_s"] = _planned_step_duration(neutral_speed, catchup)
+    state["swing_target_position"] = _planned_step_target(
+        start,
+        neutral_target,
+        neutral_speed,
+        right,
+        side,
+        forward,
+        stance_width,
+        forward_lead_scale
+    )
+    state["anchor_position"] = null
+    state["planted"] = false
+    state["phase"] = "swing"
+    _active_swing_foot = name
+    _last_stepped_foot = name
+    _last_step_time_seconds = timestamp_seconds
+
+
+func _planned_step_target(
+    start: Vector3,
+    neutral_target: Vector3,
+    neutral_speed: float,
+    right: Vector3,
+    side: float,
+    forward: Vector3,
+    stance_width: float,
+    forward_lead_scale = 1.0
+) -> Vector3:
+    var forward_lead = (
+        minf(
+            settings["footstep_max_forward_lead_m"],
+            settings["footstep_forward_lead_m"] + neutral_speed * settings["footstep_speed_lead_s"]
+        )
+        * forward_lead_scale
+    )
+    var target = neutral_target + forward * forward_lead
+    target = Vector3(target.x, neutral_target.y, target.z)
+    target = _clamp_horizontal_delta(start, target, settings["footstep_max_step_length_m"])
+
+    var lateral_offset = (target - neutral_target).dot(right) * side
+    var min_lateral = stance_width * 0.5 * settings["footstep_min_lateral_ratio"]
+    if lateral_offset < -min_lateral:
+        target += right * side * (-min_lateral - lateral_offset)
+    return Vector3(target.x, neutral_target.y, target.z)
+
+
+func _planned_release_stretch(neutral_speed: float) -> float:
+    return maxf(
+        0.08,
+        settings["footstep_release_stretch_m"]
+        - neutral_speed * settings["footstep_speed_release_reduction_s"]
+    )
+
+
+func _planned_step_duration(neutral_speed: float, catchup: bool) -> float:
+    if catchup:
+        return settings["footstep_catchup_duration_s"]
+    return maxf(
+        0.12,
+        settings["step_duration_s"] - neutral_speed * settings["footstep_speed_duration_reduction_s"]
+    )
+
+
+func _planned_swing_position(state: Dictionary, timestamp_seconds: float) -> Vector3:
+    if state["swing_start_position"] == null or state["swing_target_position"] == null:
+        return state["current_position"] if state["current_position"] != null else Vector3.ZERO
+    return _swing_position(
+        state["swing_start_position"],
+        state["swing_target_position"],
+        _step_progress(
+            timestamp_seconds,
+            state["swing_start_time_seconds"],
+            state["swing_duration_s"] if state["swing_duration_s"] != null else settings["step_duration_s"]
+        ),
+        settings["step_lift_height_m"]
+    )
 
 
 func _estimate_knee(
@@ -522,7 +880,7 @@ func _estimate_shoulder_reach_offset(
     var protraction = _clamp01(local_dir.z) * reach_ratio
     var cross_body = _clamp01(local_dir.x) if side < 0.0 else _clamp01(-local_dir.x)
 
-    return (
+    var shoulder = (
         shoulder_position
         + WORLD_UP * elevation * settings["shoulder_elevation_gain_m"]
         + forward
@@ -531,6 +889,22 @@ func _estimate_shoulder_reach_offset(
         * settings["shoulder_protraction_gain_m"]
         + right * -side * cross_body * reach_ratio * settings["shoulder_cross_body_gain_m"]
     )
+    return _shift_shoulder_to_reachable_hand(shoulder, hand_position, arm_length)
+
+
+func _shift_shoulder_to_reachable_hand(
+    shoulder_position: Vector3,
+    hand_position: Vector3,
+    arm_length: float
+) -> Vector3:
+    var shoulder_to_hand = hand_position - shoulder_position
+    var reach = shoulder_to_hand.length()
+    var max_reach = arm_length + settings["shoulder_reach_slack_m"]
+    var excess_reach = reach - max_reach
+    if excess_reach <= 0.0:
+        return shoulder_position
+    var shift = minf(excess_reach, settings["max_shoulder_reach_shift_m"])
+    return shoulder_position + _normalize(shoulder_to_hand, WORLD_FORWARD) * shift
 
 
 func _estimate_elbow(
@@ -553,7 +927,19 @@ func _estimate_elbow(
         human_height * settings["lower_arm_ratio"]
     )
     var outward = right * side
-    var hint = _normalize(forward * 0.7 + outward * 0.3, forward)
+    var default_hint = _normalize(forward * -0.7 + outward * 0.3, -forward)
+    var lookup_hint = _arm_bend_lookup_direction(
+        shoulder_position,
+        hand_position,
+        right,
+        forward,
+        side,
+        upper_arm + lower_arm
+    )
+    var hint = _normalize(
+        default_hint.lerp(lookup_hint, _clamp01(settings["arm_bend_lookup_blend"])),
+        default_hint
+    )
     return _solve_two_bone_midpoint(
         shoulder_position,
         hand_position,
@@ -601,6 +987,39 @@ func _solve_two_bone_midpoint(
     var bend_direction = _project_on_plane(bend_hint, direction)
     bend_direction = _normalize(bend_direction, _fallback_bend_direction(direction))
     return root + direction * along + bend_direction * bend_height
+
+
+func _arm_bend_lookup_direction(
+    shoulder_position: Vector3,
+    hand_position: Vector3,
+    right: Vector3,
+    forward: Vector3,
+    side: float,
+    arm_length: float
+) -> Vector3:
+    if arm_length <= 0.000001:
+        return right * side
+    var shoulder_to_hand = hand_position - shoulder_position
+    var local_pos = _chest_local_components(shoulder_to_hand / arm_length, right, forward)
+    var local_bend = _basis_arm_bend_lookup(local_pos, side < 0.0)
+    return _normalize(
+        right * local_bend.x + WORLD_UP * local_bend.y + forward * local_bend.z,
+        right * side
+    )
+
+
+func _basis_arm_bend_lookup(local_pos: Vector3, is_left: bool) -> Vector3:
+    var bend_dir = Vector3(0.0, -0.3, -1.0)
+    bend_dir = bend_dir.lerp(Vector3(0.0, -1.0, -0.3), _clamp01(local_pos.z) * 0.6)
+    bend_dir = bend_dir.lerp(Vector3(0.0, -0.5, -1.0), _clamp01(local_pos.y) * 0.5)
+
+    var inwardness = _clamp01(local_pos.x) if is_left else _clamp01(-local_pos.x)
+    var inward_bend = Vector3(-1.0 if is_left else 1.0, -0.5, 0.0)
+    bend_dir = bend_dir.lerp(inward_bend, inwardness * 0.4)
+
+    bend_dir = bend_dir.lerp(Vector3(0.0, 1.0, 0.0), _clamp01(-local_pos.z) * 0.5)
+    bend_dir = bend_dir.lerp(Vector3(0.0, 0.0, -1.0), _clamp01(-local_pos.y) * 0.3)
+    return _normalize(bend_dir, Vector3(0.0, -0.3, -1.0))
 
 
 func _calibrated_length(calibration: Dictionary, names: Array, fallback: float) -> float:
@@ -784,7 +1203,11 @@ func _clamp_hips_lateral(
 
 func _chest_local_direction(vector: Vector3, right: Vector3, forward: Vector3) -> Vector3:
     var direction = _normalize(vector, forward)
-    return Vector3(direction.dot(right), direction.dot(WORLD_UP), direction.dot(forward))
+    return _chest_local_components(direction, right, forward)
+
+
+func _chest_local_components(vector: Vector3, right: Vector3, forward: Vector3) -> Vector3:
+    return Vector3(vector.dot(right), vector.dot(WORLD_UP), vector.dot(forward))
 
 
 func _shoulder_reach_ratio(reach: float, arm_length: float, engage_ratio: float) -> float:
@@ -870,6 +1293,19 @@ func _horizontal_distance(a: Vector3, b: Vector3) -> float:
     return Vector3(a.x - b.x, 0.0, a.z - b.z).length()
 
 
+func _clamp_horizontal_delta(origin: Vector3, target: Vector3, max_distance: float) -> Vector3:
+    var delta = Vector3(target.x - origin.x, 0.0, target.z - origin.z)
+    var distance = delta.length()
+    if distance <= max_distance or distance <= 0.000000001:
+        return target
+    var clamped = origin + delta * (max_distance / distance)
+    return Vector3(clamped.x, target.y, clamped.z)
+
+
+func _opposite_foot_name(name: String) -> String:
+    return "right_foot" if name == "left_foot" else "left_foot"
+
+
 func _normalize(vector: Vector3, fallback = WORLD_UP) -> Vector3:
     var magnitude = vector.length()
     if magnitude <= 0.000000001:
@@ -892,6 +1328,10 @@ func _new_foot_state(floor_normal: Vector3) -> Dictionary:
         "previous_timestamp_seconds": null,
         "swing_start_position": null,
         "swing_start_time_seconds": null,
+        "swing_target_position": null,
+        "swing_forward_lead_scale": 1.0,
+        "swing_duration_s": null,
+        "first_timestamp_seconds": null,
         "planted": false,
         "phase": "unplanted",
     }

@@ -72,7 +72,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--frame-stride", type=int, default=2)
     parser.add_argument(
         "--estimator",
-        choices=("trivial", "planted", "basis", "basis_knee_hint"),
+        choices=("trivial", "planted", "basis", "basis_knee_hint", "basis_footstep"),
         default="basis",
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
