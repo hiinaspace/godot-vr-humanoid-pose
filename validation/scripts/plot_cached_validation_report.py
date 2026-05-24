@@ -55,9 +55,11 @@ def render_report(report_path: Path, output_path: Path) -> None:
     _plot_clip_scatter(axes[1][1], clips)
     _plot_worst_clips(
         axes[1][2],
-        worst.get("reference_error_p95_m") or worst.get("mean_reference_error_m", []),
-        "Worst Clips: P95 Hips + Feet Error",
-        "reference_error_p95_m",
+        worst.get("mean_full_body_reference_error_m")
+        or worst.get("reference_error_p95_m")
+        or worst.get("mean_reference_error_m", []),
+        "Worst Clips: Full-Body Error",
+        "mean_full_body_reference_error_m",
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,15 +76,40 @@ def _title(summary: dict[str, Any]) -> str:
 
 def _plot_overall_metrics(axis, summary: dict[str, Any]) -> None:
     metrics = [
-        ("hips+feet", float(summary.get("mean_reference_error_m", 0.0))),
+        (
+            "full body",
+            _metric_value(
+                summary,
+                "mean_full_body_reference_error_m",
+                "mean_reference_error_m",
+            ),
+        ),
+        (
+            "upper",
+            _metric_value(
+                summary,
+                "mean_upper_body_reference_error_m",
+                "mean_torso_error_m",
+            ),
+        ),
+        (
+            "lower",
+            _metric_value(
+                summary,
+                "mean_lower_body_reference_error_m",
+                "mean_reference_error_m",
+            ),
+        ),
         ("pelvis", float(summary.get("mean_pelvis_error_m", 0.0))),
-        ("torso", float(summary.get("mean_torso_error_m", 0.0))),
+        ("hand", float(summary.get("mean_hand_reference_error_m", 0.0))),
         ("shoulder", float(summary.get("mean_shoulder_error_m", 0.0))),
         ("elbow", float(summary.get("mean_elbow_error_m", 0.0))),
         ("knee", float(summary.get("mean_knee_error_m", 0.0))),
         ("ref p95", float(summary.get("reference_error_p95_m", 0.0))),
         ("contact foot", float(summary.get("mean_contact_foot_error_m", 0.0))),
         ("contact slip/s", float(summary.get("mean_contact_slip_m_per_s", 0.0))),
+        ("low-foot slip/s", float(summary.get("mean_low_foot_slip_m_per_s", 0.0))),
+        ("support dist", float(summary.get("mean_hips_support_distance_m", 0.0))),
     ]
     labels = [label for label, _value in metrics]
     values = [value for _label, value in metrics]
@@ -96,6 +123,8 @@ def _plot_overall_metrics(axis, summary: dict[str, Any]) -> None:
         "#ff9da6",
         "#b279a2",
         "#af7aa1",
+        "#59a14f",
+        "#edc948",
     ]
     positions = list(range(len(values)))
     bars = axis.barh(positions, values, color=colors[: len(values)])
@@ -108,14 +137,18 @@ def _plot_overall_metrics(axis, summary: dict[str, Any]) -> None:
 
 def _plot_clip_distribution(axis, clips: list[dict[str, Any]]) -> None:
     metric_specs = [
-        ("hips+feet", "mean_reference_error_m"),
+        ("full body", "mean_full_body_reference_error_m"),
+        ("upper", "mean_upper_body_reference_error_m"),
+        ("lower", "mean_lower_body_reference_error_m"),
         ("pelvis", "mean_pelvis_error_m"),
-        ("torso", "mean_torso_error_m"),
+        ("hand", "mean_hand_reference_error_m"),
         ("shoulder", "mean_shoulder_error_m"),
         ("elbow", "mean_elbow_error_m"),
         ("knee", "mean_knee_error_m"),
         ("ref p95", "reference_error_p95_m"),
         ("contact foot", "mean_contact_foot_error_m"),
+        ("low-foot slip", "mean_low_foot_slip_m_per_s"),
+        ("support dist", "mean_hips_support_distance_m"),
     ]
     series = [_metric_values(clips, key) for _label, key in metric_specs]
     labels = [label for label, _key in metric_specs]
@@ -167,21 +200,32 @@ def _plot_group_metric(
         return
     groups = sorted(
         groups,
-        key=lambda group: float(group.get("mean_reference_error_m", 0.0)),
+        key=lambda group: _metric_value(
+            group,
+            "mean_full_body_reference_error_m",
+            "mean_reference_error_m",
+        ),
         reverse=True,
     )
     labels = [str(group.get(label_key, "unknown")) for group in groups]
-    reference = [float(group.get("mean_reference_error_m", 0.0)) for group in groups]
-    torso = [float(group.get("mean_torso_error_m", 0.0)) for group in groups]
-    contact = [float(group.get("mean_contact_foot_error_m", 0.0)) for group in groups]
+    full_body = [
+        _metric_value(group, "mean_full_body_reference_error_m", "mean_reference_error_m")
+        for group in groups
+    ]
+    upper = [
+        _metric_value(group, "mean_upper_body_reference_error_m", "mean_torso_error_m")
+        for group in groups
+    ]
+    lower = [
+        _metric_value(group, "mean_lower_body_reference_error_m", "mean_reference_error_m")
+        for group in groups
+    ]
     positions = range(len(groups))
     axis.barh(
-        [position + 0.24 for position in positions], reference, height=0.22, label="hips+feet"
+        [position + 0.24 for position in positions], full_body, height=0.22, label="full body"
     )
-    axis.barh([position for position in positions], torso, height=0.22, label="torso")
-    axis.barh(
-        [position - 0.24 for position in positions], contact, height=0.22, label="contact foot"
-    )
+    axis.barh([position for position in positions], upper, height=0.22, label="upper")
+    axis.barh([position - 0.24 for position in positions], lower, height=0.22, label="lower")
     axis.set_yticks(list(positions), labels)
     axis.invert_yaxis()
     axis.set_title(title)
@@ -252,12 +296,10 @@ def _plot_worst_clips(
         )
         for clip in clips
     ]
-    values = [
-        float(clip.get(metric_key, clip.get("mean_reference_error_m", 0.0))) for clip in clips
-    ]
+    values = [_clip_metric_value(clip, metric_key) for clip in clips]
     bars = axis.barh(labels, values, color="#e45756")
     axis.set_title(title)
-    axis.set_xlabel("hips + feet error (m)")
+    axis.set_xlabel("error (m)")
     axis.bar_label(bars, fmt="%.2f", padding=2, fontsize=8)
 
 
@@ -268,6 +310,18 @@ def _metric_values(rows: list[dict[str, Any]], key: str) -> list[float]:
         if isinstance(value, (int, float)):
             values.append(float(value))
     return values
+
+
+def _metric_value(row: dict[str, Any], key: str, *fallback_keys: str) -> float:
+    for candidate_key in (key, *fallback_keys):
+        value = row.get(candidate_key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return 0.0
+
+
+def _clip_metric_value(clip: dict[str, Any], metric_key: str) -> float:
+    return _metric_value(clip, metric_key, "reference_error_p95_m", "mean_reference_error_m")
 
 
 def _metric_pairs(

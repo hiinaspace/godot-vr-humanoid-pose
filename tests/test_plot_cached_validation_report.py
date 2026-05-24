@@ -34,6 +34,8 @@ def test_plot_cached_validation_report_writes_png(tmp_path) -> None:
                     "mean_right_foot_error_m": 0.6,
                     "mean_contact_foot_error_m": 0.3,
                     "mean_contact_slip_m_per_s": 0.1,
+                    "mean_low_foot_slip_m_per_s": 0.12,
+                    "mean_hips_support_distance_m": 0.2,
                     "grouped_metrics": {
                         "environment_split": [
                             {
@@ -79,6 +81,8 @@ def test_plot_cached_validation_report_writes_png(tmp_path) -> None:
                         "mean_joint_estimated_jerk_m_per_s3": 2.5,
                         "mean_contact_foot_error_m": 0.3,
                         "mean_contact_slip_m_per_s": 0.1,
+                        "mean_low_foot_slip_m_per_s": 0.12,
+                        "mean_hips_support_distance_m": 0.2,
                     },
                     {
                         "environment_split": "nonflat",
@@ -93,6 +97,8 @@ def test_plot_cached_validation_report_writes_png(tmp_path) -> None:
                         "mean_joint_estimated_jerk_m_per_s3": 3.5,
                         "mean_contact_foot_error_m": 0.7,
                         "mean_contact_slip_m_per_s": 0.2,
+                        "mean_low_foot_slip_m_per_s": 0.22,
+                        "mean_hips_support_distance_m": 0.45,
                     },
                 ],
             }

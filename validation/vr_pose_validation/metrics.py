@@ -29,6 +29,39 @@ JOINT_PAIR_METRICS = {
     "elbow": ("left_elbow", "right_elbow"),
     "knee": ("left_knee", "right_knee"),
 }
+REFERENCE_REGION_JOINTS = {
+    "hand": ("left_hand", "right_hand"),
+    "upper_body": (
+        "head",
+        "neck",
+        "chest",
+        "spine",
+        "left_shoulder",
+        "right_shoulder",
+        "left_elbow",
+        "right_elbow",
+        "left_hand",
+        "right_hand",
+    ),
+    "lower_body": ("hips", "left_knee", "right_knee", "left_foot", "right_foot"),
+    "full_body": (
+        "head",
+        "neck",
+        "chest",
+        "spine",
+        "hips",
+        "left_shoulder",
+        "right_shoulder",
+        "left_elbow",
+        "right_elbow",
+        "left_hand",
+        "right_hand",
+        "left_knee",
+        "right_knee",
+        "left_foot",
+        "right_foot",
+    ),
+}
 REFERENCE_ERROR_DISTRIBUTION_FIELDS = (
     "reference_error_p50_m",
     "reference_error_p90_m",
@@ -94,6 +127,19 @@ FLEXION_SUMMARY_FIELDS = (
     "pct_right_knee_flexion_over_limit",
     "pct_knee_flexion_over_limit",
     "pct_joint_flexion_over_limit",
+)
+GAIT_PLAUSIBILITY_SUMMARY_FIELDS = (
+    "mean_low_foot_slip_m_per_s",
+    "p95_low_foot_slip_m_per_s",
+    "pct_low_foot_slip_speed_over_20cm_s",
+    "mean_hips_support_distance_m",
+    "pct_hips_support_distance_over_60cm",
+    "pct_hips_support_distance_over_90cm",
+    "mean_estimated_stance_width_m",
+    "pct_estimated_stance_width_under_20cm",
+    "pct_estimated_stance_width_over_90cm",
+    "mean_estimated_leg_reach_m",
+    "pct_estimated_leg_reach_over_110cm",
 )
 
 
@@ -187,6 +233,49 @@ class FootContactSequenceMetrics:
         return _rate(weighted_error, float(self.contact_frames))
 
 
+@dataclass(frozen=True, slots=True)
+class GaitPlausibilitySequenceMetrics:
+    inferred_floor_height_m: float
+    left_low_foot_frames: int
+    right_low_foot_frames: int
+    left_low_foot_duration_s: float
+    right_low_foot_duration_s: float
+    left_low_foot_slip_m: float
+    right_low_foot_slip_m: float
+    low_foot_slip_speeds_m_per_s: tuple[float, ...]
+    pct_low_foot_slip_speed_over_20cm_s: float
+    mean_hips_support_distance_m: float
+    pct_hips_support_distance_over_60cm: float
+    pct_hips_support_distance_over_90cm: float
+    mean_estimated_stance_width_m: float
+    pct_estimated_stance_width_under_20cm: float
+    pct_estimated_stance_width_over_90cm: float
+    mean_estimated_leg_reach_m: float
+    pct_estimated_leg_reach_over_110cm: float
+
+    @property
+    def low_foot_frames(self) -> int:
+        return self.left_low_foot_frames + self.right_low_foot_frames
+
+    @property
+    def left_low_foot_slip_m_per_s(self) -> float:
+        return _rate(self.left_low_foot_slip_m, self.left_low_foot_duration_s)
+
+    @property
+    def right_low_foot_slip_m_per_s(self) -> float:
+        return _rate(self.right_low_foot_slip_m, self.right_low_foot_duration_s)
+
+    @property
+    def mean_low_foot_slip_m_per_s(self) -> float:
+        total_slip = self.left_low_foot_slip_m + self.right_low_foot_slip_m
+        total_duration = self.left_low_foot_duration_s + self.right_low_foot_duration_s
+        return _rate(total_slip, total_duration)
+
+    @property
+    def p95_low_foot_slip_m_per_s(self) -> float:
+        return _quantile(self.low_foot_slip_speeds_m_per_s, 0.95)
+
+
 def evaluate_frame(
     pose: HumanoidPoseFrame,
     sample: TrackedPoseSample,
@@ -266,6 +355,13 @@ def summarize_reference_errors(metrics: list[ReferencePoseMetrics]) -> dict[str,
             "mean_chest_error_m": 0.0,
             "mean_spine_error_m": 0.0,
             "mean_torso_error_m": 0.0,
+            "mean_head_reference_error_m": 0.0,
+            "mean_left_hand_reference_error_m": 0.0,
+            "mean_right_hand_reference_error_m": 0.0,
+            "mean_hand_reference_error_m": 0.0,
+            "mean_upper_body_reference_error_m": 0.0,
+            "mean_lower_body_reference_error_m": 0.0,
+            "mean_full_body_reference_error_m": 0.0,
             "mean_left_shoulder_error_m": 0.0,
             "mean_right_shoulder_error_m": 0.0,
             "mean_shoulder_error_m": 0.0,
@@ -290,6 +386,13 @@ def summarize_reference_errors(metrics: list[ReferencePoseMetrics]) -> dict[str,
         "mean_chest_error_m": _mean_optional(metric.chest_error_m for metric in metrics),
         "mean_spine_error_m": _mean_optional(metric.spine_error_m for metric in metrics),
         "mean_torso_error_m": fmean(metric.mean_torso_error_m for metric in metrics),
+        "mean_head_reference_error_m": _mean_joint_error(metrics, "head"),
+        "mean_left_hand_reference_error_m": _mean_joint_error(metrics, "left_hand"),
+        "mean_right_hand_reference_error_m": _mean_joint_error(metrics, "right_hand"),
+        "mean_hand_reference_error_m": _mean_region_error(metrics, "hand"),
+        "mean_upper_body_reference_error_m": _mean_region_error(metrics, "upper_body"),
+        "mean_lower_body_reference_error_m": _mean_region_error(metrics, "lower_body"),
+        "mean_full_body_reference_error_m": _mean_region_error(metrics, "full_body"),
         "mean_left_shoulder_error_m": _mean_joint_error(metrics, "left_shoulder"),
         "mean_right_shoulder_error_m": _mean_joint_error(metrics, "right_shoulder"),
         "mean_shoulder_error_m": _mean_joint_pair_error(metrics, "shoulder"),
@@ -547,6 +650,108 @@ def evaluate_foot_contact_sequence(
     )
 
 
+def infer_estimated_floor_height(
+    poses: Iterable[HumanoidPoseFrame],
+    *,
+    quantile: float = 0.05,
+) -> float:
+    heights = sorted(
+        pose.joints[joint_name].transform.position[1]
+        for pose in poses
+        for joint_name in FOOT_JOINTS
+        if joint_name in pose.joints
+    )
+    if not heights:
+        return 0.0
+    index = min(len(heights) - 1, max(0, int(len(heights) * quantile)))
+    return heights[index]
+
+
+def evaluate_gait_plausibility_sequence(
+    poses: Iterable[HumanoidPoseFrame],
+    *,
+    floor_height_m: float | None = None,
+    low_foot_height_threshold_m: float = 0.08,
+    low_foot_slip_speed_threshold_m_s: float = 0.20,
+    hips_support_warning_m: float = 0.60,
+    hips_support_bad_m: float = 0.90,
+    narrow_stance_threshold_m: float = 0.20,
+    wide_stance_threshold_m: float = 0.90,
+    leg_reach_threshold_m: float = 1.10,
+) -> GaitPlausibilitySequenceMetrics:
+    pose_list = list(poses)
+    inferred_floor = (
+        infer_estimated_floor_height(pose_list) if floor_height_m is None else floor_height_m
+    )
+    accumulators = {
+        "left_foot": _LowFootAccumulator(),
+        "right_foot": _LowFootAccumulator(),
+    }
+    hips_support_distances: list[float] = []
+    stance_widths: list[float] = []
+    leg_reaches: list[float] = []
+
+    for pose in pose_list:
+        for foot_name, accumulator in accumulators.items():
+            if foot_name not in pose.joints:
+                continue
+            accumulator.add_frame(
+                timestamp_seconds=pose.timestamp_seconds,
+                estimated_position=pose.joints[foot_name].transform.position,
+                floor_height_m=inferred_floor,
+                low_height_threshold_m=low_foot_height_threshold_m,
+            )
+
+        if not all(joint_name in pose.joints for joint_name in ("hips", *FOOT_JOINTS)):
+            continue
+        hips = pose.joints["hips"].transform.position
+        left_foot = pose.joints["left_foot"].transform.position
+        right_foot = pose.joints["right_foot"].transform.position
+        hips_support_distances.append(
+            _horizontal_point_segment_distance(hips, left_foot, right_foot)
+        )
+        stance_widths.append(horizontal_distance(left_foot, right_foot))
+        leg_reaches.extend((distance(hips, left_foot), distance(hips, right_foot)))
+
+    left = accumulators["left_foot"].summary()
+    right = accumulators["right_foot"].summary()
+    slip_speeds = (*left.low_foot_slip_speeds_m_per_s, *right.low_foot_slip_speeds_m_per_s)
+    return GaitPlausibilitySequenceMetrics(
+        inferred_floor_height_m=inferred_floor,
+        left_low_foot_frames=left.low_foot_frames,
+        right_low_foot_frames=right.low_foot_frames,
+        left_low_foot_duration_s=left.low_foot_duration_s,
+        right_low_foot_duration_s=right.low_foot_duration_s,
+        left_low_foot_slip_m=left.low_foot_slip_m,
+        right_low_foot_slip_m=right.low_foot_slip_m,
+        low_foot_slip_speeds_m_per_s=slip_speeds,
+        pct_low_foot_slip_speed_over_20cm_s=_percent_over(
+            slip_speeds,
+            low_foot_slip_speed_threshold_m_s,
+        ),
+        mean_hips_support_distance_m=_mean_values(hips_support_distances),
+        pct_hips_support_distance_over_60cm=_percent_over(
+            hips_support_distances,
+            hips_support_warning_m,
+        ),
+        pct_hips_support_distance_over_90cm=_percent_over(
+            hips_support_distances,
+            hips_support_bad_m,
+        ),
+        mean_estimated_stance_width_m=_mean_values(stance_widths),
+        pct_estimated_stance_width_under_20cm=_percent_under(
+            stance_widths,
+            narrow_stance_threshold_m,
+        ),
+        pct_estimated_stance_width_over_90cm=_percent_over(
+            stance_widths,
+            wide_stance_threshold_m,
+        ),
+        mean_estimated_leg_reach_m=_mean_values(leg_reaches),
+        pct_estimated_leg_reach_over_110cm=_percent_over(leg_reaches, leg_reach_threshold_m),
+    )
+
+
 def _joint_to_tracker_error(
     pose: HumanoidPoseFrame,
     joint_name: str,
@@ -688,6 +893,59 @@ class _FootContactAccumulator:
 
 
 @dataclass(frozen=True, slots=True)
+class _LowFootAccumulatorSummary:
+    low_foot_frames: int
+    low_foot_duration_s: float
+    low_foot_slip_m: float
+    low_foot_slip_speeds_m_per_s: tuple[float, ...]
+
+
+@dataclass(slots=True)
+class _LowFootAccumulator:
+    previous_timestamp_seconds: float | None = None
+    previous_estimated_position: Vector3 | None = None
+    previous_low: bool = False
+    low_foot_frames: int = 0
+    low_foot_duration_s: float = 0.0
+    low_foot_slip_m: float = 0.0
+    low_foot_slip_speeds_m_per_s: list[float] = field(default_factory=list)
+
+    def add_frame(
+        self,
+        *,
+        timestamp_seconds: float,
+        estimated_position: Vector3,
+        floor_height_m: float,
+        low_height_threshold_m: float,
+    ) -> None:
+        dt = (
+            max(timestamp_seconds - self.previous_timestamp_seconds, 1.0 / 120.0)
+            if self.previous_timestamp_seconds is not None
+            else 1.0 / 120.0
+        )
+        low = estimated_position[1] - floor_height_m <= low_height_threshold_m
+        if low:
+            self.low_foot_frames += 1
+            if self.previous_low and self.previous_estimated_position is not None:
+                slip = horizontal_distance(estimated_position, self.previous_estimated_position)
+                self.low_foot_slip_m += slip
+                self.low_foot_duration_s += dt
+                self.low_foot_slip_speeds_m_per_s.append(_rate(slip, dt))
+
+        self.previous_timestamp_seconds = timestamp_seconds
+        self.previous_estimated_position = estimated_position
+        self.previous_low = low
+
+    def summary(self) -> _LowFootAccumulatorSummary:
+        return _LowFootAccumulatorSummary(
+            low_foot_frames=self.low_foot_frames,
+            low_foot_duration_s=self.low_foot_duration_s,
+            low_foot_slip_m=self.low_foot_slip_m,
+            low_foot_slip_speeds_m_per_s=tuple(self.low_foot_slip_speeds_m_per_s),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class _TemporalDerivativeSample:
     timestamp_seconds: float
     estimated: Vector3
@@ -716,6 +974,13 @@ def _mean_joint_pair_error(metrics: list[ReferencePoseMetrics], pair_name: str) 
             metric.joint_errors_m.get(left_name),
             metric.joint_errors_m.get(right_name),
         )
+    )
+
+
+def _mean_region_error(metrics: list[ReferencePoseMetrics], region_name: str) -> float:
+    joint_names = REFERENCE_REGION_JOINTS[region_name]
+    return _mean_optional(
+        metric.joint_errors_m.get(joint_name) for metric in metrics for joint_name in joint_names
     )
 
 
@@ -754,6 +1019,28 @@ def _percent_over(values: Iterable[float], threshold: float) -> float:
     if not value_list:
         return 0.0
     return sum(1 for value in value_list if value > threshold) / len(value_list) * 100.0
+
+
+def _percent_under(values: Iterable[float], threshold: float) -> float:
+    value_list = list(values)
+    if not value_list:
+        return 0.0
+    return sum(1 for value in value_list if value < threshold) / len(value_list) * 100.0
+
+
+def _horizontal_point_segment_distance(point: Vector3, start: Vector3, end: Vector3) -> float:
+    segment = (end[0] - start[0], 0.0, end[2] - start[2])
+    point_delta = (point[0] - start[0], 0.0, point[2] - start[2])
+    segment_length_squared = dot(segment, segment)
+    if segment_length_squared <= 1e-12:
+        return horizontal_distance(point, start)
+    t = min(1.0, max(0.0, dot(point_delta, segment) / segment_length_squared))
+    projection = (
+        start[0] + segment[0] * t,
+        point[1],
+        start[2] + segment[2] * t,
+    )
+    return horizontal_distance(point, projection)
 
 
 def _empty_temporal_buckets() -> dict[str, list[float]]:

@@ -12,6 +12,7 @@ from validation.vr_pose_validation.metrics import (
     ReferencePoseMetrics,
     evaluate_foot_contact_sequence,
     evaluate_frame,
+    evaluate_gait_plausibility_sequence,
     evaluate_reference_pose,
     infer_reference_floor_height,
     summarize_joint_flexion_sequence,
@@ -120,9 +121,12 @@ def test_reference_pose_summary_reports_limb_pair_errors() -> None:
         timestamp_seconds=0.0,
         root=Transform(),
         joints={
+            "head": JointPose(Transform(position=(0.0, 1.7, 0.0))),
             "hips": JointPose(Transform(position=(0.0, 0.0, 0.0))),
             "left_foot": JointPose(Transform(position=(0.0, -1.0, 0.0))),
             "right_foot": JointPose(Transform(position=(1.0, -1.0, 0.0))),
+            "left_hand": JointPose(Transform(position=(-0.6, 1.0, 0.0))),
+            "right_hand": JointPose(Transform(position=(0.6, 1.0, 0.0))),
             "left_shoulder": JointPose(Transform(position=(-0.2, 1.4, 0.0))),
             "right_shoulder": JointPose(Transform(position=(0.2, 1.4, 0.0))),
             "left_elbow": JointPose(Transform(position=(-0.4, 1.0, 0.0))),
@@ -132,9 +136,12 @@ def test_reference_pose_summary_reports_limb_pair_errors() -> None:
         },
     )
     reference = {
+        "head": Transform(position=(0.0, 1.7, 0.0)),
         "hips": Transform(position=(0.0, 0.0, 0.0)),
         "left_foot": Transform(position=(0.0, -1.0, 0.0)),
         "right_foot": Transform(position=(1.0, -1.0, 0.0)),
+        "left_hand": Transform(position=(-0.6, 1.0, 0.0)),
+        "right_hand": Transform(position=(0.8, 1.0, 0.0)),
         "left_shoulder": Transform(position=(-0.1, 1.4, 0.0)),
         "right_shoulder": Transform(position=(0.4, 1.4, 0.0)),
         "left_elbow": Transform(position=(-0.1, 1.0, 0.0)),
@@ -150,6 +157,10 @@ def test_reference_pose_summary_reports_limb_pair_errors() -> None:
     assert summary["mean_shoulder_error_m"] == approx(0.15)
     assert summary["mean_elbow_error_m"] == approx(0.35)
     assert summary["mean_knee_error_m"] == approx(0.55)
+    assert summary["mean_hand_reference_error_m"] == approx(0.1)
+    assert summary["mean_upper_body_reference_error_m"] == approx(1.2 / 7.0)
+    assert summary["mean_lower_body_reference_error_m"] == approx(1.1 / 5.0)
+    assert summary["mean_full_body_reference_error_m"] == approx(2.3 / 12.0)
 
 
 def test_reference_error_distribution_reports_quantiles_and_thresholds() -> None:
@@ -243,6 +254,41 @@ def test_foot_contact_metrics_measure_estimated_slip_during_reference_contact() 
     assert metrics.left_contact_slip_m_per_s == approx(6.0)
 
 
+def test_gait_plausibility_metrics_flag_output_side_foot_skate_and_support() -> None:
+    poses = [
+        _gait_pose(
+            timestamp_seconds=0.0,
+            hips=(0.0, 1.0, 0.0),
+            left_foot=(0.0, 0.0, 0.0),
+            right_foot=(0.3, 0.0, 0.0),
+        ),
+        _gait_pose(
+            timestamp_seconds=1.0 / 120.0,
+            hips=(0.8, 1.0, 0.0),
+            left_foot=(0.05, 0.0, 0.0),
+            right_foot=(0.35, 0.0, 0.0),
+        ),
+        _gait_pose(
+            timestamp_seconds=2.0 / 120.0,
+            hips=(1.2, 1.0, 0.0),
+            left_foot=(0.10, 0.0, 0.0),
+            right_foot=(0.40, 0.0, 0.0),
+        ),
+    ]
+
+    metrics = evaluate_gait_plausibility_sequence(poses, floor_height_m=0.0)
+
+    assert metrics.low_foot_frames == 6
+    assert metrics.mean_low_foot_slip_m_per_s == approx(6.0)
+    assert metrics.p95_low_foot_slip_m_per_s == approx(6.0)
+    assert metrics.pct_low_foot_slip_speed_over_20cm_s == 100.0
+    assert metrics.mean_hips_support_distance_m > 0.4
+    assert metrics.pct_hips_support_distance_over_60cm == approx(100.0 / 3.0)
+    assert metrics.mean_estimated_stance_width_m == approx(0.3)
+    assert metrics.pct_estimated_stance_width_under_20cm == 0.0
+    assert metrics.pct_estimated_leg_reach_over_110cm > 0.0
+
+
 def test_joint_flexion_metrics_report_angle_error_and_limit_violations() -> None:
     reference_frames = [
         {
@@ -298,5 +344,24 @@ def _foot_pose(left_x: float, timestamp_seconds: float) -> HumanoidPoseFrame:
     return HumanoidPoseFrame(
         timestamp_seconds=timestamp_seconds,
         root=Transform(),
+        joints=joints,
+    )
+
+
+def _gait_pose(
+    *,
+    timestamp_seconds: float,
+    hips: tuple[float, float, float],
+    left_foot: tuple[float, float, float],
+    right_foot: tuple[float, float, float],
+) -> HumanoidPoseFrame:
+    joints = {
+        "hips": JointPose(Transform(position=hips)),
+        "left_foot": JointPose(Transform(position=left_foot)),
+        "right_foot": JointPose(Transform(position=right_foot)),
+    }
+    return HumanoidPoseFrame(
+        timestamp_seconds=timestamp_seconds,
+        root=Transform(position=hips),
         joints=joints,
     )

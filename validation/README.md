@@ -63,19 +63,32 @@ lists for the main reference, pelvis, torso, limb, foot, tail, temporal, and
 contact-slip metrics. Limb diagnostics include paired shoulder, elbow, and knee
 errors plus left/right fields in the clip rows. Tail diagnostics include
 per-clip reference-error P50/P90/P95/P99 values and percentages over 25 cm,
-50 cm, and 100 cm. Temporal diagnostics use finite differences over each clip
-to report mean estimated-vs-reference velocity error, acceleration error, and
-absolute estimated jerk for all common joints plus pelvis, torso, shoulders,
-elbows, knees, and feet. Use `--top-clips 0` to omit worst-clip lists from the
-JSON summary. The headline reference metric is the mean of hips, left foot, and
-right foot errors; per-joint means for all emitted joints are available under
-`mean_joint_errors_m`.
+50 cm, and 100 cm. Region diagnostics report mean reference error for hands,
+upper body, lower body, and full body. Temporal diagnostics use finite
+differences over each clip to report mean estimated-vs-reference velocity error,
+acceleration error, and absolute estimated jerk for all common joints plus
+pelvis, torso, shoulders, elbows, knees, and feet. Gait plausibility diagnostics
+add output-side low-foot slip, foot-support distance from hips, stance width,
+and hip-to-foot reach thresholds, which are useful for spotting skating, lazy
+trailing feet, and overstretched legs even when exact GT footfalls are not the
+main objective. Use `--top-clips 0` to omit worst-clip lists from the JSON
+summary. The dashboard headline uses full-body, upper-body, lower-body, and
+joint-specific reference errors; per-joint means for all emitted joints are
+available under `mean_joint_errors_m`.
 
 Compare the first Basis-style estimator port against the trivial baseline:
 
 ```powershell
 uv run python -m validation.scripts.run_cached_validation --cache-dir .cache/cmu/parquet/canonical_full --workers 16 --estimator basis
 ```
+
+Experimental estimator names are also available for targeted comparisons:
+`basis_knee_hint`, `basis_footstep`, `basis_arm_lookup`, `basis_arm_swivel`,
+and `basis_research`. The arm variants are research scaffolding for
+paper-inspired elbow/shoulder experiments, not promoted defaults.
+
+Research notes for the sparse-VR papers and implementation ideas live in
+`validation/RESEARCH_NOTES.md`.
 
 Run only the in-distribution flat-floor split:
 
@@ -94,3 +107,35 @@ Render a PNG dashboard for any cached validation JSON report:
 ```powershell
 uv run python -m validation.scripts.plot_cached_validation_report validation/reports/cached_baseline_smoke.json --output validation/reports/cached_baseline_smoke.png
 ```
+
+Analyze GT gait parameters from the cached CMU flat locomotion split and compare
+them to the current procedural footstep assumptions:
+
+```powershell
+uv run python -m validation.scripts.analyze_cmu_gait --cache-dir .cache/cmu/parquet/canonical_full --report validation/reports/cmu_gait_flat_locomotion.json --steps-csv validation/reports/cmu_gait_flat_locomotion_steps.csv --plot validation/reports/cmu_gait_flat_locomotion.png
+```
+
+The gait report extracts approximate foot-contact events, step forward distance,
+step width, step interval, cadence, and swing duration. It also runs lightweight
+held-out linear predictors from synthetic head/controller features to estimate
+how much of those gait parameters is explained by sparse VR-style inputs.
+
+Build a compact CSV for manual outlier review from a cached validation JSON report:
+
+```powershell
+uv run python -m validation.scripts.build_outlier_review validation/reports/outliers_basis_flat_current.json --output validation/reports/outlier_review_flat.csv
+```
+
+Summarize a live VR capture session and, for new captures that include calibrated
+optional tracker rows, compare tracked elbows/knees/feet/pelvis against the
+estimated joints:
+
+```powershell
+uv run python -m validation.scripts.analyze_live_capture .cache/live_capture
+```
+
+The live recorder keeps running in the background. The Godot overlay sends a
+`flush` message when a clip completes, so each finished clip is persisted without
+stopping the Python sidecar. The analyzer also reports calibrated tracker role
+coverage; a `chest` role in the default seven-tracker setup usually means the
+T-pose calibration was captured too early or in the wrong pose.

@@ -39,6 +39,7 @@ from validation.vr_pose_validation.types import (
 WORLD_UP: Vector3 = (0.0, 1.0, 0.0)
 WORLD_FORWARD: Vector3 = (0.0, 0.0, 1.0)
 type FootPhase = Literal["unplanted", "planted", "swing", "settle"]
+type ArmBendStrategy = Literal["default", "basis_lookup", "manikin_swivel"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,8 +48,8 @@ class BasisEstimatorSettings:
 
     head_to_hips_ratio: float = 0.34
     shoulder_width_ratio: float = 0.201
-    upper_arm_ratio: float = 0.161
-    lower_arm_ratio: float = 0.116
+    upper_arm_ratio: float = 0.174
+    lower_arm_ratio: float = 0.151
     upper_leg_ratio: float = 0.245
     lower_leg_ratio: float = 0.246
     head_to_neck_ratio: float = 0.04
@@ -76,14 +77,39 @@ class BasisEstimatorSettings:
     step_duration_s: float = 0.18
     step_lift_height_m: float = 0.06
     planted_foot_confidence: float = 0.75
+    footstep_planner_enabled: bool = False
+    footstep_release_stretch_m: float = 0.24
+    footstep_speed_release_reduction_s: float = 0.0
+    footstep_forward_lead_m: float = 0.16
+    footstep_speed_lead_s: float = 0.05
+    footstep_max_forward_lead_m: float = 0.28
+    footstep_max_step_length_m: float = 0.55
+    footstep_swing_retarget_stretch_m: float = 0.22
+    footstep_max_neutral_stretch_m: float = 0.60
+    footstep_min_lateral_ratio: float = 0.35
+    footstep_min_interval_s: float = 0.12
+    footstep_startup_align_s: float = 0.0
+    footstep_catchup_release_stretch_m: float = 0.52
+    footstep_trailing_release_stretch_m: float = 0.34
+    footstep_stop_speed_m_s: float = 0.10
+    footstep_catchup_duration_s: float = 0.16
+    footstep_speed_duration_reduction_s: float = 0.0
     knee_hint_enabled: bool = False
     knee_hint_lateral_weight: float = 0.12
     knee_hint_lerp_speed: float = 20.0
+    arm_bend_strategy: ArmBendStrategy = "default"
     arm_bend_lookup_blend: float = 0.0
+    arm_swivel_down_weight: float = 0.55
+    arm_swivel_outward_weight: float = 0.35
+    arm_swivel_backward_weight: float = 0.45
+    arm_swivel_cross_body_inward_weight: float = 0.25
+    arm_swivel_overhead_relief: float = 0.50
     shoulder_reach_engage_ratio: float = 0.7
     shoulder_elevation_gain_m: float = 0.05
     shoulder_protraction_gain_m: float = 0.04
     shoulder_cross_body_gain_m: float = 0.025
+    shoulder_reach_slack_m: float = 0.02
+    max_shoulder_reach_shift_m: float = 0.16
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +139,11 @@ class _FootState:
     previous_timestamp_seconds: float | None = None
     swing_start_position: Vector3 | None = None
     swing_start_time_seconds: float | None = None
+    swing_target_position: Vector3 | None = None
+    swing_forward_lead_scale: float = 1.0
+    swing_duration_s: float | None = None
     filtered_knee_hint: Vector3 | None = None
+    first_timestamp_seconds: float | None = None
     planted: bool = False
     phase: FootPhase = "unplanted"
 
@@ -147,10 +177,16 @@ class BasisPortEstimator:
     settings: BasisEstimatorSettings = field(default_factory=BasisEstimatorSettings)
     _foot_states: dict[str, _FootState] = field(default_factory=dict, init=False)
     _torso_state: _TorsoState = field(default_factory=_TorsoState, init=False)
+    _active_swing_foot: str | None = field(default=None, init=False)
+    _last_stepped_foot: str | None = field(default=None, init=False)
+    _last_step_time_seconds: float | None = field(default=None, init=False)
 
     def reset(self) -> None:
         self._foot_states.clear()
         self._torso_state = _TorsoState()
+        self._active_swing_foot = None
+        self._last_stepped_foot = None
+        self._last_step_time_seconds = None
 
     def estimate(
         self,
@@ -529,6 +565,20 @@ class BasisPortEstimator:
             state.current_position = target
         if state.current_rotation is None:
             state.current_rotation = _foot_rotation(forward, state.filtered_normal)
+        if self.settings.footstep_planner_enabled:
+            return self._estimate_planned_foot(
+                name,
+                state,
+                target,
+                speed,
+                right,
+                side,
+                forward,
+                stance_width,
+                grounding,
+                timestamp_seconds,
+                dt,
+            )
 
         if state.planted and state.anchor_position is not None:
             stretch = horizontal_distance(state.anchor_position, target)
@@ -593,13 +643,357 @@ class BasisPortEstimator:
             forward, state.anchor_normal if state.planted else state.filtered_normal
         )
         state.current_rotation = _nlerp_quaternion(
-            state.current_rotation,
+            state.current_rotation or desired_rotation,
             desired_rotation,
             _exp_alpha(self.settings.foot_position_lerp_speed, dt),
         )
         return _FootTarget(
             position=state.current_position,
             rotation=state.current_rotation,
+        )
+
+    def _estimate_planned_foot(
+        self,
+        name: str,
+        state: _FootState,
+        neutral_target: Vector3,
+        neutral_speed: float,
+        right: Vector3,
+        side: float,
+        forward: Vector3,
+        stance_width: float,
+        grounding: GroundingContext,
+        timestamp_seconds: float,
+        dt: float,
+    ) -> _FootTarget:
+        if state.first_timestamp_seconds is None:
+            state.first_timestamp_seconds = timestamp_seconds
+
+        if state.phase == "unplanted":
+            self._plant_planned_foot(state, neutral_target, grounding, forward)
+
+        if (
+            self.settings.footstep_startup_align_s > 0.0
+            and state.first_timestamp_seconds is not None
+            and timestamp_seconds - state.first_timestamp_seconds
+            < self.settings.footstep_startup_align_s
+        ):
+            self._plant_planned_foot(state, neutral_target, grounding, forward)
+            desired_position = neutral_target
+            state.previous_target = neutral_target
+            state.previous_timestamp_seconds = timestamp_seconds
+            state.current_position = desired_position
+            state.current_rotation = _foot_rotation(forward, state.anchor_normal)
+            return _FootTarget(
+                position=state.current_position,
+                rotation=state.current_rotation,
+            )
+
+        if state.phase == "swing":
+            self._retarget_planned_step(
+                state,
+                neutral_target,
+                neutral_speed,
+                right,
+                side,
+                forward,
+                stance_width,
+            )
+            desired_position = self._planned_swing_position(state, timestamp_seconds)
+        else:
+            anchor_stretch = (
+                horizontal_distance(state.anchor_position, neutral_target)
+                if state.anchor_position is not None
+                else 0.0
+            )
+            needs_catchup = anchor_stretch > self.settings.footstep_catchup_release_stretch_m
+            needs_trailing_recovery = (
+                neutral_speed <= self.settings.footstep_stop_speed_m_s
+                and anchor_stretch > self.settings.footstep_trailing_release_stretch_m
+            )
+            needs_regular_step = anchor_stretch > self._planned_release_stretch(neutral_speed)
+            force_recovery = needs_catchup or needs_trailing_recovery
+            if (
+                state.planted
+                and state.anchor_position is not None
+                and (force_recovery or needs_regular_step)
+                and self._can_begin_planned_step(
+                    name,
+                    timestamp_seconds,
+                    force_recovery=force_recovery,
+                )
+            ):
+                self._begin_planned_step(
+                    name,
+                    state,
+                    neutral_target,
+                    neutral_speed,
+                    right,
+                    side,
+                    forward,
+                    stance_width,
+                    timestamp_seconds,
+                    catchup=needs_catchup,
+                    forward_lead_scale=0.0 if needs_trailing_recovery else 1.0,
+                )
+                desired_position = self._planned_swing_position(state, timestamp_seconds)
+            elif state.anchor_position is not None:
+                desired_position = state.anchor_position
+            else:
+                state.anchor_position = neutral_target
+                state.anchor_normal = grounding.floor_normal
+                state.planted = True
+                state.phase = "planted"
+                desired_position = neutral_target
+
+        desired_position = self._constrain_planned_foot_to_neutral(
+            name,
+            state,
+            desired_position,
+            neutral_target,
+            grounding,
+        )
+        progress = _step_progress(
+            timestamp_seconds,
+            state.swing_start_time_seconds,
+            state.swing_duration_s or self.settings.step_duration_s,
+        )
+        if state.phase == "swing" and progress >= 1.0 and state.swing_target_position is not None:
+            desired_position = state.swing_target_position
+            state.anchor_position = state.swing_target_position
+            state.anchor_normal = grounding.floor_normal
+            state.swing_start_position = None
+            state.swing_start_time_seconds = None
+            state.swing_target_position = None
+            state.swing_forward_lead_scale = 1.0
+            state.swing_duration_s = None
+            state.planted = True
+            state.phase = "planted"
+            if self._active_swing_foot == name:
+                self._active_swing_foot = None
+
+        state.previous_target = neutral_target
+        state.previous_timestamp_seconds = timestamp_seconds
+        state.current_position = desired_position
+        desired_rotation = _foot_rotation(
+            forward, state.anchor_normal if state.planted else state.filtered_normal
+        )
+        state.current_rotation = _nlerp_quaternion(
+            state.current_rotation or desired_rotation,
+            desired_rotation,
+            _exp_alpha(self.settings.foot_position_lerp_speed, dt),
+        )
+        return _FootTarget(
+            position=state.current_position,
+            rotation=state.current_rotation,
+        )
+
+    def _plant_planned_foot(
+        self,
+        state: _FootState,
+        neutral_target: Vector3,
+        grounding: GroundingContext,
+        forward: Vector3,
+    ) -> None:
+        state.anchor_position = neutral_target
+        state.anchor_normal = grounding.floor_normal
+        state.filtered_normal = grounding.floor_normal
+        state.current_position = neutral_target
+        state.current_rotation = _foot_rotation(forward, state.anchor_normal)
+        state.swing_start_position = None
+        state.swing_start_time_seconds = None
+        state.swing_target_position = None
+        state.swing_forward_lead_scale = 1.0
+        state.swing_duration_s = None
+        state.planted = True
+        state.phase = "planted"
+
+    def _retarget_planned_step(
+        self,
+        state: _FootState,
+        neutral_target: Vector3,
+        neutral_speed: float,
+        right: Vector3,
+        side: float,
+        forward: Vector3,
+        stance_width: float,
+    ) -> None:
+        if state.swing_target_position is None:
+            return
+        if (
+            horizontal_distance(state.swing_target_position, neutral_target)
+            <= self.settings.footstep_swing_retarget_stretch_m
+        ):
+            return
+        start = state.swing_start_position or state.current_position or neutral_target
+        state.swing_target_position = self._planned_step_target(
+            start,
+            neutral_target,
+            neutral_speed,
+            right,
+            side,
+            forward,
+            stance_width,
+            state.swing_forward_lead_scale,
+        )
+
+    def _constrain_planned_foot_to_neutral(
+        self,
+        name: str,
+        state: _FootState,
+        desired_position: Vector3,
+        neutral_target: Vector3,
+        grounding: GroundingContext,
+    ) -> Vector3:
+        constrained = _clamp_horizontal_delta(
+            neutral_target,
+            desired_position,
+            self.settings.footstep_max_neutral_stretch_m,
+        )
+        if constrained == desired_position:
+            return desired_position
+
+        if state.phase == "swing" and state.swing_target_position is not None:
+            state.swing_target_position = _clamp_horizontal_delta(
+                neutral_target,
+                state.swing_target_position,
+                self.settings.footstep_max_neutral_stretch_m,
+            )
+        elif state.phase == "planted":
+            state.anchor_position = constrained
+            state.anchor_normal = grounding.floor_normal
+
+        return constrained
+
+    def _can_begin_planned_step(
+        self,
+        name: str,
+        timestamp_seconds: float,
+        *,
+        force_recovery: bool = False,
+    ) -> bool:
+        if self._active_swing_foot not in (None, name):
+            return False
+
+        other_state = self._foot_states.get(_opposite_foot_name(name))
+        if other_state is not None and other_state.phase == "swing":
+            return False
+
+        if not force_recovery:
+            if (
+                self._last_step_time_seconds is not None
+                and timestamp_seconds - self._last_step_time_seconds
+                < self.settings.footstep_min_interval_s
+            ):
+                return False
+
+            if self._last_stepped_foot == name and other_state is not None and other_state.planted:
+                return False
+
+        return True
+
+    def _begin_planned_step(
+        self,
+        name: str,
+        state: _FootState,
+        neutral_target: Vector3,
+        neutral_speed: float,
+        right: Vector3,
+        side: float,
+        forward: Vector3,
+        stance_width: float,
+        timestamp_seconds: float,
+        *,
+        catchup: bool = False,
+        forward_lead_scale: float = 1.0,
+    ) -> None:
+        start = state.current_position or state.anchor_position or neutral_target
+        state.swing_start_position = start
+        state.swing_start_time_seconds = timestamp_seconds
+        state.swing_forward_lead_scale = forward_lead_scale
+        state.swing_duration_s = self._planned_step_duration(neutral_speed, catchup=catchup)
+        state.swing_target_position = self._planned_step_target(
+            start,
+            neutral_target,
+            neutral_speed,
+            right,
+            side,
+            forward,
+            stance_width,
+            forward_lead_scale,
+        )
+        state.anchor_position = None
+        state.planted = False
+        state.phase = "swing"
+        self._active_swing_foot = name
+        self._last_stepped_foot = name
+        self._last_step_time_seconds = timestamp_seconds
+
+    def _planned_step_target(
+        self,
+        start: Vector3,
+        neutral_target: Vector3,
+        neutral_speed: float,
+        right: Vector3,
+        side: float,
+        forward: Vector3,
+        stance_width: float,
+        forward_lead_scale: float = 1.0,
+    ) -> Vector3:
+        forward_lead = (
+            min(
+                self.settings.footstep_max_forward_lead_m,
+                self.settings.footstep_forward_lead_m
+                + neutral_speed * self.settings.footstep_speed_lead_s,
+            )
+            * forward_lead_scale
+        )
+        target = add(neutral_target, scale(forward, forward_lead))
+        target = (target[0], neutral_target[1], target[2])
+        target = _clamp_horizontal_delta(
+            start,
+            target,
+            self.settings.footstep_max_step_length_m,
+        )
+
+        lateral_offset = dot(subtract(target, neutral_target), right) * side
+        min_lateral = stance_width * 0.5 * self.settings.footstep_min_lateral_ratio
+        if lateral_offset < -min_lateral:
+            target = add(target, scale(right, side * (-min_lateral - lateral_offset)))
+        return (target[0], neutral_target[1], target[2])
+
+    def _planned_release_stretch(self, neutral_speed: float) -> float:
+        return max(
+            0.08,
+            self.settings.footstep_release_stretch_m
+            - neutral_speed * self.settings.footstep_speed_release_reduction_s,
+        )
+
+    def _planned_step_duration(self, neutral_speed: float, *, catchup: bool) -> float:
+        if catchup:
+            return self.settings.footstep_catchup_duration_s
+        return max(
+            0.12,
+            self.settings.step_duration_s
+            - neutral_speed * self.settings.footstep_speed_duration_reduction_s,
+        )
+
+    def _planned_swing_position(
+        self,
+        state: _FootState,
+        timestamp_seconds: float,
+    ) -> Vector3:
+        if state.swing_start_position is None or state.swing_target_position is None:
+            return state.current_position or (0.0, 0.0, 0.0)
+        return _swing_position(
+            state.swing_start_position,
+            state.swing_target_position,
+            _step_progress(
+                timestamp_seconds,
+                state.swing_start_time_seconds,
+                state.swing_duration_s or self.settings.step_duration_s,
+            ),
+            self.settings.step_lift_height_m,
         )
 
     def _hip_socket(
@@ -714,7 +1108,7 @@ class BasisPortEstimator:
         protraction = _clamp01(local_z) * reach_ratio
         cross_body = _clamp01(local_x) if side < 0.0 else _clamp01(-local_x)
 
-        return add(
+        shoulder = add(
             add(
                 add(
                     shoulder_position,
@@ -731,6 +1125,25 @@ class BasisPortEstimator:
                 right,
                 -side * cross_body * reach_ratio * self.settings.shoulder_cross_body_gain_m,
             ),
+        )
+        return self._shift_shoulder_to_reachable_hand(shoulder, hand_position, arm_length)
+
+    def _shift_shoulder_to_reachable_hand(
+        self,
+        shoulder_position: Vector3,
+        hand_position: Vector3,
+        arm_length: float,
+    ) -> Vector3:
+        shoulder_to_hand = subtract(hand_position, shoulder_position)
+        reach = _length(shoulder_to_hand)
+        max_reach = arm_length + self.settings.shoulder_reach_slack_m
+        excess_reach = reach - max_reach
+        if excess_reach <= 0.0:
+            return shoulder_position
+        shift = min(excess_reach, self.settings.max_shoulder_reach_shift_m)
+        return add(
+            shoulder_position,
+            scale(normalize(shoulder_to_hand, fallback=WORLD_FORWARD), shift),
         )
 
     def _estimate_elbow(
@@ -753,7 +1166,32 @@ class BasisPortEstimator:
             calibration.human_height_m * self.settings.lower_arm_ratio,
         )
         outward = scale(right, side)
-        default_hint = normalize(add(scale(forward, 0.7), scale(outward, 0.3)), fallback=forward)
+        default_hint = normalize(
+            add(scale(forward, -0.7), scale(outward, 0.3)),
+            fallback=scale(forward, -1.0),
+        )
+        if self.settings.arm_bend_strategy == "manikin_swivel":
+            hint = _manikin_swivel_arm_bend_direction(
+                shoulder_position,
+                hand_position,
+                right,
+                forward,
+                side,
+                upper_arm + lower_arm,
+                down_weight=self.settings.arm_swivel_down_weight,
+                outward_weight=self.settings.arm_swivel_outward_weight,
+                backward_weight=self.settings.arm_swivel_backward_weight,
+                cross_body_inward_weight=self.settings.arm_swivel_cross_body_inward_weight,
+                overhead_relief=self.settings.arm_swivel_overhead_relief,
+            )
+            return _solve_two_bone_midpoint(
+                shoulder_position,
+                hand_position,
+                upper_arm,
+                lower_arm,
+                hint,
+            )
+
         lookup_hint = _arm_bend_lookup_direction(
             shoulder_position,
             hand_position,
@@ -762,13 +1200,13 @@ class BasisPortEstimator:
             side,
             upper_arm + lower_arm,
         )
+        lookup_blend = (
+            1.0
+            if self.settings.arm_bend_strategy == "basis_lookup"
+            else (self.settings.arm_bend_lookup_blend)
+        )
         hint = normalize(
-            lerp(
-                default_hint,
-                lookup_hint,
-                _clamp01(self.settings.arm_bend_lookup_blend),
-            ),
-            fallback=default_hint,
+            lerp(default_hint, lookup_hint, _clamp01(lookup_blend)), fallback=default_hint
         )
         return _solve_two_bone_midpoint(
             shoulder_position,
@@ -898,6 +1336,23 @@ def _swing_position(
     return (base[0], base[1] + lift, base[2])
 
 
+def _opposite_foot_name(name: str) -> str:
+    return "right_foot" if name == "left_foot" else "left_foot"
+
+
+def _clamp_horizontal_delta(start: Vector3, target: Vector3, max_length: float) -> Vector3:
+    delta = (target[0] - start[0], 0.0, target[2] - start[2])
+    delta_length = _length(delta)
+    if delta_length <= max_length or delta_length <= 1e-9:
+        return target
+    scale_factor = max_length / delta_length
+    return (
+        start[0] + delta[0] * scale_factor,
+        target[1],
+        start[2] + delta[2] * scale_factor,
+    )
+
+
 def _nlerp_quaternion(a: Quaternion, b: Quaternion, alpha: float) -> Quaternion:
     bx, by, bz, bw = b
     if a[0] * bx + a[1] * by + a[2] * bz + a[3] * bw < 0.0:
@@ -998,6 +1453,56 @@ def _arm_bend_lookup_direction(
             scale(forward, local_bend[2]),
         ),
         fallback=scale(right, side),
+    )
+
+
+def _manikin_swivel_arm_bend_direction(
+    shoulder_position: Vector3,
+    hand_position: Vector3,
+    right: Vector3,
+    forward: Vector3,
+    side: float,
+    arm_length: float,
+    *,
+    down_weight: float,
+    outward_weight: float,
+    backward_weight: float,
+    cross_body_inward_weight: float,
+    overhead_relief: float,
+) -> Vector3:
+    """Choose the elbow orbit direction for an analytic two-bone arm solve.
+
+    MANIKIN parameterizes the extra arm degree of freedom as a swivel angle around
+    the shoulder-wrist axis. This deterministic variant keeps the same analytic
+    shape but uses a simple human prior instead of a learned swivel predictor:
+    elbows prefer down, slightly out, and slightly behind the torso, with reduced
+    downward bias when the hand is overhead.
+    """
+
+    if arm_length <= 1e-6:
+        return scale(right, side)
+
+    shoulder_to_hand = subtract(hand_position, shoulder_position)
+    local_pos = _chest_local_components(
+        scale(shoulder_to_hand, 1.0 / arm_length),
+        right,
+        forward,
+    )
+    local_x, local_y, local_z = local_pos
+    overhead = _clamp01(local_y)
+    cross_body = _clamp01(local_x) if side < 0.0 else _clamp01(-local_x)
+    hand_behind = _clamp01(-local_z)
+
+    down = -down_weight * (1.0 - overhead * _clamp01(overhead_relief))
+    outward = side * outward_weight * (1.0 - cross_body * 0.5)
+    inward = -side * cross_body * cross_body_inward_weight
+    backward = -backward_weight * (1.0 - hand_behind * 0.7)
+    return normalize(
+        add(
+            add(scale(right, outward + inward), scale(WORLD_UP, down)),
+            scale(forward, backward),
+        ),
+        fallback=scale(forward, -1.0),
     )
 
 

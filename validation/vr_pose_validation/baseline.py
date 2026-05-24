@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from validation.vr_pose_validation.basis_estimator import (
+    ArmBendStrategy,
     BasisEstimatorSettings,
     BasisPortEstimator,
 )
@@ -19,9 +20,19 @@ from validation.vr_pose_validation.types import (
     TrackedPoseSample,
 )
 
-type EstimatorName = Literal["trivial", "planted", "basis", "basis_knee_hint"]
+type EstimatorName = Literal[
+    "trivial",
+    "planted",
+    "basis",
+    "basis_knee_hint",
+    "basis_footstep",
+    "basis_arm_lookup",
+    "basis_arm_swivel",
+    "basis_research",
+]
 
 __all__ = [
+    "ArmBendStrategy",
     "BasisEstimatorSettings",
     "BasisPortEstimator",
     "EstimatorName",
@@ -126,4 +137,49 @@ def create_estimator(name: EstimatorName) -> PoseEstimator:
         return BasisPortEstimator()
     if name == "basis_knee_hint":
         return BasisPortEstimator(BasisEstimatorSettings(knee_hint_enabled=True))
+    if name == "basis_arm_lookup":
+        return BasisPortEstimator(BasisEstimatorSettings(arm_bend_strategy="basis_lookup"))
+    if name == "basis_arm_swivel":
+        return BasisPortEstimator(BasisEstimatorSettings(arm_bend_strategy="manikin_swivel"))
+    if name == "basis_footstep":
+        return BasisPortEstimator(_footstep_settings())
+    if name == "basis_research":
+        return BasisPortEstimator(
+            _footstep_settings(
+                arm_bend_strategy="manikin_swivel",
+            )
+        )
     raise ValueError(f"Unknown estimator: {name}")
+
+
+def _footstep_settings(
+    *,
+    arm_bend_strategy: ArmBendStrategy = "default",
+) -> BasisEstimatorSettings:
+    return BasisEstimatorSettings(
+        footstep_planner_enabled=True,
+        knee_hint_enabled=True,
+        arm_bend_strategy=arm_bend_strategy,
+        stance_width_ratio=0.22,
+        support_hips_xz_follow_blend=0.0,
+        max_anchor_stretch_m=0.14,
+        footstep_release_stretch_m=0.24,
+        footstep_speed_release_reduction_s=0.04,
+        footstep_forward_lead_m=0.18,
+        footstep_speed_lead_s=0.08,
+        footstep_max_forward_lead_m=0.40,
+        footstep_max_step_length_m=0.85,
+        footstep_swing_retarget_stretch_m=0.20,
+        footstep_max_neutral_stretch_m=0.60,
+        footstep_min_lateral_ratio=0.45,
+        footstep_min_interval_s=0.14,
+        footstep_startup_align_s=0.0,
+        footstep_catchup_release_stretch_m=0.58,
+        footstep_trailing_release_stretch_m=0.34,
+        footstep_stop_speed_m_s=0.12,
+        footstep_catchup_duration_s=0.20,
+        footstep_speed_duration_reduction_s=0.05,
+        plant_velocity_threshold_m_s=100.0,
+        step_duration_s=0.28,
+        step_lift_height_m=0.07,
+    )

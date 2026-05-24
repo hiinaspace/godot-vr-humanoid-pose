@@ -20,11 +20,13 @@ from validation.vr_pose_validation.cmu_metadata import ActivityClass, Environmen
 from validation.vr_pose_validation.geometry import Transform, add
 from validation.vr_pose_validation.metrics import (
     FLEXION_SUMMARY_FIELDS,
+    GAIT_PLAUSIBILITY_SUMMARY_FIELDS,
     REFERENCE_ERROR_DISTRIBUTION_FIELDS,
     TEMPORAL_SUMMARY_FIELDS,
     ReferencePoseMetrics,
     evaluate_foot_contact_sequence,
     evaluate_frame,
+    evaluate_gait_plausibility_sequence,
     evaluate_reference_pose,
     infer_reference_floor_height,
     summarize_joint_flexion_sequence,
@@ -64,6 +66,11 @@ SUMMARY_METRICS = (
     "mean_chest_error_m",
     "mean_spine_error_m",
     "mean_torso_error_m",
+    "mean_head_reference_error_m",
+    "mean_hand_reference_error_m",
+    "mean_upper_body_reference_error_m",
+    "mean_lower_body_reference_error_m",
+    "mean_full_body_reference_error_m",
     "mean_shoulder_error_m",
     "mean_elbow_error_m",
     "mean_knee_error_m",
@@ -73,6 +80,7 @@ SUMMARY_METRICS = (
     *REFERENCE_ERROR_DISTRIBUTION_FIELDS,
     *TEMPORAL_SUMMARY_FIELDS,
     *FLEXION_SUMMARY_FIELDS,
+    *GAIT_PLAUSIBILITY_SUMMARY_FIELDS,
     "mean_contact_foot_error_m",
     "mean_contact_slip_m_per_s",
 )
@@ -82,6 +90,10 @@ TOP_CLIP_METRICS = (
     "mean_pelvis_horizontal_error_m",
     "mean_pelvis_vertical_error_m",
     "mean_torso_error_m",
+    "mean_hand_reference_error_m",
+    "mean_upper_body_reference_error_m",
+    "mean_lower_body_reference_error_m",
+    "mean_full_body_reference_error_m",
     "mean_shoulder_error_m",
     "mean_elbow_error_m",
     "mean_knee_error_m",
@@ -100,6 +112,15 @@ TOP_CLIP_METRICS = (
     "pct_joint_flexion_over_limit",
     "mean_contact_foot_error_m",
     "mean_contact_slip_m_per_s",
+    "mean_low_foot_slip_m_per_s",
+    "p95_low_foot_slip_m_per_s",
+    "pct_low_foot_slip_speed_over_20cm_s",
+    "mean_hips_support_distance_m",
+    "pct_hips_support_distance_over_60cm",
+    "pct_hips_support_distance_over_90cm",
+    "pct_estimated_stance_width_under_20cm",
+    "pct_estimated_stance_width_over_90cm",
+    "pct_estimated_leg_reach_over_110cm",
 )
 
 
@@ -147,7 +168,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--estimator",
-        choices=("trivial", "planted", "basis", "basis_knee_hint"),
+        choices=(
+            "trivial",
+            "planted",
+            "basis",
+            "basis_knee_hint",
+            "basis_footstep",
+            "basis_arm_lookup",
+            "basis_arm_swivel",
+            "basis_research",
+        ),
         default="trivial",
         help="Estimator implementation to evaluate.",
     )
@@ -237,6 +267,34 @@ def run_cached_validation(
             "mean_chest_error_m": _mean_column(summary_frame, "mean_chest_error_m"),
             "mean_spine_error_m": _mean_column(summary_frame, "mean_spine_error_m"),
             "mean_torso_error_m": _mean_column(summary_frame, "mean_torso_error_m"),
+            "mean_head_reference_error_m": _mean_column(
+                summary_frame,
+                "mean_head_reference_error_m",
+            ),
+            "mean_left_hand_reference_error_m": _mean_column(
+                summary_frame,
+                "mean_left_hand_reference_error_m",
+            ),
+            "mean_right_hand_reference_error_m": _mean_column(
+                summary_frame,
+                "mean_right_hand_reference_error_m",
+            ),
+            "mean_hand_reference_error_m": _mean_column(
+                summary_frame,
+                "mean_hand_reference_error_m",
+            ),
+            "mean_upper_body_reference_error_m": _mean_column(
+                summary_frame,
+                "mean_upper_body_reference_error_m",
+            ),
+            "mean_lower_body_reference_error_m": _mean_column(
+                summary_frame,
+                "mean_lower_body_reference_error_m",
+            ),
+            "mean_full_body_reference_error_m": _mean_column(
+                summary_frame,
+                "mean_full_body_reference_error_m",
+            ),
             "mean_left_shoulder_error_m": _mean_column(
                 summary_frame,
                 "mean_left_shoulder_error_m",
@@ -270,12 +328,14 @@ def run_cached_validation(
                 summary_frame,
                 "mean_contact_slip_m_per_s",
             ),
+            "gait_low_foot_frames": _sum_column(summary_frame, "gait_low_foot_frames"),
             **{
                 metric: _mean_column(summary_frame, metric)
                 for metric in (
                     *REFERENCE_ERROR_DISTRIBUTION_FIELDS,
                     *TEMPORAL_SUMMARY_FIELDS,
                     *FLEXION_SUMMARY_FIELDS,
+                    *GAIT_PLAUSIBILITY_SUMMARY_FIELDS,
                 )
             },
             "mean_joint_errors_m": _mean_joint_errors(clip_results),
@@ -338,6 +398,10 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         reference_frames,
         floor_height_m=inferred_floor_height_m,
     )
+    gait_plausibility_summary = evaluate_gait_plausibility_sequence(
+        estimated_poses,
+        floor_height_m=inferred_floor_height_m,
+    )
     posture_summary = summarize_reference_posture(
         reference_frames,
         environment_split=environment_split,
@@ -368,6 +432,34 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         mean_chest_error_m=cast(float, reference_summary["mean_chest_error_m"]),
         mean_spine_error_m=cast(float, reference_summary["mean_spine_error_m"]),
         mean_torso_error_m=cast(float, reference_summary["mean_torso_error_m"]),
+        mean_head_reference_error_m=cast(
+            float,
+            reference_summary["mean_head_reference_error_m"],
+        ),
+        mean_left_hand_reference_error_m=cast(
+            float,
+            reference_summary["mean_left_hand_reference_error_m"],
+        ),
+        mean_right_hand_reference_error_m=cast(
+            float,
+            reference_summary["mean_right_hand_reference_error_m"],
+        ),
+        mean_hand_reference_error_m=cast(
+            float,
+            reference_summary["mean_hand_reference_error_m"],
+        ),
+        mean_upper_body_reference_error_m=cast(
+            float,
+            reference_summary["mean_upper_body_reference_error_m"],
+        ),
+        mean_lower_body_reference_error_m=cast(
+            float,
+            reference_summary["mean_lower_body_reference_error_m"],
+        ),
+        mean_full_body_reference_error_m=cast(
+            float,
+            reference_summary["mean_full_body_reference_error_m"],
+        ),
         mean_left_shoulder_error_m=cast(
             float,
             reference_summary["mean_left_shoulder_error_m"],
@@ -445,6 +537,30 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         left_contact_slip_m_per_s=contact_summary.left_contact_slip_m_per_s,
         right_contact_slip_m_per_s=contact_summary.right_contact_slip_m_per_s,
         mean_contact_slip_m_per_s=contact_summary.mean_contact_slip_m_per_s,
+        gait_low_foot_frames=gait_plausibility_summary.low_foot_frames,
+        mean_low_foot_slip_m_per_s=gait_plausibility_summary.mean_low_foot_slip_m_per_s,
+        p95_low_foot_slip_m_per_s=gait_plausibility_summary.p95_low_foot_slip_m_per_s,
+        pct_low_foot_slip_speed_over_20cm_s=(
+            gait_plausibility_summary.pct_low_foot_slip_speed_over_20cm_s
+        ),
+        mean_hips_support_distance_m=gait_plausibility_summary.mean_hips_support_distance_m,
+        pct_hips_support_distance_over_60cm=(
+            gait_plausibility_summary.pct_hips_support_distance_over_60cm
+        ),
+        pct_hips_support_distance_over_90cm=(
+            gait_plausibility_summary.pct_hips_support_distance_over_90cm
+        ),
+        mean_estimated_stance_width_m=gait_plausibility_summary.mean_estimated_stance_width_m,
+        pct_estimated_stance_width_under_20cm=(
+            gait_plausibility_summary.pct_estimated_stance_width_under_20cm
+        ),
+        pct_estimated_stance_width_over_90cm=(
+            gait_plausibility_summary.pct_estimated_stance_width_over_90cm
+        ),
+        mean_estimated_leg_reach_m=gait_plausibility_summary.mean_estimated_leg_reach_m,
+        pct_estimated_leg_reach_over_110cm=(
+            gait_plausibility_summary.pct_estimated_leg_reach_over_110cm
+        ),
         environment_split=environment_split,
         environment_tags=environment_tags,
         activity_class=activity_class,

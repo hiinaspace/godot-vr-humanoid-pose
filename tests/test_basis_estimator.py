@@ -9,10 +9,13 @@ from validation.vr_pose_validation.baseline import (
 )
 from validation.vr_pose_validation.geometry import (
     Transform,
+    cross,
     distance,
     dot,
+    horizontal_distance,
     look_rotation,
     normalize,
+    subtract,
 )
 from validation.vr_pose_validation.synthetic_trackers import (
     generate_three_point_samples,
@@ -307,6 +310,100 @@ def test_basis_outputs_two_bone_limb_joints() -> None:
     )
 
 
+def test_basis_shoulder_follows_reaching_controller_to_preserve_arm_lengths() -> None:
+    estimator = BasisPortEstimator()
+    sample = TrackedPoseSample(
+        timestamp_seconds=0.0,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(position=(0.0, 1.6, 0.0), rotation=look_rotation((0.0, 0.0, 1.0))),
+        ),
+        left_hand=TrackerState(
+            role="left_hand",
+            transform=Transform(position=(0.85, 1.22, 0.18)),
+        ),
+        right_hand=TrackerState(
+            role="right_hand",
+            transform=Transform(position=(-0.3, 1.22, 0.18)),
+        ),
+    )
+    calibration = AvatarCalibration(human_height_m=1.8)
+
+    pose = estimator.estimate(sample, calibration, GroundingContext())
+
+    shoulder = pose.joints["left_shoulder"].transform.position
+    elbow = pose.joints["left_elbow"].transform.position
+    hand = pose.joints["left_hand"].transform.position
+    upper_arm = calibration.human_height_m * estimator.settings.upper_arm_ratio
+    lower_arm = calibration.human_height_m * estimator.settings.lower_arm_ratio
+
+    assert shoulder[0] > 0.22
+    assert distance(shoulder, hand) <= (
+        upper_arm + lower_arm + estimator.settings.shoulder_reach_slack_m + 1e-9
+    )
+    assert distance(shoulder, elbow) == approx(upper_arm)
+    assert distance(elbow, hand) <= lower_arm + estimator.settings.shoulder_reach_slack_m + 0.0002
+
+
+def test_basis_elbow_bend_hint_points_behind_controller_reach() -> None:
+    sample = TrackedPoseSample(
+        timestamp_seconds=0.0,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(position=(0.0, 1.6, 0.0), rotation=look_rotation((0.0, 0.0, 1.0))),
+        ),
+        left_hand=TrackerState(
+            role="left_hand",
+            transform=Transform(position=(0.4, 1.2, 0.1)),
+        ),
+        right_hand=TrackerState(
+            role="right_hand",
+            transform=Transform(position=(-0.3, 1.22, 0.18)),
+        ),
+    )
+
+    pose = BasisPortEstimator().estimate(
+        sample,
+        AvatarCalibration(human_height_m=1.8),
+        GroundingContext(),
+    )
+
+    shoulder = pose.joints["left_shoulder"].transform.position
+    elbow = pose.joints["left_elbow"].transform.position
+    hand = pose.joints["left_hand"].transform.position
+    assert elbow[2] < shoulder[2]
+    assert elbow[2] < hand[2]
+
+
+def test_manikin_swivel_arm_hint_prefers_lower_elbow_orbit() -> None:
+    sample = TrackedPoseSample(
+        timestamp_seconds=0.0,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(position=(0.0, 1.6, 0.0), rotation=look_rotation((0.0, 0.0, 1.0))),
+        ),
+        left_hand=TrackerState(
+            role="left_hand",
+            transform=Transform(position=(0.38, 1.25, 0.18)),
+        ),
+        right_hand=TrackerState(
+            role="right_hand",
+            transform=Transform(position=(-0.38, 1.25, 0.18)),
+        ),
+    )
+
+    pose = BasisPortEstimator(BasisEstimatorSettings(arm_bend_strategy="manikin_swivel")).estimate(
+        sample,
+        AvatarCalibration(human_height_m=1.8),
+        GroundingContext(),
+    )
+
+    shoulder = pose.joints["left_shoulder"].transform.position
+    elbow = pose.joints["left_elbow"].transform.position
+    hand = pose.joints["left_hand"].transform.position
+    assert elbow[1] < (shoulder[1] + hand[1]) * 0.5
+
+
 def test_basis_knee_hint_factory_isolated_from_default_basis() -> None:
     default = create_estimator("basis")
     experiment = create_estimator("basis_knee_hint")
@@ -315,6 +412,28 @@ def test_basis_knee_hint_factory_isolated_from_default_basis() -> None:
     assert isinstance(experiment, BasisPortEstimator)
     assert not default.settings.knee_hint_enabled
     assert experiment.settings.knee_hint_enabled
+
+
+def test_basis_footstep_factory_isolated_from_default_basis() -> None:
+    default = create_estimator("basis")
+    experiment = create_estimator("basis_footstep")
+
+    assert isinstance(default, BasisPortEstimator)
+    assert isinstance(experiment, BasisPortEstimator)
+    assert not default.settings.footstep_planner_enabled
+    assert experiment.settings.footstep_planner_enabled
+    assert experiment.settings.knee_hint_enabled
+    assert experiment.settings.stance_width_ratio > default.settings.stance_width_ratio
+    assert experiment.settings.step_duration_s > default.settings.step_duration_s
+
+
+def test_basis_research_factory_combines_footstep_and_swivel_arm_settings() -> None:
+    experiment = create_estimator("basis_research")
+
+    assert isinstance(experiment, BasisPortEstimator)
+    assert experiment.settings.footstep_planner_enabled
+    assert experiment.settings.knee_hint_enabled
+    assert experiment.settings.arm_bend_strategy == "manikin_swivel"
 
 
 def test_basis_knee_hint_smooths_across_yaw_changes() -> None:
@@ -348,3 +467,269 @@ def test_basis_knee_hint_smooths_across_yaw_changes() -> None:
     assert first_hint is not None
     assert second_hint is not None
     assert dot(first_hint, second_hint) > 0.9
+
+
+def test_basis_footstep_planner_holds_planted_anchor_below_release_stretch() -> None:
+    estimator = BasisPortEstimator(
+        BasisEstimatorSettings(
+            footstep_planner_enabled=True,
+            head_to_hips_ratio=0.3,
+            hips_forward_bias_m=0.0,
+            support_hips_xz_follow_blend=0.0,
+            stance_width_ratio=0.2,
+            footstep_release_stretch_m=0.5,
+        )
+    )
+    calibration = AvatarCalibration(human_height_m=2.0, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    first = estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.0), timestamp_seconds=0.0),
+        calibration,
+        grounding,
+    )
+    second = estimator.estimate(
+        _manual_sample((0.1, 1.6, 0.0), timestamp_seconds=0.1),
+        calibration,
+        grounding,
+    )
+
+    assert (
+        second.joints["left_foot"].transform.position
+        == first.joints["left_foot"].transform.position
+    )
+    assert estimator._foot_states["left_foot"].phase == "planted"
+    assert estimator._active_swing_foot is None
+
+
+def test_basis_footstep_planner_releases_one_foot_to_forward_step_target() -> None:
+    estimator = BasisPortEstimator(
+        BasisEstimatorSettings(
+            footstep_planner_enabled=True,
+            head_to_hips_ratio=0.3,
+            hips_forward_bias_m=0.0,
+            support_hips_xz_follow_blend=0.0,
+            stance_width_ratio=0.2,
+            footstep_release_stretch_m=0.1,
+            footstep_forward_lead_m=0.2,
+            footstep_speed_lead_s=0.0,
+            footstep_max_neutral_stretch_m=2.0,
+            footstep_min_interval_s=0.0,
+            step_duration_s=0.4,
+            step_lift_height_m=0.08,
+        )
+    )
+    calibration = AvatarCalibration(human_height_m=2.0, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    first = estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.0), timestamp_seconds=0.0),
+        calibration,
+        grounding,
+    )
+    estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.35), timestamp_seconds=0.1),
+        calibration,
+        grounding,
+    )
+    third = estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.45), timestamp_seconds=0.2),
+        calibration,
+        grounding,
+    )
+
+    assert estimator._active_swing_foot == "left_foot"
+    assert estimator._foot_states["left_foot"].phase == "swing"
+    assert estimator._foot_states["right_foot"].phase == "planted"
+    assert third.joints["left_foot"].transform.position[1] > calibration.foot_height_m
+    assert (
+        third.joints["left_foot"].transform.position[2]
+        > first.joints["left_foot"].transform.position[2]
+    )
+    assert (
+        third.joints["right_foot"].transform.position
+        == first.joints["right_foot"].transform.position
+    )
+
+
+def test_basis_footstep_planner_alternates_and_prevents_crossover() -> None:
+    estimator = BasisPortEstimator(
+        BasisEstimatorSettings(
+            footstep_planner_enabled=True,
+            head_to_hips_ratio=0.3,
+            hips_forward_bias_m=0.0,
+            support_hips_xz_follow_blend=0.0,
+            stance_width_ratio=0.2,
+            footstep_release_stretch_m=0.1,
+            footstep_forward_lead_m=0.2,
+            footstep_speed_lead_s=0.0,
+            footstep_max_neutral_stretch_m=2.0,
+            footstep_min_interval_s=0.0,
+            step_duration_s=0.4,
+            step_lift_height_m=0.08,
+        )
+    )
+    calibration = AvatarCalibration(human_height_m=2.0, foot_height_m=0.05)
+    grounding = GroundingContext()
+    forward = (0.0, 0.0, 1.0)
+    right = normalize(cross(forward, (0.0, 1.0, 0.0)))
+
+    estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.0), timestamp_seconds=0.0),
+        calibration,
+        grounding,
+    )
+    estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.35), timestamp_seconds=0.1),
+        calibration,
+        grounding,
+    )
+    pose = estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.65), timestamp_seconds=0.5),
+        calibration,
+        grounding,
+    )
+
+    swinging_feet = [
+        foot_name
+        for foot_name in ("left_foot", "right_foot")
+        if estimator._foot_states[foot_name].phase == "swing"
+    ]
+    assert swinging_feet == ["right_foot"]
+
+    hips = pose.joints["hips"].transform.position
+    left_lateral = dot(subtract(pose.joints["left_foot"].transform.position, hips), right)
+    right_lateral = dot(subtract(pose.joints["right_foot"].transform.position, hips), right)
+
+    assert left_lateral < 0.0
+    assert right_lateral > 0.0
+
+
+def test_basis_footstep_planner_bounds_fast_motion_leg_stretch() -> None:
+    estimator = BasisPortEstimator(
+        BasisEstimatorSettings(
+            footstep_planner_enabled=True,
+            head_to_hips_ratio=0.3,
+            hips_forward_bias_m=0.0,
+            support_hips_xz_follow_blend=0.0,
+            stance_width_ratio=0.2,
+            footstep_release_stretch_m=0.1,
+            footstep_forward_lead_m=0.24,
+            footstep_speed_lead_s=0.0,
+            footstep_max_forward_lead_m=0.24,
+            footstep_max_neutral_stretch_m=0.45,
+            footstep_min_interval_s=0.0,
+            step_duration_s=0.25,
+        )
+    )
+    calibration = AvatarCalibration(human_height_m=2.0, foot_height_m=0.05)
+    grounding = GroundingContext()
+    max_horizontal_leg_stretch = 0.0
+
+    for frame_index in range(30):
+        pose = estimator.estimate(
+            _manual_sample(
+                (0.0, 1.6, frame_index * 0.12),
+                timestamp_seconds=frame_index / 30.0,
+            ),
+            calibration,
+            grounding,
+        )
+        hips = pose.joints["hips"].transform.position
+        max_horizontal_leg_stretch = max(
+            max_horizontal_leg_stretch,
+            horizontal_distance(hips, pose.joints["left_foot"].transform.position),
+            horizontal_distance(hips, pose.joints["right_foot"].transform.position),
+        )
+
+    assert max_horizontal_leg_stretch <= 0.52
+
+
+def test_basis_footstep_planner_aligns_startup_to_current_body() -> None:
+    estimator = BasisPortEstimator(
+        BasisEstimatorSettings(
+            footstep_planner_enabled=True,
+            head_to_hips_ratio=0.3,
+            hips_forward_bias_m=0.0,
+            support_hips_xz_follow_blend=0.0,
+            stance_width_ratio=0.2,
+            footstep_startup_align_s=0.05,
+        )
+    )
+    calibration = AvatarCalibration(human_height_m=2.0, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.0), timestamp_seconds=0.0),
+        calibration,
+        grounding,
+    )
+    pose = estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.35), timestamp_seconds=0.02),
+        calibration,
+        grounding,
+    )
+
+    hips = pose.joints["hips"].transform.position
+
+    assert estimator._foot_states["left_foot"].phase == "planted"
+    assert estimator._foot_states["right_foot"].phase == "planted"
+    assert horizontal_distance(hips, pose.joints["left_foot"].transform.position) < 0.25
+    assert horizontal_distance(hips, pose.joints["right_foot"].transform.position) < 0.25
+
+
+def test_basis_footstep_planner_steps_trailing_foot_after_stop() -> None:
+    estimator = BasisPortEstimator(
+        BasisEstimatorSettings(
+            footstep_planner_enabled=True,
+            head_to_hips_ratio=0.3,
+            hips_forward_bias_m=0.0,
+            support_hips_xz_follow_blend=0.0,
+            stance_width_ratio=0.2,
+            footstep_release_stretch_m=10.0,
+            footstep_forward_lead_m=0.0,
+            footstep_speed_lead_s=0.0,
+            footstep_catchup_release_stretch_m=10.0,
+            footstep_trailing_release_stretch_m=0.2,
+            footstep_stop_speed_m_s=0.05,
+            footstep_max_neutral_stretch_m=2.0,
+            footstep_min_interval_s=10.0,
+            step_duration_s=0.2,
+        )
+    )
+    calibration = AvatarCalibration(human_height_m=2.0, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.0), timestamp_seconds=0.0),
+        calibration,
+        grounding,
+    )
+    before_recovery = estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.35), timestamp_seconds=0.1),
+        calibration,
+        grounding,
+    )
+    before_hips = before_recovery.joints["hips"].transform.position
+    before_left_distance = horizontal_distance(
+        before_hips,
+        before_recovery.joints["left_foot"].transform.position,
+    )
+
+    estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.35), timestamp_seconds=0.3),
+        calibration,
+        grounding,
+    )
+    after_recovery = estimator.estimate(
+        _manual_sample((0.0, 1.6, 0.35), timestamp_seconds=0.55),
+        calibration,
+        grounding,
+    )
+    after_hips = after_recovery.joints["hips"].transform.position
+    after_left_distance = horizontal_distance(
+        after_hips,
+        after_recovery.joints["left_foot"].transform.position,
+    )
+
+    assert after_left_distance < before_left_distance
