@@ -61,6 +61,7 @@ from validation.vr_pose_validation.synthetic_trackers import (
 )
 from validation.vr_pose_validation.types import (
     GroundingContext,
+    PoseEstimator,
     TrackedPoseSample,
     TrackerRole,
     TrackerState,
@@ -420,12 +421,18 @@ def run_cached_validation(
 
 
 def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
-    start = time.perf_counter()
     estimator = create_estimator(task.estimator_name)
+    return evaluate_cached_clip_path(Path(task.path), estimator)
+
+
+def evaluate_cached_clip_path(path: Path, estimator: PoseEstimator) -> ClipResult:
+    """Evaluate one cached clip with a caller-provided stateful estimator instance."""
+
+    start = time.perf_counter()
     frame_metrics = []
     reference_metrics: list[ReferencePoseMetrics] = []
     estimated_poses = []
-    cached_frame_list = list(iter_cached_pose_frames(Path(task.path)))
+    cached_frame_list = list(iter_cached_pose_frames(path))
     reference_frames = [frame.joints for frame in cached_frame_list]
     timestamps_seconds = [frame.timestamp_s for frame in cached_frame_list]
     inferred_floor_height_m = infer_reference_floor_height(reference_frames)
@@ -496,7 +503,7 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         timestamps_seconds=timestamps_seconds,
     )
     mean_joint_errors_m = cast(dict[str, float], reference_summary["mean_joint_errors_m"])
-    subject, clip = _subject_and_clip_from_path(Path(task.path))
+    subject, clip = _subject_and_clip_from_path(path)
     frame_count = len(cached_frame_list)
     return ClipResult(
         clip=clip,

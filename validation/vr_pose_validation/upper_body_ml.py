@@ -1,0 +1,981 @@
+"""Sparse-window features and upper-body latent targets for ML experiments."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field
+from hashlib import sha1
+from math import isfinite, sqrt
+from pathlib import Path
+from time import perf_counter
+from typing import Any, Literal, Protocol
+
+import polars as pl
+
+from validation.vr_pose_validation.baseline import EstimatorName, create_estimator
+from validation.vr_pose_validation.calibration import calibration_from_reference_frames
+from validation.vr_pose_validation.cmu_metadata import ActivityClass, EnvironmentSplit
+from validation.vr_pose_validation.geometry import (
+    Transform,
+    Vector3,
+    add,
+    axis_name_quaternion,
+    cross,
+    distance,
+    dot,
+    horizontal,
+    look_rotation,
+    multiply_quaternion,
+    normalize,
+    project_on_plane,
+    rotate_vector,
+    scale,
+    subtract,
+)
+from validation.vr_pose_validation.metrics import infer_reference_floor_height
+from validation.vr_pose_validation.parquet_cache import (
+    CachedPoseFrame,
+    filter_clip_cache_files_by_environment,
+    iter_cached_pose_frames,
+    list_clip_cache_files,
+)
+from validation.vr_pose_validation.synthetic_trackers import (
+    SyntheticTrackerConfig,
+    head_tracker_rotation_from_pose_frame,
+)
+from validation.vr_pose_validation.types import (
+    AvatarCalibration,
+    GroundingContext,
+    HumanoidPoseFrame,
+    JointPose,
+    PoseEstimator,
+    TrackedPoseSample,
+    TrackerRole,
+    TrackerState,
+)
+
+WORLD_UP: Vector3 = (0.0, 1.0, 0.0)
+WORLD_DOWN: Vector3 = (0.0, -1.0, 0.0)
+WORLD_FORWARD: Vector3 = (0.0, 0.0, 1.0)
+TRACKER_ROLES: tuple[TrackerRole, ...] = ("head", "left_hand", "right_hand")
+DEFAULT_CLEAN_ACTIVITY_CLASSES: tuple[ActivityClass, ...] = (
+    "idle_standing",
+    "sitting",
+    "stationary_upper_body",
+    "locomotion",
+)
+EXCLUDED_TAGS = frozenset(("data_issue", "parse_issue", "inverted_segment"))
+TARGET_NAMES = (
+    "torso_heading_sin",
+    "torso_heading_cos",
+    "torso_lean_x",
+    "torso_lean_z",
+    "left_shoulder_offset_x",
+    "left_shoulder_offset_y",
+    "left_shoulder_offset_z",
+    "right_shoulder_offset_x",
+    "right_shoulder_offset_y",
+    "right_shoulder_offset_z",
+    "left_elbow_swivel_sin",
+    "left_elbow_swivel_cos",
+    "right_elbow_swivel_sin",
+    "right_elbow_swivel_cos",
+)
+TARGET_GROUPS = {
+    "torso": (
+        "torso_heading_sin",
+        "torso_heading_cos",
+        "torso_lean_x",
+        "torso_lean_z",
+    ),
+    "shoulder": (
+        "left_shoulder_offset_x",
+        "left_shoulder_offset_y",
+        "left_shoulder_offset_z",
+        "right_shoulder_offset_x",
+        "right_shoulder_offset_y",
+        "right_shoulder_offset_z",
+    ),
+    "elbow": (
+        "left_elbow_swivel_sin",
+        "left_elbow_swivel_cos",
+        "right_elbow_swivel_sin",
+        "right_elbow_swivel_cos",
+    ),
+}
+MASK_NAMES = tuple(f"{name}_mask" for name in TARGET_NAMES)
+
+
+@dataclass(frozen=True, slots=True)
+class SparseWindowConfig:
+    """Configuration for causal sparse-tracker ML windows."""
+
+    window_size: int = 40
+    stride: int = 4
+    estimator_name: EstimatorName = "basis_research"
+    holdout_folds: int = 5
+    environment_splits: tuple[EnvironmentSplit, ...] = ("flat",)
+    activity_classes: tuple[ActivityClass, ...] = DEFAULT_CLEAN_ACTIVITY_CLASSES
+
+
+@dataclass(frozen=True, slots=True)
+class SparseWindowExportSummary:
+    cache_dir: str
+    output_dir: str
+    clips_seen: int
+    clips_exported: int
+    windows: int
+    feature_count: int
+    target_count: int
+    window_size: int
+    stride: int
+    estimator_name: str
+    total_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class UpperBodyLatents:
+    values: dict[str, float]
+    masks: dict[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class UpperBodyLatentPrediction:
+    values: Mapping[str, float]
+    masks: Mapping[str, float]
+
+
+class LatentUpperBodyProvider(Protocol):
+    def predict(
+        self,
+        sample: TrackedPoseSample,
+        calibration: AvatarCalibration,
+        grounding: GroundingContext,
+    ) -> UpperBodyLatentPrediction:
+        """Predict upper-body control latents for the current sparse tracker sample."""
+
+
+@dataclass(frozen=True, slots=True)
+class StaticUpperBodyLatentProvider:
+    values: Mapping[str, float]
+    masks: Mapping[str, float] | None = None
+
+    def predict(
+        self,
+        sample: TrackedPoseSample,
+        calibration: AvatarCalibration,
+        grounding: GroundingContext,
+    ) -> UpperBodyLatentPrediction:
+        del sample, calibration, grounding
+        return UpperBodyLatentPrediction(
+            values=self.values,
+            masks=self.masks or {name: 1.0 for name in self.values},
+        )
+
+
+@dataclass(slots=True)
+class TorchUpperBodyLatentProvider:
+    """Causal-window provider backed by a Torch latent predictor artifact."""
+
+    artifact_path: Path
+    normalization_path: Path
+    window_size: int
+    allow_cpu: bool = False
+    _history: list[TrackedPoseSample] = field(default_factory=list, init=False)
+    _torch: Any = field(default=None, init=False)
+    _model: Any = field(default=None, init=False)
+    _device: Any = field(default=None, init=False)
+    _mean: list[float] = field(default_factory=list, init=False)
+    _scale: list[float] = field(default_factory=list, init=False)
+    _target_names: list[str] = field(default_factory=list, init=False)
+    _prediction_mode: str = field(default="absolute", init=False)
+    _residual_scale: float = field(default=1.0, init=False)
+    _residual_smoothing_alpha: float = field(default=1.0, init=False)
+    _smoothed_residuals: dict[str, float] = field(default_factory=dict, init=False)
+
+    def __post_init__(self) -> None:
+        torch = _import_torch()
+        self._torch = torch
+        self._device = _torch_device(torch, allow_cpu=self.allow_cpu)
+        artifact = torch.load(self.artifact_path, map_location=self._device, weights_only=False)
+        self._target_names = [str(name) for name in artifact["target_names"]]
+        self._prediction_mode = str(artifact.get("prediction_mode", "absolute"))
+        self._residual_scale = float(artifact.get("residual_scale", 1.0))
+        self._residual_smoothing_alpha = float(artifact.get("residual_smoothing_alpha", 1.0))
+        self._model = _make_torch_provider_model(
+            torch,
+            model_name=str(artifact["model_name"]),
+            input_dim=len(artifact["feature_names"]),
+            output_dim=len(self._target_names),
+            hidden_dim=int(artifact.get("hidden_dim", 256)),
+        ).to(self._device)
+        self._model.load_state_dict(artifact["model_state_dict"])
+        self._model.eval()
+        normalization = json.loads(self.normalization_path.read_text(encoding="utf-8"))
+        self._mean = [float(value) for value in normalization["mean"]]
+        self._scale = [max(1e-6, float(value)) for value in normalization["scale"]]
+
+    def predict(
+        self,
+        sample: TrackedPoseSample,
+        calibration: AvatarCalibration,
+        grounding: GroundingContext,
+    ) -> UpperBodyLatentPrediction:
+        del calibration, grounding
+        self._history.append(sample)
+        if len(self._history) > self.window_size:
+            self._history = self._history[-self.window_size :]
+        if len(self._history) < self.window_size:
+            return UpperBodyLatentPrediction(
+                values={name: 0.0 for name in self._target_names},
+                masks={name: 0.0 for name in self._target_names},
+            )
+
+        features = sparse_window_features(self._history, len(self._history) - 1, self.window_size)
+        normalized = [
+            (value - mean) / scale
+            for value, mean, scale in zip(features, self._mean, self._scale, strict=True)
+        ]
+        with self._torch.no_grad():
+            tensor = self._torch.tensor(
+                [normalized], dtype=self._torch.float32, device=self._device
+            )
+            prediction = self._model(tensor).detach().cpu().numpy()[0]
+        values = {name: float(prediction[index]) for index, name in enumerate(self._target_names)}
+        if self._prediction_mode == "residual" and self._residual_smoothing_alpha < 1.0:
+            values = self._smooth_residuals(values)
+        return UpperBodyLatentPrediction(
+            values=values,
+            masks={name: 1.0 for name in self._target_names},
+        )
+
+    def reset(self) -> None:
+        self._history.clear()
+        self._smoothed_residuals.clear()
+
+    @property
+    def prediction_mode(self) -> str:
+        return self._prediction_mode
+
+    @property
+    def residual_scale(self) -> float:
+        return self._residual_scale
+
+    def _smooth_residuals(self, values: Mapping[str, float]) -> dict[str, float]:
+        alpha = min(max(self._residual_smoothing_alpha, 0.0), 1.0)
+        smoothed: dict[str, float] = {}
+        for name, value in values.items():
+            previous = self._smoothed_residuals.get(name, value)
+            smoothed_value = previous + alpha * (value - previous)
+            smoothed[name] = smoothed_value
+            self._smoothed_residuals[name] = smoothed_value
+        return smoothed
+
+
+@dataclass(slots=True)
+class LearnedUpperBodyEstimator:
+    """Validation-only wrapper that lets learned latents drive analytic arm IK."""
+
+    latent_provider: LatentUpperBodyProvider
+    base_estimator: PoseEstimator
+    min_mask: float = 0.5
+
+    def estimate(
+        self,
+        sample: TrackedPoseSample,
+        calibration: AvatarCalibration,
+        grounding: GroundingContext,
+    ) -> HumanoidPoseFrame:
+        base_pose = self.base_estimator.estimate(sample, calibration, grounding)
+        prediction = self.latent_provider.predict(sample, calibration, grounding)
+        if getattr(self.latent_provider, "prediction_mode", "absolute") == "residual":
+            base_latents = extract_upper_body_latents(pose_joints(base_pose))
+            residual_scale = float(getattr(self.latent_provider, "residual_scale", 1.0))
+            prediction = _combine_residual_prediction(
+                base_latents,
+                prediction,
+                residual_scale=residual_scale,
+            )
+        return apply_upper_body_latents(
+            base_pose,
+            prediction,
+            calibration=calibration,
+            min_mask=self.min_mask,
+        )
+
+
+def build_sparse_window_dataset(
+    *,
+    cache_dir: Path,
+    output_dir: Path,
+    config: SparseWindowConfig | None = None,
+    subjects: set[str] | None = None,
+    max_clips: int | None = None,
+) -> SparseWindowExportSummary:
+    """Export causal sparse-tracker windows and GT upper-body latent targets."""
+
+    effective_config = config or SparseWindowConfig()
+    start = perf_counter()
+    paths = list_clip_cache_files(cache_dir, subjects or None)
+    paths = filter_clip_cache_files_by_environment(
+        paths,
+        environment_splits=set(effective_config.environment_splits),
+        activity_classes=set(effective_config.activity_classes),
+    )
+    if max_clips is not None:
+        paths = paths[:max_clips]
+
+    rows: list[dict[str, object]] = []
+    feature_names = feature_schema(effective_config.window_size)
+    clips_exported = 0
+    for path in paths:
+        clip_rows = _export_clip_windows(path, effective_config, feature_names)
+        if clip_rows:
+            clips_exported += 1
+            rows.extend(clip_rows)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    windows_path = output_dir / "windows.parquet"
+    if rows:
+        pl.DataFrame(rows).write_parquet(windows_path, compression="zstd")
+    else:
+        _empty_windows_frame(feature_names).write_parquet(windows_path, compression="zstd")
+
+    schemas = {
+        "feature_names": feature_names,
+        "target_names": list(TARGET_NAMES),
+        "mask_names": list(MASK_NAMES),
+        "target_groups": {key: list(value) for key, value in TARGET_GROUPS.items()},
+        "config": asdict(effective_config),
+    }
+    (output_dir / "schema.json").write_text(
+        json.dumps(schemas, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    summary = SparseWindowExportSummary(
+        cache_dir=cache_dir.as_posix(),
+        output_dir=output_dir.as_posix(),
+        clips_seen=len(paths),
+        clips_exported=clips_exported,
+        windows=len(rows),
+        feature_count=len(feature_names),
+        target_count=len(TARGET_NAMES),
+        window_size=effective_config.window_size,
+        stride=effective_config.stride,
+        estimator_name=effective_config.estimator_name,
+        total_seconds=perf_counter() - start,
+    )
+    (output_dir / "manifest.json").write_text(
+        json.dumps(asdict(summary), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return summary
+
+
+def feature_schema(window_size: int) -> list[str]:
+    names: list[str] = []
+    for relative_index in range(-(window_size - 1), 1):
+        prefix = f"t{relative_index:+03d}"
+        for role in TRACKER_ROLES:
+            for component in ("x", "y", "z"):
+                names.append(f"{prefix}_{role}_position_{component}")
+            for component_index in range(6):
+                names.append(f"{prefix}_{role}_rotation6d_{component_index}")
+            for component in ("x", "y", "z"):
+                names.append(f"{prefix}_{role}_linear_velocity_{component}")
+            for component_index in range(6):
+                names.append(f"{prefix}_{role}_rotation6d_velocity_{component_index}")
+            names.append(f"{prefix}_{role}_valid")
+    return names
+
+
+def split_for_subject(subject: str, holdout_folds: int) -> Literal["train", "validation"]:
+    folds = max(2, holdout_folds)
+    digest = sha1(subject.encode("utf-8")).digest()
+    fold = int.from_bytes(digest[:4], "big") % folds
+    return "validation" if fold == 0 else "train"
+
+
+def extract_upper_body_latents(joints: Mapping[str, Transform]) -> UpperBodyLatents:
+    values = {name: 0.0 for name in TARGET_NAMES}
+    masks = {name: 0.0 for name in TARGET_NAMES}
+    required = {
+        "head",
+        "chest",
+        "spine",
+        "hips",
+        "left_shoulder",
+        "right_shoulder",
+        "left_elbow",
+        "right_elbow",
+        "left_hand",
+        "right_hand",
+    }
+    if not required.issubset(joints):
+        return UpperBodyLatents(values=values, masks=masks)
+
+    head_basis = yaw_basis_from_rotation(joints["head"].rotation)
+    chest_forward = normalize(horizontal(rotate_vector(joints["chest"].rotation, WORLD_FORWARD)))
+    if _length(chest_forward) > 1e-6:
+        heading_sin, heading_cos = _signed_yaw_sin_cos(head_basis.forward, chest_forward)
+        values["torso_heading_sin"] = heading_sin
+        values["torso_heading_cos"] = heading_cos
+        masks["torso_heading_sin"] = 1.0
+        masks["torso_heading_cos"] = 1.0
+
+    torso_axis = subtract(joints["head"].position, joints["hips"].position)
+    if _length(torso_axis) > 1e-6:
+        torso_direction = normalize(torso_axis)
+        values["torso_lean_x"] = dot(torso_direction, head_basis.right)
+        values["torso_lean_z"] = dot(torso_direction, head_basis.forward)
+        masks["torso_lean_x"] = 1.0
+        masks["torso_lean_z"] = 1.0
+
+    chest_basis = basis_from_rotation(joints["chest"].rotation)
+    for side in ("left", "right"):
+        shoulder_name = f"{side}_shoulder"
+        shoulder_offset = subtract(joints[shoulder_name].position, joints["chest"].position)
+        local = vector_to_basis(shoulder_offset, chest_basis)
+        for axis_name, value in zip(("x", "y", "z"), local, strict=True):
+            target = f"{side}_shoulder_offset_{axis_name}"
+            values[target] = value
+            masks[target] = 1.0
+
+        swivel_sin, swivel_cos, valid = elbow_swivel_sin_cos(
+            shoulder=joints[shoulder_name].position,
+            elbow=joints[f"{side}_elbow"].position,
+            hand=joints[f"{side}_hand"].position,
+        )
+        values[f"{side}_elbow_swivel_sin"] = swivel_sin
+        values[f"{side}_elbow_swivel_cos"] = swivel_cos
+        masks[f"{side}_elbow_swivel_sin"] = 1.0 if valid else 0.0
+        masks[f"{side}_elbow_swivel_cos"] = 1.0 if valid else 0.0
+
+    return UpperBodyLatents(values=values, masks=masks)
+
+
+@dataclass(frozen=True, slots=True)
+class Basis3:
+    right: Vector3
+    up: Vector3
+    forward: Vector3
+
+
+def yaw_basis_from_rotation(rotation: tuple[float, float, float, float]) -> Basis3:
+    forward = normalize(horizontal(rotate_vector(rotation, WORLD_FORWARD)), WORLD_FORWARD)
+    right = normalize(cross(WORLD_UP, forward), (1.0, 0.0, 0.0))
+    return Basis3(right=right, up=WORLD_UP, forward=forward)
+
+
+def basis_from_rotation(rotation: tuple[float, float, float, float]) -> Basis3:
+    forward = normalize(rotate_vector(rotation, WORLD_FORWARD), WORLD_FORWARD)
+    up = normalize(rotate_vector(rotation, WORLD_UP), WORLD_UP)
+    right = normalize(cross(up, forward), (1.0, 0.0, 0.0))
+    up = normalize(cross(forward, right), WORLD_UP)
+    return Basis3(right=right, up=up, forward=forward)
+
+
+def vector_to_basis(vector: Vector3, basis: Basis3) -> Vector3:
+    return (dot(vector, basis.right), dot(vector, basis.up), dot(vector, basis.forward))
+
+
+def local_position(position: Vector3, *, origin: Vector3, basis: Basis3) -> Vector3:
+    delta = subtract(position, origin)
+    return (dot(delta, basis.right), position[1], dot(delta, basis.forward))
+
+
+def rotation6d(rotation: tuple[float, float, float, float], *, basis: Basis3) -> tuple[float, ...]:
+    forward = vector_to_basis(rotate_vector(rotation, WORLD_FORWARD), basis)
+    up = vector_to_basis(rotate_vector(rotation, WORLD_UP), basis)
+    return (*forward, *up)
+
+
+def yaw_rotated_transform(transform: Transform, degrees: float) -> Transform:
+    yaw = axis_name_quaternion("y", degrees)
+    return Transform(
+        position=rotate_vector(yaw, transform.position),
+        rotation=multiply_quaternion(yaw, transform.rotation),
+    )
+
+
+def yaw_rotated_pose_frame(
+    joints: Mapping[str, Transform],
+    degrees: float,
+) -> dict[str, Transform]:
+    return {name: yaw_rotated_transform(transform, degrees) for name, transform in joints.items()}
+
+
+def yaw_rotated_sample(sample: TrackedPoseSample, degrees: float) -> TrackedPoseSample:
+    yaw = axis_name_quaternion("y", degrees)
+    return TrackedPoseSample(
+        timestamp_seconds=sample.timestamp_seconds,
+        hmd=_yaw_rotated_tracker(sample.hmd, degrees),
+        left_hand=_yaw_rotated_tracker(sample.left_hand, degrees),
+        right_hand=_yaw_rotated_tracker(sample.right_hand, degrees),
+        optional_trackers={
+            role: _yaw_rotated_tracker(state, degrees)
+            for role, state in sample.optional_trackers.items()
+        },
+        character_velocity=rotate_vector(yaw, sample.character_velocity),
+    )
+
+
+def elbow_swivel_sin_cos(
+    *,
+    shoulder: Vector3,
+    elbow: Vector3,
+    hand: Vector3,
+) -> tuple[float, float, bool]:
+    arm_axis = subtract(hand, shoulder)
+    if _length(arm_axis) <= 1e-6:
+        return 0.0, 1.0, False
+    axis = normalize(arm_axis)
+    base = project_on_plane(WORLD_DOWN, axis)
+    if _length(base) <= 1e-6:
+        base = project_on_plane(WORLD_FORWARD, axis)
+    if _length(base) <= 1e-6:
+        return 0.0, 1.0, False
+    base = normalize(base)
+    tangent = normalize(cross(axis, base), (1.0, 0.0, 0.0))
+    elbow_direction = project_on_plane(subtract(elbow, shoulder), axis)
+    if _length(elbow_direction) <= 1e-6:
+        return 0.0, 1.0, False
+    elbow_direction = normalize(elbow_direction)
+    return dot(elbow_direction, tangent), dot(elbow_direction, base), True
+
+
+def apply_upper_body_latents(
+    pose: HumanoidPoseFrame,
+    prediction: UpperBodyLatentPrediction,
+    *,
+    calibration: AvatarCalibration,
+    min_mask: float = 0.5,
+) -> HumanoidPoseFrame:
+    joints = dict(pose.joints)
+    values = prediction.values
+    masks = prediction.masks
+    if "chest" in joints and _enabled(values, masks, "torso_heading_sin", min_mask):
+        heading_sin = values.get("torso_heading_sin", 0.0)
+        heading_cos = values.get("torso_heading_cos", 1.0)
+        head_forward = rotate_vector(
+            joints.get("head", joints["chest"]).transform.rotation, WORLD_FORWARD
+        )
+        head_basis = yaw_basis_from_rotation(look_rotation(head_forward))
+        forward = normalize(
+            add(scale(head_basis.right, heading_sin), scale(head_basis.forward, heading_cos)),
+            head_basis.forward,
+        )
+        rotation = look_rotation(forward, WORLD_UP)
+        for joint_name in ("hips", "spine", "chest"):
+            if joint_name in joints:
+                old_joint = joints[joint_name]
+                joints[joint_name] = JointPose(
+                    transform=Transform(position=old_joint.transform.position, rotation=rotation),
+                    confidence=old_joint.confidence,
+                    estimated=old_joint.estimated,
+                )
+
+    for side in ("left", "right"):
+        shoulder_name = f"{side}_shoulder"
+        if "chest" in joints and all(
+            _enabled(values, masks, f"{side}_shoulder_offset_{axis_name}", min_mask)
+            for axis_name in ("x", "y", "z")
+        ):
+            chest_transform = joints["chest"].transform
+            chest_basis = basis_from_rotation(chest_transform.rotation)
+            local = (
+                values[f"{side}_shoulder_offset_x"],
+                values[f"{side}_shoulder_offset_y"],
+                values[f"{side}_shoulder_offset_z"],
+            )
+            shoulder_position = add(
+                add(chest_transform.position, scale(chest_basis.right, local[0])),
+                add(scale(chest_basis.up, local[1]), scale(chest_basis.forward, local[2])),
+            )
+            old_joint = joints.get(shoulder_name, JointPose(Transform()))
+            joints[shoulder_name] = JointPose(
+                transform=Transform(
+                    position=shoulder_position, rotation=old_joint.transform.rotation
+                ),
+                confidence=old_joint.confidence,
+                estimated=True,
+            )
+
+        elbow_name = f"{side}_elbow"
+        hand_name = f"{side}_hand"
+        if (
+            shoulder_name in joints
+            and hand_name in joints
+            and _enabled(values, masks, f"{side}_elbow_swivel_sin", min_mask)
+        ):
+            swivel_sin = values.get(f"{side}_elbow_swivel_sin", 0.0)
+            swivel_cos = values.get(f"{side}_elbow_swivel_cos", 1.0)
+            bend_hint = _bend_hint_from_swivel(
+                shoulder=joints[shoulder_name].transform.position,
+                hand=joints[hand_name].transform.position,
+                swivel_sin=swivel_sin,
+                swivel_cos=swivel_cos,
+            )
+            elbow_position = solve_two_bone_midpoint(
+                root=joints[shoulder_name].transform.position,
+                tip=joints[hand_name].transform.position,
+                root_to_mid_length=_calibrated_length(
+                    calibration,
+                    ("upper_arm", "humerus"),
+                    calibration.human_height_m * 0.174,
+                ),
+                mid_to_tip_length=_calibrated_length(
+                    calibration,
+                    ("lower_arm", "forearm", "radius"),
+                    calibration.human_height_m * 0.151,
+                ),
+                bend_hint=bend_hint,
+            )
+            old_joint = joints.get(elbow_name, JointPose(Transform()))
+            joints[elbow_name] = JointPose(
+                transform=Transform(position=elbow_position, rotation=old_joint.transform.rotation),
+                confidence=old_joint.confidence,
+                estimated=True,
+            )
+    return HumanoidPoseFrame(
+        timestamp_seconds=pose.timestamp_seconds, root=pose.root, joints=joints
+    )
+
+
+def _combine_residual_prediction(
+    base_latents: UpperBodyLatents,
+    residual_prediction: UpperBodyLatentPrediction,
+    *,
+    residual_scale: float,
+) -> UpperBodyLatentPrediction:
+    values = dict(base_latents.values)
+    masks = dict(base_latents.masks)
+    for name, residual_value in residual_prediction.values.items():
+        values[name] = values.get(name, 0.0) + residual_scale * residual_value
+        masks[name] = min(masks.get(name, 1.0), residual_prediction.masks.get(name, 1.0))
+    _normalize_sin_cos(values, "torso_heading")
+    _normalize_sin_cos(values, "left_elbow_swivel")
+    _normalize_sin_cos(values, "right_elbow_swivel")
+    return UpperBodyLatentPrediction(values=values, masks=masks)
+
+
+def _normalize_sin_cos(values: dict[str, float], prefix: str) -> None:
+    sin_name = f"{prefix}_sin"
+    cos_name = f"{prefix}_cos"
+    magnitude = sqrt(values.get(sin_name, 0.0) ** 2 + values.get(cos_name, 1.0) ** 2)
+    if magnitude <= 1e-6:
+        values[sin_name] = 0.0
+        values[cos_name] = 1.0
+        return
+    values[sin_name] = values[sin_name] / magnitude
+    values[cos_name] = values[cos_name] / magnitude
+
+
+def solve_two_bone_midpoint(
+    *,
+    root: Vector3,
+    tip: Vector3,
+    root_to_mid_length: float,
+    mid_to_tip_length: float,
+    bend_hint: Vector3,
+) -> Vector3:
+    root_to_tip = subtract(tip, root)
+    root_tip_distance = max(0.0001, distance(root, tip))
+    max_reach = max(0.0001, root_to_mid_length + mid_to_tip_length - 0.0001)
+    min_reach = abs(root_to_mid_length - mid_to_tip_length) + 0.0001
+    clamped_distance = min(max(root_tip_distance, min_reach), max_reach)
+    direction = normalize(root_to_tip, WORLD_UP)
+    along = (
+        root_to_mid_length * root_to_mid_length
+        - mid_to_tip_length * mid_to_tip_length
+        + clamped_distance * clamped_distance
+    ) / (2.0 * clamped_distance)
+    bend_height_squared = root_to_mid_length * root_to_mid_length - along * along
+    bend_height = sqrt(bend_height_squared) if bend_height_squared > 0.0 else 0.0
+    bend_direction = normalize(project_on_plane(bend_hint, direction), _fallback_bend(direction))
+    return add(add(root, scale(direction, along)), scale(bend_direction, bend_height))
+
+
+def _export_clip_windows(
+    path: Path,
+    config: SparseWindowConfig,
+    feature_names: Sequence[str],
+) -> list[dict[str, object]]:
+    cached_frames = list(iter_cached_pose_frames(path))
+    if len(cached_frames) < config.window_size:
+        return []
+    first_frame = cached_frames[0]
+    if not _clean_clip(first_frame):
+        return []
+
+    reference_frames = [frame.joints for frame in cached_frames]
+    floor_height = infer_reference_floor_height(reference_frames)
+    calibration = calibration_from_reference_frames(reference_frames, floor_height_m=floor_height)
+    grounding = GroundingContext(floor_height_m=floor_height)
+    samples = [_tracked_sample_from_cached_frame(frame) for frame in cached_frames]
+    estimated_poses = _estimated_poses(
+        samples,
+        calibration=calibration,
+        grounding=grounding,
+        estimator_name=config.estimator_name,
+    )
+    target_latents = [extract_upper_body_latents(frame.joints) for frame in cached_frames]
+    heuristic_latents = [extract_upper_body_latents(pose_joints(pose)) for pose in estimated_poses]
+
+    rows: list[dict[str, object]] = []
+    for center_index in range(config.window_size - 1, len(cached_frames), config.stride):
+        feature_vector = sparse_window_features(samples, center_index, config.window_size)
+        if len(feature_vector) != len(feature_names):
+            raise ValueError("Feature vector length does not match feature schema")
+        row: dict[str, object] = {
+            "subject": first_frame.subject,
+            "clip": first_frame.clip,
+            "frame_index": cached_frames[center_index].frame_index,
+            "timestamp_s": cached_frames[center_index].timestamp_s,
+            "center_row_index": center_index,
+            "split": split_for_subject(first_frame.subject, config.holdout_folds),
+            "features": feature_vector,
+            "environment_split": first_frame.environment_split,
+            "activity_class": first_frame.activity_class,
+            "motion_description": first_frame.motion_description,
+        }
+        target = target_latents[center_index]
+        heuristic = heuristic_latents[center_index]
+        for name in TARGET_NAMES:
+            row[name] = target.values[name]
+            row[f"{name}_mask"] = target.masks[name]
+            row[f"heuristic_{name}"] = heuristic.values[name]
+            row[f"heuristic_{name}_mask"] = heuristic.masks[name]
+        rows.append(row)
+    return rows
+
+
+def sparse_window_features(
+    samples: Sequence[TrackedPoseSample],
+    center_index: int,
+    window_size: int,
+) -> list[float]:
+    center_sample = samples[center_index]
+    basis = yaw_basis_from_rotation(center_sample.hmd.transform.rotation)
+    origin = center_sample.hmd.transform.position
+    start_index = center_index - window_size + 1
+    if start_index < 0:
+        raise ValueError("Sparse windows are causal and require a complete history")
+    features: list[float] = []
+    previous_by_role: dict[TrackerRole, tuple[Vector3, tuple[float, ...], float]] = {}
+    for sample_index in range(start_index, center_index + 1):
+        sample = samples[sample_index]
+        timestamp = sample.timestamp_seconds
+        for role in TRACKER_ROLES:
+            state = _state_for_role(sample, role)
+            position = local_position(state.transform.position, origin=origin, basis=basis)
+            rotation = rotation6d(state.transform.rotation, basis=basis)
+            previous = previous_by_role.get(role)
+            if previous is None:
+                linear_velocity = (0.0, 0.0, 0.0)
+                rotation_velocity = (0.0,) * 6
+            else:
+                previous_position, previous_rotation, previous_timestamp = previous
+                dt = max(1e-6, timestamp - previous_timestamp)
+                linear_velocity = tuple(
+                    (position[index] - previous_position[index]) / dt for index in range(3)
+                )
+                rotation_velocity = tuple(
+                    (rotation[index] - previous_rotation[index]) / dt for index in range(6)
+                )
+            features.extend(position)
+            features.extend(rotation)
+            features.extend(linear_velocity)
+            features.extend(rotation_velocity)
+            features.append(1.0 if state.valid else 0.0)
+            previous_by_role[role] = (position, rotation, timestamp)
+    return [float(value) if isfinite(float(value)) else 0.0 for value in features]
+
+
+def pose_joints(pose: HumanoidPoseFrame) -> dict[str, Transform]:
+    return {name: joint.transform for name, joint in pose.joints.items()}
+
+
+def _estimated_poses(
+    samples: Sequence[TrackedPoseSample],
+    *,
+    calibration: AvatarCalibration,
+    grounding: GroundingContext,
+    estimator_name: EstimatorName,
+) -> list[HumanoidPoseFrame]:
+    estimator = create_estimator(estimator_name)
+    return [estimator.estimate(sample, calibration, grounding) for sample in samples]
+
+
+def _tracked_sample_from_cached_frame(frame: CachedPoseFrame) -> TrackedPoseSample:
+    return TrackedPoseSample(
+        timestamp_seconds=frame.timestamp_s,
+        hmd=_tracker_state("head", frame),
+        left_hand=_tracker_state("left_hand", frame),
+        right_hand=_tracker_state("right_hand", frame),
+    )
+
+
+def _tracker_state(role: TrackerRole, frame: CachedPoseFrame) -> TrackerState:
+    attachment = SyntheticTrackerConfig().attachments[role]
+    source = frame.joints[attachment.source_joint]
+    rotation = (
+        head_tracker_rotation_from_pose_frame(frame.joints) if role == "head" else source.rotation
+    )
+    return TrackerState(
+        role=role,
+        transform=Transform(
+            position=add(source.position, attachment.local_transform.position),
+            rotation=rotation,
+        ),
+        confidence=attachment.confidence,
+        attachment=attachment,
+    )
+
+
+def _yaw_rotated_tracker(state: TrackerState, degrees: float) -> TrackerState:
+    return TrackerState(
+        role=state.role,
+        transform=yaw_rotated_transform(state.transform, degrees),
+        confidence=state.confidence,
+        valid=state.valid,
+        attachment=state.attachment,
+    )
+
+
+def _state_for_role(sample: TrackedPoseSample, role: TrackerRole) -> TrackerState:
+    if role == "head":
+        return sample.hmd
+    if role == "left_hand":
+        return sample.left_hand
+    if role == "right_hand":
+        return sample.right_hand
+    return sample.optional_trackers[role]
+
+
+def _clean_clip(frame: CachedPoseFrame) -> bool:
+    tags = set(frame.environment_tags) | set(frame.activity_tags)
+    return not (tags & EXCLUDED_TAGS)
+
+
+def _empty_windows_frame(feature_names: Sequence[str]) -> pl.DataFrame:
+    schema: dict[str, Any] = {
+        "subject": pl.String,
+        "clip": pl.String,
+        "frame_index": pl.Int64,
+        "timestamp_s": pl.Float64,
+        "center_row_index": pl.Int64,
+        "split": pl.String,
+        "features": pl.List(pl.Float64),
+        "environment_split": pl.String,
+        "activity_class": pl.String,
+        "motion_description": pl.String,
+    }
+    del feature_names
+    for name in TARGET_NAMES:
+        schema[name] = pl.Float64
+        schema[f"{name}_mask"] = pl.Float64
+        schema[f"heuristic_{name}"] = pl.Float64
+        schema[f"heuristic_{name}_mask"] = pl.Float64
+    return pl.DataFrame(schema=schema)
+
+
+def _signed_yaw_sin_cos(reference_forward: Vector3, target_forward: Vector3) -> tuple[float, float]:
+    ref = normalize(horizontal(reference_forward), WORLD_FORWARD)
+    target = normalize(horizontal(target_forward), WORLD_FORWARD)
+    return dot(cross(ref, target), WORLD_UP), dot(ref, target)
+
+
+def _enabled(
+    values: Mapping[str, float],
+    masks: Mapping[str, float],
+    name: str,
+    min_mask: float,
+) -> bool:
+    return name in values and masks.get(name, 1.0) >= min_mask
+
+
+def _bend_hint_from_swivel(
+    *,
+    shoulder: Vector3,
+    hand: Vector3,
+    swivel_sin: float,
+    swivel_cos: float,
+) -> Vector3:
+    arm_axis = normalize(subtract(hand, shoulder), WORLD_UP)
+    base = normalize(project_on_plane(WORLD_DOWN, arm_axis), _fallback_bend(arm_axis))
+    tangent = normalize(cross(arm_axis, base), (1.0, 0.0, 0.0))
+    return normalize(add(scale(tangent, swivel_sin), scale(base, swivel_cos)), base)
+
+
+def _fallback_bend(direction: Vector3) -> Vector3:
+    horizontal_right = normalize(cross(direction, WORLD_UP), (1.0, 0.0, 0.0))
+    return normalize(cross(horizontal_right, direction), WORLD_DOWN)
+
+
+def _calibrated_length(
+    calibration: AvatarCalibration,
+    names: Iterable[str],
+    fallback: float,
+) -> float:
+    for name in names:
+        value = calibration.bone_lengths_m.get(name)
+        if value is not None and value > 0.0:
+            return value
+    return fallback
+
+
+def _length(vector: Vector3) -> float:
+    return sqrt(dot(vector, vector))
+
+
+def _import_torch() -> Any:
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("torch is not installed; run through `uv run --group ml ...`") from exc
+    return torch
+
+
+def _torch_device(torch: Any, *, allow_cpu: bool) -> Any:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if allow_cpu:
+        return torch.device("cpu")
+    raise RuntimeError(
+        "Torch CUDA is unavailable. Install the ml group with the CUDA torch wheel, "
+        "or pass allow_cpu=True only for local smoke tests."
+    )
+
+
+def _make_torch_provider_model(
+    torch: Any,
+    *,
+    model_name: str,
+    input_dim: int,
+    output_dim: int,
+    hidden_dim: int,
+) -> Any:
+    if model_name == "torch_linear":
+        return torch.nn.Linear(input_dim, output_dim)
+    if model_name == "torch_mlp":
+        return torch.nn.Sequential(
+            torch.nn.Linear(input_dim, hidden_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_dim, output_dim),
+        )
+    if model_name == "torch_residual_linear":
+        return torch.nn.Linear(input_dim, output_dim)
+    if model_name == "torch_residual_mlp":
+        return torch.nn.Sequential(
+            torch.nn.Linear(input_dim, hidden_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_dim, output_dim),
+        )
+    raise ValueError(f"Unsupported Torch model artifact: {model_name}")

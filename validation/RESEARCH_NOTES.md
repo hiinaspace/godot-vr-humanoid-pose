@@ -25,6 +25,8 @@ CMU/Godot humanoid path.
 | AvatarPoser, ECCV 2022 | Transformer over head/hand pose windows; separate global orientation stabilization; post-network arm IK to recover hand alignment. | [paper text](../.cache/references/papers/avatarposer_2207.13784.txt), [repo README](../.cache/references/AvatarPoser/README.md), [license](../.cache/references/AvatarPoser/LICENSE) | https://github.com/eth-siplab/AvatarPoser |
 | EgoPoser, ECCV 2024 | Sparse/intermittent hand tracking, global motion decomposition, 80-frame windows, SlowFast temporal fusion, FoV masking. | [paper text](../.cache/references/papers/egoposer_2308.06493.txt), [repo README](../.cache/references/EgoPoser/README.md), [network](../.cache/references/EgoPoser/networks/egoposer.py), [training config](../.cache/references/EgoPoser/options/train_egoposer.yaml) | https://github.com/eth-siplab/EgoPoser, https://arxiv.org/abs/2308.06493 |
 | MANIKIN, ECCV 2024 | Neural-analytic IK: predict base joints, foot poses, and limb swivel angles, then solve limbs analytically to match end effectors. | [paper text](../.cache/references/papers/manikin_eccv2024_00194.txt), [paper PDF](../.cache/references/papers/manikin_eccv2024_00194.pdf) | https://static.siplab.org/papers/eccv2024-manikin.pdf |
+| Garment Inertial Poser, IJCAI 2025 | Loose sensor modeling: simulate/synthesize garment-mounted IMU signals, condition pose prediction on loose IMU data and garment parameters, and evaluate simulated/synthetic/real data separately. | n/a | https://siplab.org/projects/GarmentInertialPoser, https://www.ijcai.org/proceedings/2025/135 |
+| Garment Inertial Denoiser, arXiv 2026 | Treat loose sensor corruption as a front-end denoising problem before pose estimation: location-specific denoising, cross-sensor fusion, then general pose prediction. | n/a | https://arxiv.org/abs/2601.01360 |
 | VRArmIK, 2018 | Deterministic shoulder/elbow heuristics for 3-point VR arms: shoulder pose, elbow angle, hand-rotation influence, stretch handling. | [repo README](../.cache/references/VRArmIK/README.md), [arm solver](../.cache/references/VRArmIK/Assets/Plugins/VRArmIK/Scripts/VRArmIK.cs), [license](../.cache/references/VRArmIK/LICENSE) | https://github.com/dabeschte/VRArmIK, https://dabeschte.github.io/paper/2018/12/01/vrarmik.html |
 | Existing data strategy | Separates CMU gait priors, in-distribution VR capture, augmentation, and plausibility metrics. | [DATA_STRATEGY.md](DATA_STRATEGY.md) | n/a |
 
@@ -50,6 +52,36 @@ the existing CMU cache with:
 This representation is valuable even before training. It gives deterministic
 estimators and learned predictors the same input surface, which makes report
 comparisons cleaner.
+
+## Tracker Attachment Drift And Sensor Denoising
+
+Garment Inertial Poser and Garment Inertial Denoiser target loose IMUs rather
+than optical VR trackers, but their core assumption transfers: a wearable sensor
+is not the body joint. It is a noisy, drifting, body-local attachment with
+location-specific corruption. VR straps are usually tighter than garments, but
+they can still shift, occlude, jitter, and drift relative to the underlying bone.
+
+Useful patterns:
+
+- Model sensor corruption separately from pose inference. A small denoiser or
+  calibration layer can map raw tracker poses to body-attached virtual tracker
+  poses before the pose estimator consumes them.
+- Make corruption location-specific. HMD, controller, elbow, pelvis, knee, and
+  foot trackers have different mounting error, latency, and occlusion behavior.
+- Train with synthetic corruption even when the target runtime is deterministic:
+  mounting offsets, soft strap drift, per-tracker latency, dropout masks,
+  low-frequency yaw/position bias, and short high-frequency jitter bursts.
+- Keep clean sparse-tracker reconstruction and downstream pose quality as
+  separate reports. A denoiser that reduces tracker error can still hurt the
+  avatar if the pose layer over-trusts it.
+
+Implementation implication:
+
+- For learned experiments, prefer a staged model: raw sparse tracker window to
+  denoised/body-attached virtual trackers, then residual upper-body latents,
+  then analytic IK.
+- For live capture, keep optional physical trackers as withheld labels for the
+  denoiser when they are not used by the 3-point estimator.
 
 ## Global Orientation And Torso
 
@@ -157,7 +189,10 @@ visible.
    constants using CMU, then rerun on clean live capture clips when available.
 4. Add report panels for hand target error, elbow side flips, region MPJVE,
    jerk, foot skating, and ground/floating errors.
-5. Keep learned models isolated from the runtime path at first: train small
+5. Train residual, confidence-gated upper-body latent predictors against a
+   differentiable Torch surrogate of the analytic IK layer, with temporal losses
+   on decoded shoulder/elbow/chest trajectories.
+6. Keep learned models isolated from the runtime path at first: train small
    predictors for low-dimensional parameters such as shoulder offset, torso
    facing, elbow swivel, cadence, stance width, and step length before trying a
    full pose network.

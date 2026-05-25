@@ -120,6 +120,43 @@ step width, step interval, cadence, and swing duration. It also runs lightweight
 held-out linear predictors from synthetic head/controller features to estimate
 how much of those gait parameters is explained by sparse VR-style inputs.
 
+Build causal sparse-window data for upper-body latent ML experiments:
+
+```powershell
+uv run --group ml python -m validation.scripts.build_sparse_window_dataset --cache-dir .cache/cmu/parquet/canonical_full --output-dir .cache/ml/upper_body_windows
+```
+
+Train the GPU-oriented latent model ladder:
+
+```powershell
+uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows --output-dir .cache/ml/upper_body_models
+```
+
+The sparse-window exporter writes ignored Parquet artifacts under `.cache/ml/`.
+Rows use causal HMD/controller windows and GT-derived targets for torso heading
+and lean, shoulder offsets, and elbow swivel. Training reports compare the
+constant baseline, Torch linear, Torch MLP, and native XGBoost CUDA paths.
+Torch CUDA is required by default; pass `--allow-cpu` only for smoke tests.
+
+Run learned upper-body latents through the full cached CMU metric stack:
+
+```powershell
+uv run --group ml python -m validation.scripts.run_learned_upper_body_validation --cache-dir .cache/cmu/parquet/canonical_full --dataset-dir .cache/ml/upper_body_windows --artifact .cache/ml/upper_body_models/torch_mlp.pt --normalization .cache/ml/upper_body_models/normalization.json --compare-baseline
+```
+
+Check the current sparse-window feature and latent target invariance assumptions:
+
+```powershell
+uv run python -m validation.scripts.check_upper_body_invariance
+```
+
+Run subject-fold cross-validation, optionally with downstream cached validation
+per fold:
+
+```powershell
+uv run --group ml python -m validation.scripts.run_upper_body_latent_cross_validation --dataset-dir .cache/ml/upper_body_windows --output-dir .cache/ml/upper_body_models/cross_validation --validate-cache-dir .cache/cmu/parquet/canonical_full
+```
+
 Build a compact CSV for manual outlier review from a cached validation JSON report:
 
 ```powershell
