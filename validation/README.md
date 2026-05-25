@@ -138,11 +138,19 @@ pass `--workers 1 --shard-rows 0` for the older single-file path. Rows use
 causal HMD/controller windows, static calibration features such as
 height/shoulder width/arm lengths, and GT-derived targets for torso heading and
 lean, normalized shoulder elevation/protraction/lateral controls, and elbow
-swivel. Training reports compare the constant baseline, Torch linear, Torch MLP,
+swivel. Rows also include local reference and heuristic chest/shoulder/elbow
+points for decoded post-IK losses. Training reports compare the constant baseline, Torch linear, Torch MLP,
 residual Torch models, and native XGBoost CUDA paths. Residual models can run
 validation-time gate search to shrink unsafe residual groups before saving an
 artifact. Torch CUDA is required by default; pass `--allow-cpu` only for smoke
 tests.
+
+For shoulder/elbow experiments, use decoded losses against the exported
+reference points instead of only latent MAE:
+
+```powershell
+uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows --output-dir .cache/ml/upper_body_models_decoded --models torch_residual_mlp --latent-loss-weight 0.1 --decoded-pose-weight 25 --decoded-shoulder-weight 2 --decoded-elbow-weight 2 --decoded-arm-direction-weight 0.5 --decoded-stretch-weight 0.25 --residual-scale 0.1 --residual-smoothing-alpha 0.1 --residual-gate-search
+```
 
 Run learned upper-body latents through the full cached CMU metric stack:
 

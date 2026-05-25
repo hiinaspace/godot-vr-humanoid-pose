@@ -116,6 +116,13 @@ STATIC_CALIBRATION_FEATURE_NAMES = (
     "calibration_shoulder_width_to_height",
     "calibration_arm_length_to_height",
 )
+DECODED_REFERENCE_JOINTS = (
+    "chest",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -931,6 +938,9 @@ def _export_clip_windows(
         )
         if len(feature_vector) != len(feature_names):
             raise ValueError("Feature vector length does not match feature schema")
+        center_sample = samples[center_index]
+        center_basis = yaw_basis_from_rotation(center_sample.hmd.transform.rotation)
+        center_origin = center_sample.hmd.transform.position
         row: dict[str, object] = {
             "subject": first_frame.subject,
             "clip": first_frame.clip,
@@ -945,6 +955,20 @@ def _export_clip_windows(
         }
         target = target_latents[center_index]
         heuristic = heuristic_latents[center_index]
+        _add_decoded_reference_points(
+            row,
+            prefix="reference",
+            joints=cached_frames[center_index].joints,
+            origin=center_origin,
+            basis=center_basis,
+        )
+        _add_decoded_reference_points(
+            row,
+            prefix="heuristic",
+            joints=pose_joints(estimated_poses[center_index]),
+            origin=center_origin,
+            basis=center_basis,
+        )
         for name in TARGET_NAMES:
             row[name] = target.values[name]
             row[f"{name}_mask"] = target.masks[name]
@@ -952,6 +976,27 @@ def _export_clip_windows(
             row[f"heuristic_{name}_mask"] = heuristic.masks[name]
         rows.append(row)
     return rows
+
+
+def _add_decoded_reference_points(
+    row: dict[str, object],
+    *,
+    prefix: str,
+    joints: Mapping[str, Transform],
+    origin: Vector3,
+    basis: Basis3,
+) -> None:
+    for joint_name in DECODED_REFERENCE_JOINTS:
+        transform = joints.get(joint_name)
+        valid = transform is not None
+        position = (
+            local_position(transform.position, origin=origin, basis=basis)
+            if transform is not None
+            else (0.0, 0.0, 0.0)
+        )
+        for component, value in zip(("x", "y", "z"), position, strict=True):
+            row[f"{prefix}_{joint_name}_position_{component}"] = float(value)
+        row[f"{prefix}_{joint_name}_valid"] = 1.0 if valid else 0.0
 
 
 def sparse_window_features(

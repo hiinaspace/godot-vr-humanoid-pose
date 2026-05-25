@@ -55,6 +55,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--residual-scale", type=float, default=1.0)
     parser.add_argument("--residual-smoothing-alpha", type=float, default=1.0)
     parser.add_argument("--residual-gate-search", action="store_true")
+    parser.add_argument("--latent-loss-weight", type=float, default=1.0)
+    parser.add_argument("--decoded-pose-weight", type=float, default=0.0)
+    parser.add_argument("--decoded-shoulder-weight", type=float, default=1.0)
+    parser.add_argument("--decoded-elbow-weight", type=float, default=1.0)
+    parser.add_argument("--decoded-arm-direction-weight", type=float, default=0.25)
+    parser.add_argument("--decoded-stretch-weight", type=float, default=0.25)
     parser.add_argument("--surrogate-position-weight", type=float, default=0.0)
     parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
     parser.add_argument("--temporal-acceleration-weight", type=float, default=0.0)
@@ -111,6 +117,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         residual_scale=max(0.0, args.residual_scale),
         residual_smoothing_alpha=min(max(0.0, args.residual_smoothing_alpha), 1.0),
         residual_gate_search=args.residual_gate_search,
+        latent_loss_weight=max(0.0, args.latent_loss_weight),
+        decoded_pose_weight=max(0.0, args.decoded_pose_weight),
+        decoded_shoulder_weight=max(0.0, args.decoded_shoulder_weight),
+        decoded_elbow_weight=max(0.0, args.decoded_elbow_weight),
+        decoded_arm_direction_weight=max(0.0, args.decoded_arm_direction_weight),
+        decoded_stretch_weight=max(0.0, args.decoded_stretch_weight),
         surrogate_position_weight=max(0.0, args.surrogate_position_weight),
         temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
         temporal_acceleration_weight=max(0.0, args.temporal_acceleration_weight),
@@ -142,6 +154,12 @@ def run_upper_body_latent_cross_validation(
     residual_scale: float = 1.0,
     residual_smoothing_alpha: float = 1.0,
     residual_gate_search: bool = False,
+    latent_loss_weight: float = 1.0,
+    decoded_pose_weight: float = 0.0,
+    decoded_shoulder_weight: float = 1.0,
+    decoded_elbow_weight: float = 1.0,
+    decoded_arm_direction_weight: float = 0.25,
+    decoded_stretch_weight: float = 0.25,
     surrogate_position_weight: float = 0.0,
     temporal_velocity_weight: float = 0.0,
     temporal_acceleration_weight: float = 0.0,
@@ -178,6 +196,12 @@ def run_upper_body_latent_cross_validation(
             residual_scale=residual_scale,
             residual_smoothing_alpha=residual_smoothing_alpha,
             residual_gate_search=residual_gate_search,
+            latent_loss_weight=latent_loss_weight,
+            decoded_pose_weight=decoded_pose_weight,
+            decoded_shoulder_weight=decoded_shoulder_weight,
+            decoded_elbow_weight=decoded_elbow_weight,
+            decoded_arm_direction_weight=decoded_arm_direction_weight,
+            decoded_stretch_weight=decoded_stretch_weight,
             surrogate_position_weight=surrogate_position_weight,
             temporal_velocity_weight=temporal_velocity_weight,
             temporal_acceleration_weight=temporal_acceleration_weight,

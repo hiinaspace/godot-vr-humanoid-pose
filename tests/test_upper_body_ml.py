@@ -63,6 +63,9 @@ def test_sparse_window_export_writes_causal_rows_and_heuristic_latents(tmp_path)
     assert rows[0]["split"] == split_for_subject("01", 3)
     assert "heuristic_left_elbow_swivel_sin" in rows[0]
     assert "left_shoulder_elevation" in rows[0]
+    assert rows[0]["reference_left_elbow_valid"] == 1.0
+    assert rows[0]["heuristic_left_elbow_valid"] == 1.0
+    assert rows[0]["reference_left_shoulder_position_x"] == approx(0.22)
 
 
 def test_sparse_window_export_writes_loadable_shards(tmp_path) -> None:
@@ -90,6 +93,8 @@ def test_sparse_window_export_writes_loadable_shards(tmp_path) -> None:
     assert not (output_dir / "windows.parquet").exists()
     assert (output_dir / "windows_shards").exists()
     assert dataset.features.shape[0] == 4
+    assert dataset.decoded_reference_points is not None
+    assert dataset.decoded_reference_points.shape == (4, 5, 3)
 
 
 def test_rotation6d_is_independent_of_quaternion_sign() -> None:

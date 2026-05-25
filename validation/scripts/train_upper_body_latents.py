@@ -14,6 +14,7 @@ from typing import Any, Literal, cast
 import numpy as np
 
 from validation.vr_pose_validation.upper_body_ml import (
+    DECODED_REFERENCE_JOINTS,
     TARGET_GROUPS,
     TARGET_NAMES,
     read_sparse_window_dataframe,
@@ -38,6 +39,8 @@ class LoadedDataset:
     masks: np.ndarray
     heuristics: np.ndarray | None
     heuristic_masks: np.ndarray | None
+    decoded_reference_points: np.ndarray | None
+    decoded_reference_masks: np.ndarray | None
     splits: np.ndarray
     subjects: np.ndarray
     clips: np.ndarray
@@ -76,6 +79,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--residual-scale", type=float, default=1.0)
     parser.add_argument("--residual-smoothing-alpha", type=float, default=1.0)
     parser.add_argument("--residual-gate-search", action="store_true")
+    parser.add_argument("--latent-loss-weight", type=float, default=1.0)
+    parser.add_argument("--decoded-pose-weight", type=float, default=0.0)
+    parser.add_argument("--decoded-shoulder-weight", type=float, default=1.0)
+    parser.add_argument("--decoded-elbow-weight", type=float, default=1.0)
+    parser.add_argument("--decoded-arm-direction-weight", type=float, default=0.25)
+    parser.add_argument("--decoded-stretch-weight", type=float, default=0.25)
     parser.add_argument("--surrogate-position-weight", type=float, default=0.0)
     parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
     parser.add_argument("--temporal-acceleration-weight", type=float, default=0.0)
@@ -103,6 +112,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         residual_scale=max(0.0, args.residual_scale),
         residual_smoothing_alpha=min(max(0.0, args.residual_smoothing_alpha), 1.0),
         residual_gate_search=args.residual_gate_search,
+        latent_loss_weight=max(0.0, args.latent_loss_weight),
+        decoded_pose_weight=max(0.0, args.decoded_pose_weight),
+        decoded_shoulder_weight=max(0.0, args.decoded_shoulder_weight),
+        decoded_elbow_weight=max(0.0, args.decoded_elbow_weight),
+        decoded_arm_direction_weight=max(0.0, args.decoded_arm_direction_weight),
+        decoded_stretch_weight=max(0.0, args.decoded_stretch_weight),
         surrogate_position_weight=max(0.0, args.surrogate_position_weight),
         temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
         temporal_acceleration_weight=max(0.0, args.temporal_acceleration_weight),
@@ -129,6 +144,12 @@ def train_upper_body_latents(
     residual_scale: float = 1.0,
     residual_smoothing_alpha: float = 1.0,
     residual_gate_search: bool = False,
+    latent_loss_weight: float = 1.0,
+    decoded_pose_weight: float = 0.0,
+    decoded_shoulder_weight: float = 1.0,
+    decoded_elbow_weight: float = 1.0,
+    decoded_arm_direction_weight: float = 0.25,
+    decoded_stretch_weight: float = 0.25,
     surrogate_position_weight: float = 0.0,
     temporal_velocity_weight: float = 0.0,
     temporal_acceleration_weight: float = 0.0,
@@ -158,6 +179,12 @@ def train_upper_body_latents(
         "residual_scale": residual_scale,
         "residual_smoothing_alpha": residual_smoothing_alpha,
         "residual_gate_search": residual_gate_search,
+        "latent_loss_weight": latent_loss_weight,
+        "decoded_pose_weight": decoded_pose_weight,
+        "decoded_shoulder_weight": decoded_shoulder_weight,
+        "decoded_elbow_weight": decoded_elbow_weight,
+        "decoded_arm_direction_weight": decoded_arm_direction_weight,
+        "decoded_stretch_weight": decoded_stretch_weight,
         "surrogate_position_weight": surrogate_position_weight,
         "temporal_velocity_weight": temporal_velocity_weight,
         "temporal_acceleration_weight": temporal_acceleration_weight,
@@ -234,6 +261,12 @@ def train_upper_body_latents(
                 residual_scale=residual_scale,
                 residual_smoothing_alpha=residual_smoothing_alpha,
                 residual_gate_search=residual_gate_search,
+                latent_loss_weight=latent_loss_weight,
+                decoded_pose_weight=decoded_pose_weight,
+                decoded_shoulder_weight=decoded_shoulder_weight,
+                decoded_elbow_weight=decoded_elbow_weight,
+                decoded_arm_direction_weight=decoded_arm_direction_weight,
+                decoded_stretch_weight=decoded_stretch_weight,
                 surrogate_position_weight=surrogate_position_weight,
                 temporal_velocity_weight=temporal_velocity_weight,
                 temporal_acceleration_weight=temporal_acceleration_weight,
@@ -278,6 +311,7 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
     else:
         heuristics = None
         heuristic_masks = None
+    decoded_reference_points, decoded_reference_masks = _load_decoded_reference_points(dataframe)
     splits = np.asarray(dataframe["split"].to_list(), dtype=str)
     subjects = np.asarray(dataframe["subject"].to_list(), dtype=str)
     clips = np.asarray(dataframe["clip"].to_list(), dtype=str)
@@ -289,6 +323,8 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
         masks=masks,
         heuristics=heuristics,
         heuristic_masks=heuristic_masks,
+        decoded_reference_points=decoded_reference_points,
+        decoded_reference_masks=decoded_reference_masks,
         splits=splits,
         subjects=subjects,
         clips=clips,
@@ -303,6 +339,24 @@ def _feature_matrix(values: np.ndarray) -> np.ndarray:
     if values.size == 0:
         return np.empty((0, 0), dtype=np.float32)
     return np.vstack(cast(Sequence[Any], values)).astype(np.float32, copy=False)
+
+
+def _load_decoded_reference_points(dataframe: Any) -> tuple[np.ndarray | None, np.ndarray | None]:
+    point_columns = [
+        f"reference_{joint_name}_position_{component}"
+        for joint_name in DECODED_REFERENCE_JOINTS
+        for component in ("x", "y", "z")
+    ]
+    mask_columns = [f"reference_{joint_name}_valid" for joint_name in DECODED_REFERENCE_JOINTS]
+    if not all(name in dataframe.columns for name in (*point_columns, *mask_columns)):
+        return None, None
+    points = np.asarray(dataframe.select(point_columns).to_numpy(), dtype=np.float32).reshape(
+        dataframe.height,
+        len(DECODED_REFERENCE_JOINTS),
+        3,
+    )
+    masks = np.asarray(dataframe.select(mask_columns).to_numpy(), dtype=np.float32)
+    return points, masks
 
 
 def split_masks(
@@ -382,6 +436,12 @@ def _train_torch_model(
     residual_scale: float,
     residual_smoothing_alpha: float,
     residual_gate_search: bool,
+    latent_loss_weight: float,
+    decoded_pose_weight: float,
+    decoded_shoulder_weight: float,
+    decoded_elbow_weight: float,
+    decoded_arm_direction_weight: float,
+    decoded_stretch_weight: float,
     surrogate_position_weight: float,
     temporal_velocity_weight: float,
     temporal_acceleration_weight: float,
@@ -422,6 +482,32 @@ def _train_torch_model(
         hm_train = torch.ones_like(m_train)
         h_val = torch.zeros_like(y_val)
         hm_val = torch.ones_like(m_val)
+    if dataset.decoded_reference_points is not None and dataset.decoded_reference_masks is not None:
+        decoded_points_train = torch.as_tensor(
+            dataset.decoded_reference_points[train_mask],
+            dtype=torch.float32,
+            device=device,
+        )
+        decoded_masks_train = torch.as_tensor(
+            dataset.decoded_reference_masks[train_mask],
+            dtype=torch.float32,
+            device=device,
+        )
+        decoded_points_val = torch.as_tensor(
+            dataset.decoded_reference_points[validation_mask],
+            dtype=torch.float32,
+            device=device,
+        )
+        decoded_masks_val = torch.as_tensor(
+            dataset.decoded_reference_masks[validation_mask],
+            dtype=torch.float32,
+            device=device,
+        )
+    else:
+        decoded_points_train = None
+        decoded_masks_train = None
+        decoded_points_val = None
+        decoded_masks_val = None
     effective_m_train = m_train * hm_train if prediction_mode == "residual" else m_train
     effective_m_val = m_val * hm_val if prediction_mode == "residual" else m_val
     surrogate_indices = _surrogate_feature_indices(feature_names)
@@ -462,12 +548,13 @@ def _train_torch_model(
                 residual_scale=residual_scale,
                 target_names=target_names,
             )
-            loss = _masked_mse(
+            latent_loss = _masked_mse(
                 torch,
                 prediction,
                 y_train[batch_indices],
                 effective_m_train[batch_indices],
             )
+            loss = latent_loss_weight * latent_loss
             if prediction_mode == "residual" and residual_regularization_weight > 0.0:
                 loss = loss + residual_regularization_weight * _masked_mse(
                     torch,
@@ -475,14 +562,30 @@ def _train_torch_model(
                     torch.zeros_like(raw_prediction),
                     effective_m_train[batch_indices],
                 )
-            if surrogate_position_weight > 0.0 and surrogate_indices is not None:
-                loss = loss + surrogate_position_weight * _surrogate_position_loss(
+            effective_decoded_weight = decoded_pose_weight + surrogate_position_weight
+            if effective_decoded_weight > 0.0 and surrogate_indices is not None:
+                loss = loss + effective_decoded_weight * _decoded_pose_loss(
                     torch,
                     prediction,
                     y_train[batch_indices],
+                    effective_m_train[batch_indices],
                     raw_x_train[batch_indices],
+                    decoded_reference_points=(
+                        decoded_points_train[batch_indices]
+                        if decoded_points_train is not None
+                        else None
+                    ),
+                    decoded_reference_masks=(
+                        decoded_masks_train[batch_indices]
+                        if decoded_masks_train is not None
+                        else None
+                    ),
                     surrogate_indices=surrogate_indices,
                     target_names=target_names,
+                    shoulder_weight=decoded_shoulder_weight,
+                    elbow_weight=decoded_elbow_weight,
+                    arm_direction_weight=decoded_arm_direction_weight,
+                    stretch_weight=decoded_stretch_weight,
                 )
             if temporal_velocity_weight > 0.0 and train_pairs.numel() > 0:
                 loss = loss + temporal_velocity_weight * _surrogate_velocity_loss(
@@ -532,11 +635,18 @@ def _train_torch_model(
                 y_val,
                 effective_m_val,
                 raw_x_val,
+                decoded_reference_points=decoded_points_val,
+                decoded_reference_masks=decoded_masks_val,
                 prediction_mode=prediction_mode,
                 residual_scale=residual_scale,
                 target_names=target_names,
                 feature_names=feature_names,
                 surrogate_position_weight=surrogate_position_weight,
+                decoded_pose_weight=decoded_pose_weight,
+                decoded_shoulder_weight=decoded_shoulder_weight,
+                decoded_elbow_weight=decoded_elbow_weight,
+                decoded_arm_direction_weight=decoded_arm_direction_weight,
+                decoded_stretch_weight=decoded_stretch_weight,
             )
             if residual_gate_search and prediction_mode == "residual"
             else {name: 1.0 for name in target_names}
@@ -566,7 +676,10 @@ def _train_torch_model(
         torch,
         validation_predictions_tensor,
         y_val,
+        effective_m_val,
         raw_x_val,
+        decoded_reference_points=decoded_points_val,
+        decoded_reference_masks=decoded_masks_val,
         feature_names=feature_names,
         target_names=target_names,
     )
@@ -578,6 +691,12 @@ def _train_torch_model(
             "residual_scale": residual_scale,
             "residual_smoothing_alpha": residual_smoothing_alpha,
             "residual_gates": residual_gates,
+            "latent_loss_weight": latent_loss_weight,
+            "decoded_pose_weight": decoded_pose_weight,
+            "decoded_shoulder_weight": decoded_shoulder_weight,
+            "decoded_elbow_weight": decoded_elbow_weight,
+            "decoded_arm_direction_weight": decoded_arm_direction_weight,
+            "decoded_stretch_weight": decoded_stretch_weight,
             "model_state_dict": model.state_dict(),
             "feature_names": list(feature_names),
             "target_names": list(target_names),
@@ -598,6 +717,12 @@ def _train_torch_model(
         "residual_scale": residual_scale,
         "residual_smoothing_alpha": residual_smoothing_alpha,
         "residual_gates": residual_gates,
+        "latent_loss_weight": latent_loss_weight,
+        "decoded_pose_weight": decoded_pose_weight,
+        "decoded_shoulder_weight": decoded_shoulder_weight,
+        "decoded_elbow_weight": decoded_elbow_weight,
+        "decoded_arm_direction_weight": decoded_arm_direction_weight,
+        "decoded_stretch_weight": decoded_stretch_weight,
         **extra_metrics,
         **_metric_dict(
             targets[validation_mask],
@@ -741,11 +866,18 @@ def _fit_residual_gates(
     mask: Any,
     raw_features: Any,
     *,
+    decoded_reference_points: Any | None,
+    decoded_reference_masks: Any | None,
     prediction_mode: Literal["absolute", "residual"],
     residual_scale: float,
     target_names: Sequence[str],
     feature_names: Sequence[str],
     surrogate_position_weight: float,
+    decoded_pose_weight: float,
+    decoded_shoulder_weight: float,
+    decoded_elbow_weight: float,
+    decoded_arm_direction_weight: float,
+    decoded_stretch_weight: float,
 ) -> dict[str, float]:
     if prediction_mode != "residual":
         return {name: 1.0 for name in target_names}
@@ -781,9 +913,16 @@ def _fit_residual_gates(
                     target,
                     mask,
                     raw_features,
+                    decoded_reference_points=decoded_reference_points,
+                    decoded_reference_masks=decoded_reference_masks,
                     feature_names=feature_names,
                     target_names=target_names,
                     surrogate_position_weight=surrogate_position_weight,
+                    decoded_pose_weight=decoded_pose_weight,
+                    decoded_shoulder_weight=decoded_shoulder_weight,
+                    decoded_elbow_weight=decoded_elbow_weight,
+                    decoded_arm_direction_weight=decoded_arm_direction_weight,
+                    decoded_stretch_weight=decoded_stretch_weight,
                 )
                 if loss < best_loss:
                     best_loss = loss
@@ -801,20 +940,35 @@ def _residual_gate_loss(
     mask: Any,
     raw_features: Any,
     *,
+    decoded_reference_points: Any | None,
+    decoded_reference_masks: Any | None,
     feature_names: Sequence[str],
     target_names: Sequence[str],
     surrogate_position_weight: float,
+    decoded_pose_weight: float,
+    decoded_shoulder_weight: float,
+    decoded_elbow_weight: float,
+    decoded_arm_direction_weight: float,
+    decoded_stretch_weight: float,
 ) -> float:
     loss = _masked_mse(torch, prediction, target, mask)
     surrogate_indices = _surrogate_feature_indices(feature_names)
-    if surrogate_indices is not None and surrogate_position_weight > 0.0:
-        loss = loss + surrogate_position_weight * _surrogate_position_loss(
+    effective_decoded_weight = decoded_pose_weight + surrogate_position_weight
+    if surrogate_indices is not None and effective_decoded_weight > 0.0:
+        loss = loss + effective_decoded_weight * _decoded_pose_loss(
             torch,
             prediction,
             target,
+            mask,
             raw_features,
+            decoded_reference_points=decoded_reference_points,
+            decoded_reference_masks=decoded_reference_masks,
             surrogate_indices=surrogate_indices,
             target_names=target_names,
+            shoulder_weight=decoded_shoulder_weight,
+            elbow_weight=decoded_elbow_weight,
+            arm_direction_weight=decoded_arm_direction_weight,
+            stretch_weight=decoded_stretch_weight,
         )
     return float(loss.detach().cpu())
 
@@ -833,15 +987,62 @@ def _apply_residual_gates(
     return raw_prediction * gate_vector[None, :]
 
 
-def _surrogate_position_loss(
+def _decoded_pose_loss(
     torch: Any,
     prediction: Any,
     target: Any,
+    target_mask: Any,
     raw_features: Any,
     *,
+    decoded_reference_points: Any | None,
+    decoded_reference_masks: Any | None,
     surrogate_indices: SurrogateFeatureIndices,
     target_names: Sequence[str],
+    shoulder_weight: float,
+    elbow_weight: float,
+    arm_direction_weight: float,
+    stretch_weight: float,
 ) -> Any:
+    terms = _decoded_pose_terms(
+        torch,
+        prediction,
+        target,
+        target_mask,
+        raw_features,
+        decoded_reference_points=decoded_reference_points,
+        decoded_reference_masks=decoded_reference_masks,
+        surrogate_indices=surrogate_indices,
+        target_names=target_names,
+    )
+    total = torch.zeros((), dtype=prediction.dtype, device=prediction.device)
+    total_weight = 0.0
+    for term_name, term_weight in (
+        ("shoulder_mse", shoulder_weight),
+        ("elbow_mse", elbow_weight),
+        ("arm_direction_mse", arm_direction_weight),
+        ("stretch_mse", stretch_weight),
+    ):
+        if term_weight <= 0.0:
+            continue
+        total = total + term_weight * terms[term_name]
+        total_weight += term_weight
+    if total_weight <= 0.0:
+        return total
+    return total / total_weight
+
+
+def _decoded_pose_terms(
+    torch: Any,
+    prediction: Any,
+    target: Any,
+    target_mask: Any,
+    raw_features: Any,
+    *,
+    decoded_reference_points: Any | None = None,
+    decoded_reference_masks: Any | None = None,
+    surrogate_indices: SurrogateFeatureIndices,
+    target_names: Sequence[str],
+) -> dict[str, Any]:
     prediction_points = _upper_body_surrogate_points(
         torch,
         prediction,
@@ -849,14 +1050,164 @@ def _surrogate_position_loss(
         surrogate_indices=surrogate_indices,
         target_names=target_names,
     )
-    target_points = _upper_body_surrogate_points(
-        torch,
-        target,
-        raw_features,
-        surrogate_indices=surrogate_indices,
-        target_names=target_names,
+    target_points = (
+        decoded_reference_points
+        if decoded_reference_points is not None
+        else _upper_body_surrogate_points(
+            torch,
+            target,
+            raw_features,
+            surrogate_indices=surrogate_indices,
+            target_names=target_names,
+        )
     )
-    return ((prediction_points - target_points) ** 2).mean()
+    left_hand = _feature_position(raw_features, surrogate_indices.left_hand)
+    right_hand = _feature_position(raw_features, surrogate_indices.right_hand)
+    upper_arm = raw_features[:, surrogate_indices.upper_arm]
+    lower_arm = raw_features[:, surrogate_indices.lower_arm]
+
+    left_shoulder_mask = _decoded_joint_mask(target_mask, target_names, "left", "shoulder")
+    right_shoulder_mask = _decoded_joint_mask(target_mask, target_names, "right", "shoulder")
+    left_elbow_mask = _decoded_joint_mask(target_mask, target_names, "left", "elbow")
+    right_elbow_mask = _decoded_joint_mask(target_mask, target_names, "right", "elbow")
+    if decoded_reference_masks is not None:
+        left_shoulder_mask = left_shoulder_mask * decoded_reference_masks[:, 1]
+        right_shoulder_mask = right_shoulder_mask * decoded_reference_masks[:, 2]
+        left_elbow_mask = left_elbow_mask * decoded_reference_masks[:, 3]
+        right_elbow_mask = right_elbow_mask * decoded_reference_masks[:, 4]
+
+    shoulder_mse = _average_losses(
+        torch,
+        (
+            _masked_point_mse(prediction_points[:, 1], target_points[:, 1], left_shoulder_mask),
+            _masked_point_mse(prediction_points[:, 2], target_points[:, 2], right_shoulder_mask),
+        ),
+    )
+    elbow_mse = _average_losses(
+        torch,
+        (
+            _masked_point_mse(prediction_points[:, 3], target_points[:, 3], left_elbow_mask),
+            _masked_point_mse(prediction_points[:, 4], target_points[:, 4], right_elbow_mask),
+        ),
+    )
+    arm_direction_mse = _average_losses(
+        torch,
+        (
+            _masked_direction_mse(
+                torch,
+                prediction_points[:, 3] - prediction_points[:, 1],
+                target_points[:, 3] - target_points[:, 1],
+                left_elbow_mask,
+            ),
+            _masked_direction_mse(
+                torch,
+                left_hand - prediction_points[:, 3],
+                left_hand - target_points[:, 3],
+                left_elbow_mask,
+            ),
+            _masked_direction_mse(
+                torch,
+                prediction_points[:, 4] - prediction_points[:, 2],
+                target_points[:, 4] - target_points[:, 2],
+                right_elbow_mask,
+            ),
+            _masked_direction_mse(
+                torch,
+                right_hand - prediction_points[:, 4],
+                right_hand - target_points[:, 4],
+                right_elbow_mask,
+            ),
+        ),
+    )
+    stretch_mse = _average_losses(
+        torch,
+        (
+            _decoded_stretch_loss(
+                torch,
+                shoulder=prediction_points[:, 1],
+                elbow=prediction_points[:, 3],
+                hand=left_hand,
+                upper_arm=upper_arm,
+                lower_arm=lower_arm,
+                mask=left_elbow_mask,
+            ),
+            _decoded_stretch_loss(
+                torch,
+                shoulder=prediction_points[:, 2],
+                elbow=prediction_points[:, 4],
+                hand=right_hand,
+                upper_arm=upper_arm,
+                lower_arm=lower_arm,
+                mask=right_elbow_mask,
+            ),
+        ),
+    )
+    return {
+        "shoulder_mse": shoulder_mse,
+        "elbow_mse": elbow_mse,
+        "arm_direction_mse": arm_direction_mse,
+        "stretch_mse": stretch_mse,
+        "position_mse": _average_losses(torch, (shoulder_mse, elbow_mse)),
+    }
+
+
+def _decoded_joint_mask(
+    target_mask: Any,
+    target_names: Sequence[str],
+    side: Literal["left", "right"],
+    joint: Literal["shoulder", "elbow"],
+) -> Any:
+    if joint == "shoulder":
+        columns = (
+            f"{side}_shoulder_lateral_delta",
+            f"{side}_shoulder_elevation",
+            f"{side}_shoulder_protraction",
+        )
+    else:
+        columns = (f"{side}_elbow_swivel_sin", f"{side}_elbow_swivel_cos")
+    joint_mask = target_mask[:, _target_index(target_names, columns[0])]
+    for name in columns[1:]:
+        joint_mask = joint_mask * target_mask[:, _target_index(target_names, name)]
+    if joint == "elbow":
+        joint_mask = joint_mask * _decoded_joint_mask(target_mask, target_names, side, "shoulder")
+    return joint_mask
+
+
+def _average_losses(torch: Any, losses: Sequence[Any]) -> Any:
+    if not losses:
+        return torch.zeros(())
+    total = losses[0]
+    for loss in losses[1:]:
+        total = total + loss
+    return total / max(1, len(losses))
+
+
+def _masked_point_mse(prediction: Any, target: Any, mask: Any) -> Any:
+    distance_squared = ((prediction - target) ** 2).sum(dim=1)
+    return (distance_squared * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def _masked_direction_mse(torch: Any, prediction: Any, target: Any, mask: Any) -> Any:
+    prediction_direction = _torch_normalize(torch, prediction, fallback=(0.0, 1.0, 0.0))
+    target_direction = _torch_normalize(torch, target, fallback=(0.0, 1.0, 0.0))
+    direction_error = ((prediction_direction - target_direction) ** 2).sum(dim=1)
+    return (direction_error * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def _decoded_stretch_loss(
+    torch: Any,
+    *,
+    shoulder: Any,
+    elbow: Any,
+    hand: Any,
+    upper_arm: Any,
+    lower_arm: Any,
+    mask: Any,
+) -> Any:
+    upper_error = torch.linalg.vector_norm(elbow - shoulder, dim=1) - upper_arm
+    lower_error = torch.linalg.vector_norm(hand - elbow, dim=1) - lower_arm
+    stretch_error = upper_error * upper_error + lower_error * lower_error
+    return (stretch_error * mask).sum() / mask.sum().clamp_min(1.0)
 
 
 def _surrogate_velocity_loss(
@@ -967,8 +1318,11 @@ def _surrogate_validation_metrics(
     torch: Any,
     prediction: Any,
     target: Any,
+    target_mask: Any,
     raw_features: Any,
     *,
+    decoded_reference_points: Any | None,
+    decoded_reference_masks: Any | None,
     feature_names: Sequence[str],
     target_names: Sequence[str],
 ) -> dict[str, float]:
@@ -990,6 +1344,17 @@ def _surrogate_validation_metrics(
             surrogate_indices=surrogate_indices,
             target_names=target_names,
         )
+        terms = _decoded_pose_terms(
+            torch,
+            prediction,
+            target,
+            target_mask,
+            raw_features,
+            decoded_reference_points=decoded_reference_points,
+            decoded_reference_masks=decoded_reference_masks,
+            surrogate_indices=surrogate_indices,
+            target_names=target_names,
+        )
         position_mse = float(((prediction_points - target_points) ** 2).mean().detach().cpu())
         if prediction_points.shape[0] > 1:
             prediction_delta = prediction_points[1:] - prediction_points[:-1]
@@ -1000,6 +1365,11 @@ def _surrogate_validation_metrics(
     return {
         "validation_surrogate_position_mse": position_mse,
         "validation_surrogate_velocity_mse": velocity_mse,
+        "validation_decoded_position_mse": float(terms["position_mse"].detach().cpu()),
+        "validation_decoded_shoulder_mse": float(terms["shoulder_mse"].detach().cpu()),
+        "validation_decoded_elbow_mse": float(terms["elbow_mse"].detach().cpu()),
+        "validation_decoded_arm_direction_mse": float(terms["arm_direction_mse"].detach().cpu()),
+        "validation_decoded_stretch_mse": float(terms["stretch_mse"].detach().cpu()),
     }
 
 
@@ -1197,14 +1567,15 @@ def _feature_position(raw_features: Any, indices: tuple[int, int, int]) -> Any:
 def _surrogate_feature_indices(
     feature_names: Sequence[str],
 ) -> SurrogateFeatureIndices | None:
+    center_prefix = "t+00" if "t+00_head_position_y" in feature_names else "t+000"
     required = (
-        "t+000_head_position_y",
-        "t+000_left_hand_position_x",
-        "t+000_left_hand_position_y",
-        "t+000_left_hand_position_z",
-        "t+000_right_hand_position_x",
-        "t+000_right_hand_position_y",
-        "t+000_right_hand_position_z",
+        f"{center_prefix}_head_position_y",
+        f"{center_prefix}_left_hand_position_x",
+        f"{center_prefix}_left_hand_position_y",
+        f"{center_prefix}_left_hand_position_z",
+        f"{center_prefix}_right_hand_position_x",
+        f"{center_prefix}_right_hand_position_y",
+        f"{center_prefix}_right_hand_position_z",
         "calibration_shoulder_width_m",
         "calibration_upper_arm_m",
         "calibration_lower_arm_m",
@@ -1213,16 +1584,16 @@ def _surrogate_feature_indices(
     if not all(name in feature_names for name in required):
         return None
     return SurrogateFeatureIndices(
-        head_y=feature_names.index("t+000_head_position_y"),
+        head_y=feature_names.index(f"{center_prefix}_head_position_y"),
         left_hand=(
-            feature_names.index("t+000_left_hand_position_x"),
-            feature_names.index("t+000_left_hand_position_y"),
-            feature_names.index("t+000_left_hand_position_z"),
+            feature_names.index(f"{center_prefix}_left_hand_position_x"),
+            feature_names.index(f"{center_prefix}_left_hand_position_y"),
+            feature_names.index(f"{center_prefix}_left_hand_position_z"),
         ),
         right_hand=(
-            feature_names.index("t+000_right_hand_position_x"),
-            feature_names.index("t+000_right_hand_position_y"),
-            feature_names.index("t+000_right_hand_position_z"),
+            feature_names.index(f"{center_prefix}_right_hand_position_x"),
+            feature_names.index(f"{center_prefix}_right_hand_position_y"),
+            feature_names.index(f"{center_prefix}_right_hand_position_z"),
         ),
         shoulder_width=feature_names.index("calibration_shoulder_width_m"),
         upper_arm=feature_names.index("calibration_upper_arm_m"),

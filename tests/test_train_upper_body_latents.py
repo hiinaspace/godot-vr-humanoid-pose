@@ -74,6 +74,76 @@ def test_residual_mlp_smoke_learns_correction_over_heuristic(tmp_path) -> None:
     )
 
 
+def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
+    torch = pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import (
+        _decoded_pose_loss,
+        _surrogate_feature_indices,
+    )
+
+    feature_names = [
+        "t+00_head_position_y",
+        "t+00_left_hand_position_x",
+        "t+00_left_hand_position_y",
+        "t+00_left_hand_position_z",
+        "t+00_right_hand_position_x",
+        "t+00_right_hand_position_y",
+        "t+00_right_hand_position_z",
+        "calibration_shoulder_width_m",
+        "calibration_upper_arm_m",
+        "calibration_lower_arm_m",
+        "calibration_arm_length_m",
+    ]
+    raw_features = torch.tensor(
+        [[1.60, 0.42, 1.20, 0.12, -0.42, 1.20, 0.12, 0.40, 0.30, 0.25, 0.55]],
+        dtype=torch.float32,
+    )
+    target = torch.zeros((1, len(TARGET_NAMES)), dtype=torch.float32)
+    for name in ("torso_heading_cos", "left_elbow_swivel_cos", "right_elbow_swivel_cos"):
+        target[:, TARGET_NAMES.index(name)] = 1.0
+    prediction = target.clone()
+    perturbed = target.clone()
+    perturbed[:, TARGET_NAMES.index("left_shoulder_elevation")] = 0.5
+    masks = torch.ones_like(target)
+    surrogate_indices = _surrogate_feature_indices(feature_names)
+    assert surrogate_indices is not None
+
+    matching_loss = _decoded_pose_loss(
+        torch,
+        prediction,
+        target,
+        masks,
+        raw_features,
+        decoded_reference_points=None,
+        decoded_reference_masks=None,
+        surrogate_indices=surrogate_indices,
+        target_names=TARGET_NAMES,
+        shoulder_weight=1.0,
+        elbow_weight=1.0,
+        arm_direction_weight=1.0,
+        stretch_weight=1.0,
+    )
+    perturbed_loss = _decoded_pose_loss(
+        torch,
+        perturbed,
+        target,
+        masks,
+        raw_features,
+        decoded_reference_points=None,
+        decoded_reference_masks=None,
+        surrogate_indices=surrogate_indices,
+        target_names=TARGET_NAMES,
+        shoulder_weight=1.0,
+        elbow_weight=1.0,
+        arm_direction_weight=1.0,
+        stretch_weight=1.0,
+    )
+
+    assert float(matching_loss) == pytest.approx(0.0, abs=1e-6)
+    assert float(perturbed_loss) > 0.001
+
+
 def test_xgboost_cuda_smoke_when_available(tmp_path) -> None:
     if importlib.util.find_spec("xgboost") is None:
         pytest.skip("xgboost is not installed")
