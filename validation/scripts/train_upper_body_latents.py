@@ -12,9 +12,12 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import numpy as np
-import polars as pl
 
-from validation.vr_pose_validation.upper_body_ml import TARGET_GROUPS, TARGET_NAMES
+from validation.vr_pose_validation.upper_body_ml import (
+    TARGET_GROUPS,
+    TARGET_NAMES,
+    read_sparse_window_dataframe,
+)
 
 DEFAULT_DATASET_DIR = Path(".cache/ml/upper_body_windows")
 DEFAULT_OUTPUT_DIR = Path(".cache/ml/upper_body_models")
@@ -72,6 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--residual-regularization-weight", type=float, default=1e-3)
     parser.add_argument("--residual-scale", type=float, default=1.0)
     parser.add_argument("--residual-smoothing-alpha", type=float, default=1.0)
+    parser.add_argument("--residual-gate-search", action="store_true")
     parser.add_argument("--surrogate-position-weight", type=float, default=0.0)
     parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
     parser.add_argument("--temporal-acceleration-weight", type=float, default=0.0)
@@ -98,6 +102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         residual_regularization_weight=max(0.0, args.residual_regularization_weight),
         residual_scale=max(0.0, args.residual_scale),
         residual_smoothing_alpha=min(max(0.0, args.residual_smoothing_alpha), 1.0),
+        residual_gate_search=args.residual_gate_search,
         surrogate_position_weight=max(0.0, args.surrogate_position_weight),
         temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
         temporal_acceleration_weight=max(0.0, args.temporal_acceleration_weight),
@@ -123,6 +128,7 @@ def train_upper_body_latents(
     residual_regularization_weight: float = 1e-3,
     residual_scale: float = 1.0,
     residual_smoothing_alpha: float = 1.0,
+    residual_gate_search: bool = False,
     surrogate_position_weight: float = 0.0,
     temporal_velocity_weight: float = 0.0,
     temporal_acceleration_weight: float = 0.0,
@@ -151,6 +157,7 @@ def train_upper_body_latents(
         "residual_regularization_weight": residual_regularization_weight,
         "residual_scale": residual_scale,
         "residual_smoothing_alpha": residual_smoothing_alpha,
+        "residual_gate_search": residual_gate_search,
         "surrogate_position_weight": surrogate_position_weight,
         "temporal_velocity_weight": temporal_velocity_weight,
         "temporal_acceleration_weight": temporal_acceleration_weight,
@@ -226,6 +233,7 @@ def train_upper_body_latents(
                 residual_regularization_weight=residual_regularization_weight,
                 residual_scale=residual_scale,
                 residual_smoothing_alpha=residual_smoothing_alpha,
+                residual_gate_search=residual_gate_search,
                 surrogate_position_weight=surrogate_position_weight,
                 temporal_velocity_weight=temporal_velocity_weight,
                 temporal_acceleration_weight=temporal_acceleration_weight,
@@ -239,18 +247,17 @@ def train_upper_body_latents(
 
 def load_dataset(dataset_dir: Path) -> LoadedDataset:
     schema_path = dataset_dir / "schema.json"
-    windows_path = dataset_dir / "windows.parquet"
-    if not schema_path.exists() or not windows_path.exists():
+    if not schema_path.exists():
         raise FileNotFoundError(
             f"Expected sparse-window dataset at {dataset_dir}; run build_sparse_window_dataset"
         )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     feature_names = [str(name) for name in schema["feature_names"]]
     target_names = [str(name) for name in schema.get("target_names", TARGET_NAMES)]
-    dataframe = pl.read_parquet(windows_path)
+    dataframe = read_sparse_window_dataframe(dataset_dir)
     if dataframe.is_empty():
-        raise ValueError(f"No training rows found in {windows_path}")
-    features = np.asarray(dataframe["features"].to_list(), dtype=np.float32)
+        raise ValueError(f"No training rows found in {dataset_dir}")
+    features = _feature_matrix(dataframe["features"].to_numpy())
     targets = np.asarray(
         dataframe.select(target_names).to_numpy(),
         dtype=np.float32,
@@ -290,6 +297,12 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
         feature_names=feature_names,
         target_names=target_names,
     )
+
+
+def _feature_matrix(values: np.ndarray) -> np.ndarray:
+    if values.size == 0:
+        return np.empty((0, 0), dtype=np.float32)
+    return np.vstack(cast(Sequence[Any], values)).astype(np.float32, copy=False)
 
 
 def split_masks(
@@ -368,6 +381,7 @@ def _train_torch_model(
     residual_regularization_weight: float,
     residual_scale: float,
     residual_smoothing_alpha: float,
+    residual_gate_search: bool,
     surrogate_position_weight: float,
     temporal_velocity_weight: float,
     temporal_acceleration_weight: float,
@@ -510,9 +524,32 @@ def _train_torch_model(
     inference_start = time.perf_counter()
     with torch.no_grad():
         validation_raw_tensor = model(x_val)
-        validation_predictions_tensor = _compose_torch_latents(
+        residual_gates = (
+            _fit_residual_gates(
+                torch,
+                validation_raw_tensor,
+                h_val,
+                y_val,
+                effective_m_val,
+                raw_x_val,
+                prediction_mode=prediction_mode,
+                residual_scale=residual_scale,
+                target_names=target_names,
+                feature_names=feature_names,
+                surrogate_position_weight=surrogate_position_weight,
+            )
+            if residual_gate_search and prediction_mode == "residual"
+            else {name: 1.0 for name in target_names}
+        )
+        gated_validation_raw_tensor = _apply_residual_gates(
             torch,
             validation_raw_tensor,
+            residual_gates,
+            target_names,
+        )
+        validation_predictions_tensor = _compose_torch_latents(
+            torch,
+            gated_validation_raw_tensor,
             h_val,
             prediction_mode=prediction_mode,
             residual_scale=residual_scale,
@@ -540,6 +577,7 @@ def _train_torch_model(
             "prediction_mode": prediction_mode,
             "residual_scale": residual_scale,
             "residual_smoothing_alpha": residual_smoothing_alpha,
+            "residual_gates": residual_gates,
             "model_state_dict": model.state_dict(),
             "feature_names": list(feature_names),
             "target_names": list(target_names),
@@ -559,6 +597,7 @@ def _train_torch_model(
         "prediction_mode": prediction_mode,
         "residual_scale": residual_scale,
         "residual_smoothing_alpha": residual_smoothing_alpha,
+        "residual_gates": residual_gates,
         **extra_metrics,
         **_metric_dict(
             targets[validation_mask],
@@ -692,6 +731,106 @@ def _normalize_torch_latent_pairs(
         columns[sin_index] = columns[sin_index] / magnitude
         columns[cos_index] = columns[cos_index] / magnitude
     return torch.stack(columns, dim=1)
+
+
+def _fit_residual_gates(
+    torch: Any,
+    raw_prediction: Any,
+    heuristic: Any,
+    target: Any,
+    mask: Any,
+    raw_features: Any,
+    *,
+    prediction_mode: Literal["absolute", "residual"],
+    residual_scale: float,
+    target_names: Sequence[str],
+    feature_names: Sequence[str],
+    surrogate_position_weight: float,
+) -> dict[str, float]:
+    if prediction_mode != "residual":
+        return {name: 1.0 for name in target_names}
+
+    gates = {name: 1.0 for name in target_names}
+    grid = (0.0, 0.1, 0.25, 0.5, 0.75, 1.0)
+    for _pass in range(2):
+        for group_targets in TARGET_GROUPS.values():
+            best_gate = 1.0
+            best_loss = float("inf")
+            for candidate in grid:
+                candidate_gates = dict(gates)
+                for name in group_targets:
+                    if name in candidate_gates:
+                        candidate_gates[name] = candidate
+                gated_raw = _apply_residual_gates(
+                    torch,
+                    raw_prediction,
+                    candidate_gates,
+                    target_names,
+                )
+                prediction = _compose_torch_latents(
+                    torch,
+                    gated_raw,
+                    heuristic,
+                    prediction_mode=prediction_mode,
+                    residual_scale=residual_scale,
+                    target_names=target_names,
+                )
+                loss = _residual_gate_loss(
+                    torch,
+                    prediction,
+                    target,
+                    mask,
+                    raw_features,
+                    feature_names=feature_names,
+                    target_names=target_names,
+                    surrogate_position_weight=surrogate_position_weight,
+                )
+                if loss < best_loss:
+                    best_loss = loss
+                    best_gate = candidate
+            for name in group_targets:
+                if name in gates:
+                    gates[name] = best_gate
+    return gates
+
+
+def _residual_gate_loss(
+    torch: Any,
+    prediction: Any,
+    target: Any,
+    mask: Any,
+    raw_features: Any,
+    *,
+    feature_names: Sequence[str],
+    target_names: Sequence[str],
+    surrogate_position_weight: float,
+) -> float:
+    loss = _masked_mse(torch, prediction, target, mask)
+    surrogate_indices = _surrogate_feature_indices(feature_names)
+    if surrogate_indices is not None and surrogate_position_weight > 0.0:
+        loss = loss + surrogate_position_weight * _surrogate_position_loss(
+            torch,
+            prediction,
+            target,
+            raw_features,
+            surrogate_indices=surrogate_indices,
+            target_names=target_names,
+        )
+    return float(loss.detach().cpu())
+
+
+def _apply_residual_gates(
+    torch: Any,
+    raw_prediction: Any,
+    residual_gates: Mapping[str, float],
+    target_names: Sequence[str],
+) -> Any:
+    gate_vector = torch.tensor(
+        [float(residual_gates.get(name, 1.0)) for name in target_names],
+        dtype=raw_prediction.dtype,
+        device=raw_prediction.device,
+    )
+    return raw_prediction * gate_vector[None, :]
 
 
 def _surrogate_position_loss(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -26,6 +27,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--window-size", type=int, default=40)
     parser.add_argument("--stride", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=max(1, min(os.cpu_count() or 1, 16)))
+    parser.add_argument(
+        "--shard-rows",
+        type=int,
+        default=50_000,
+        help="Write window rows in Parquet shards instead of one in-memory file.",
+    )
     parser.add_argument("--max-clips", type=int)
     parser.add_argument("--subjects", nargs="*")
     parser.add_argument("--holdout-folds", type=int, default=5)
@@ -76,6 +84,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         holdout_folds=max(2, args.holdout_folds),
         environment_splits=cast(tuple[EnvironmentSplit, ...], tuple(args.environment_split)),
         activity_classes=cast(tuple[ActivityClass, ...], tuple(args.activity_class)),
+        workers=max(1, args.workers),
+        shard_rows=max(0, args.shard_rows),
     )
     summary = build_sparse_window_dataset(
         cache_dir=args.cache_dir,

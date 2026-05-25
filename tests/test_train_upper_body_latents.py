@@ -61,11 +61,13 @@ def test_residual_mlp_smoke_learns_correction_over_heuristic(tmp_path) -> None:
         allow_cpu=True,
         seed=1,
         residual_regularization_weight=1e-4,
+        residual_gate_search=True,
     )
     leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
     leaderboard = {row["model"]: row for row in leaderboard_rows}
 
     assert leaderboard["torch_residual_mlp"]["prediction_mode"] == "residual"
+    assert "residual_gates" in leaderboard["torch_residual_mlp"]
     assert _metric(leaderboard["torch_residual_mlp"], "validation_mae") < _metric(
         leaderboard["heuristic_estimator"],
         "validation_mae",

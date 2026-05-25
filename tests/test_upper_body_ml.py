@@ -65,6 +65,33 @@ def test_sparse_window_export_writes_causal_rows_and_heuristic_latents(tmp_path)
     assert "left_shoulder_elevation" in rows[0]
 
 
+def test_sparse_window_export_writes_loadable_shards(tmp_path) -> None:
+    from validation.scripts.train_upper_body_latents import load_dataset
+
+    cache_dir = tmp_path / "cache"
+    _write_clip(cache_dir / "subject=01" / "01_01.parquet", subject="01", clip="01_01")
+    _write_clip(cache_dir / "subject=03" / "03_01.parquet", subject="03", clip="03_01")
+    output_dir = tmp_path / "ml"
+
+    summary = build_sparse_window_dataset(
+        cache_dir=cache_dir,
+        output_dir=output_dir,
+        config=SparseWindowConfig(
+            window_size=3,
+            stride=2,
+            holdout_folds=3,
+            shard_rows=1,
+        ),
+    )
+    dataset = load_dataset(output_dir)
+
+    assert summary.windows == 4
+    assert summary.shards == 2
+    assert not (output_dir / "windows.parquet").exists()
+    assert (output_dir / "windows_shards").exists()
+    assert dataset.features.shape[0] == 4
+
+
 def test_rotation6d_is_independent_of_quaternion_sign() -> None:
     rotation = look_rotation((0.0, 0.0, 1.0))
     negated = cast(tuple[float, float, float, float], tuple(-value for value in rotation))

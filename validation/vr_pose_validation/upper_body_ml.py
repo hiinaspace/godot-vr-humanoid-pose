@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Iterable, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field
 from hashlib import sha1
 from math import isfinite, sqrt
@@ -126,6 +128,8 @@ class SparseWindowConfig:
     holdout_folds: int = 5
     environment_splits: tuple[EnvironmentSplit, ...] = ("flat",)
     activity_classes: tuple[ActivityClass, ...] = DEFAULT_CLEAN_ACTIVITY_CLASSES
+    workers: int = 1
+    shard_rows: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +144,8 @@ class SparseWindowExportSummary:
     window_size: int
     stride: int
     estimator_name: str
+    workers: int
+    shards: int
     total_seconds: float
 
 
@@ -201,6 +207,7 @@ class TorchUpperBodyLatentProvider:
     _prediction_mode: str = field(default="absolute", init=False)
     _residual_scale: float = field(default=1.0, init=False)
     _residual_smoothing_alpha: float = field(default=1.0, init=False)
+    _residual_gates: dict[str, float] = field(default_factory=dict, init=False)
     _smoothed_residuals: dict[str, float] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
@@ -212,6 +219,9 @@ class TorchUpperBodyLatentProvider:
         self._prediction_mode = str(artifact.get("prediction_mode", "absolute"))
         self._residual_scale = float(artifact.get("residual_scale", 1.0))
         self._residual_smoothing_alpha = float(artifact.get("residual_smoothing_alpha", 1.0))
+        self._residual_gates = {
+            str(name): float(value) for name, value in artifact.get("residual_gates", {}).items()
+        }
         self._model = _make_torch_provider_model(
             torch,
             model_name=str(artifact["model_name"]),
@@ -257,6 +267,10 @@ class TorchUpperBodyLatentProvider:
             )
             prediction = self._model(tensor).detach().cpu().numpy()[0]
         values = {name: float(prediction[index]) for index, name in enumerate(self._target_names)}
+        if self._prediction_mode == "residual" and self._residual_gates:
+            values = {
+                name: value * self._residual_gates.get(name, 1.0) for name, value in values.items()
+            }
         if self._prediction_mode == "residual" and self._residual_smoothing_alpha < 1.0:
             values = self._smooth_residuals(values)
         return UpperBodyLatentPrediction(
@@ -340,27 +354,59 @@ def build_sparse_window_dataset(
     if max_clips is not None:
         paths = paths[:max_clips]
 
-    rows: list[dict[str, object]] = []
     feature_names = feature_schema(effective_config.window_size)
+    workers = max(1, effective_config.workers)
+    shard_rows = max(0, effective_config.shard_rows)
     clips_exported = 0
-    for path in paths:
-        clip_rows = _export_clip_windows(path, effective_config, feature_names)
-        if clip_rows:
-            clips_exported += 1
-            rows.extend(clip_rows)
+    total_windows = 0
+    shards = 0
+    rows: list[dict[str, object]] = []
+    pending_rows: list[dict[str, object]] = []
+    shard_dir = output_dir / "windows_shards"
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    windows_path = output_dir / "windows.parquet"
-    if rows:
-        pl.DataFrame(rows).write_parquet(windows_path, compression="zstd")
-    else:
-        _empty_windows_frame(feature_names).write_parquet(windows_path, compression="zstd")
+    if shard_rows > 0 and shard_dir.exists():
+        shutil.rmtree(shard_dir)
 
+    for clip_rows in _iter_clip_window_rows(paths, effective_config, feature_names):
+        if clip_rows:
+            clips_exported += 1
+            total_windows += len(clip_rows)
+            if shard_rows > 0:
+                pending_rows.extend(clip_rows)
+                if len(pending_rows) >= shard_rows:
+                    shards += _write_window_shard(
+                        shard_dir,
+                        pending_rows,
+                        shard_index=shards,
+                    )
+                    pending_rows.clear()
+            else:
+                rows.extend(clip_rows)
+
+    if shard_rows > 0 and pending_rows:
+        shards += _write_window_shard(shard_dir, pending_rows, shard_index=shards)
+        pending_rows.clear()
+
+    windows_path = output_dir / "windows.parquet"
+    if shard_rows <= 0 and rows:
+        pl.DataFrame(rows).write_parquet(windows_path, compression="zstd")
+    elif total_windows == 0:
+        if shard_dir.exists():
+            shutil.rmtree(shard_dir)
+        shards = 0
+        _empty_windows_frame(feature_names).write_parquet(windows_path, compression="zstd")
+    else:
+        if windows_path.exists():
+            windows_path.unlink()
+
+    wrote_shards = shard_rows > 0 and total_windows > 0
     schemas = {
         "feature_names": feature_names,
         "target_names": list(TARGET_NAMES),
         "mask_names": list(MASK_NAMES),
         "target_groups": {key: list(value) for key, value in TARGET_GROUPS.items()},
+        "windows_path": "windows_shards/*.parquet" if wrote_shards else "windows.parquet",
         "config": asdict(effective_config),
     }
     (output_dir / "schema.json").write_text(
@@ -373,12 +419,14 @@ def build_sparse_window_dataset(
         output_dir=output_dir.as_posix(),
         clips_seen=len(paths),
         clips_exported=clips_exported,
-        windows=len(rows),
+        windows=total_windows,
         feature_count=len(feature_names),
         target_count=len(TARGET_NAMES),
         window_size=effective_config.window_size,
         stride=effective_config.stride,
         estimator_name=effective_config.estimator_name,
+        workers=workers,
+        shards=shards,
         total_seconds=perf_counter() - start,
     )
     (output_dir / "manifest.json").write_text(
@@ -386,6 +434,55 @@ def build_sparse_window_dataset(
         encoding="utf-8",
     )
     return summary
+
+
+def _iter_clip_window_rows(
+    paths: Sequence[Path],
+    config: SparseWindowConfig,
+    feature_names: Sequence[str],
+) -> Iterable[list[dict[str, object]]]:
+    workers = max(1, config.workers)
+    if workers == 1:
+        for path in paths:
+            yield _export_clip_windows(path, config, feature_names)
+        return
+
+    jobs = [(path, config, tuple(feature_names)) for path in paths]
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        yield from executor.map(_export_clip_windows_job, jobs)
+
+
+def _export_clip_windows_job(
+    job: tuple[Path, SparseWindowConfig, tuple[str, ...]],
+) -> list[dict[str, object]]:
+    path, config, feature_names = job
+    return _export_clip_windows(path, config, feature_names)
+
+
+def _write_window_shard(
+    shard_dir: Path,
+    rows: Sequence[dict[str, object]],
+    *,
+    shard_index: int,
+) -> int:
+    if not rows:
+        return 0
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    shard_path = shard_dir / f"part-{shard_index:05d}.parquet"
+    pl.DataFrame(rows).write_parquet(shard_path, compression="zstd")
+    return 1
+
+
+def read_sparse_window_dataframe(dataset_dir: Path) -> pl.DataFrame:
+    windows_path = dataset_dir / "windows.parquet"
+    if windows_path.exists():
+        return pl.read_parquet(windows_path)
+    shard_dir = dataset_dir / "windows_shards"
+    if shard_dir.exists():
+        return pl.read_parquet(str(shard_dir / "*.parquet"))
+    raise FileNotFoundError(
+        f"Expected sparse-window dataset at {dataset_dir}; run build_sparse_window_dataset"
+    )
 
 
 def feature_schema(window_size: int) -> list[str]:

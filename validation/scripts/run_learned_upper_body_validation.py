@@ -27,6 +27,7 @@ from validation.vr_pose_validation.upper_body_ml import (
     DEFAULT_CLEAN_ACTIVITY_CLASSES,
     LearnedUpperBodyEstimator,
     TorchUpperBodyLatentProvider,
+    read_sparse_window_dataframe,
 )
 
 DEFAULT_CACHE_DIR = Path(".cache/cmu/parquet/canonical_full")
@@ -251,10 +252,7 @@ def _filtered_paths(
 
 
 def _dataset_split_clips(dataset_dir: Path, split: str) -> set[tuple[str, str]]:
-    windows_path = dataset_dir / "windows.parquet"
-    if not windows_path.exists():
-        raise FileNotFoundError(f"Expected sparse-window dataset at {windows_path}")
-    frame = pl.read_parquet(windows_path, columns=["subject", "clip", "split"])
+    frame = read_sparse_window_dataframe(dataset_dir).select("subject", "clip", "split")
     return {
         (str(row["subject"]), str(row["clip"]))
         for row in frame.filter(pl.col("split") == split)

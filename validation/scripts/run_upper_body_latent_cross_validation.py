@@ -54,6 +54,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--residual-regularization-weight", type=float, default=1e-3)
     parser.add_argument("--residual-scale", type=float, default=1.0)
     parser.add_argument("--residual-smoothing-alpha", type=float, default=1.0)
+    parser.add_argument("--residual-gate-search", action="store_true")
     parser.add_argument("--surrogate-position-weight", type=float, default=0.0)
     parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
     parser.add_argument("--temporal-acceleration-weight", type=float, default=0.0)
@@ -109,6 +110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         residual_regularization_weight=max(0.0, args.residual_regularization_weight),
         residual_scale=max(0.0, args.residual_scale),
         residual_smoothing_alpha=min(max(0.0, args.residual_smoothing_alpha), 1.0),
+        residual_gate_search=args.residual_gate_search,
         surrogate_position_weight=max(0.0, args.surrogate_position_weight),
         temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
         temporal_acceleration_weight=max(0.0, args.temporal_acceleration_weight),
@@ -139,6 +141,7 @@ def run_upper_body_latent_cross_validation(
     residual_regularization_weight: float = 1e-3,
     residual_scale: float = 1.0,
     residual_smoothing_alpha: float = 1.0,
+    residual_gate_search: bool = False,
     surrogate_position_weight: float = 0.0,
     temporal_velocity_weight: float = 0.0,
     temporal_acceleration_weight: float = 0.0,
@@ -174,6 +177,7 @@ def run_upper_body_latent_cross_validation(
             residual_regularization_weight=residual_regularization_weight,
             residual_scale=residual_scale,
             residual_smoothing_alpha=residual_smoothing_alpha,
+            residual_gate_search=residual_gate_search,
             surrogate_position_weight=surrogate_position_weight,
             temporal_velocity_weight=temporal_velocity_weight,
             temporal_acceleration_weight=temporal_acceleration_weight,
