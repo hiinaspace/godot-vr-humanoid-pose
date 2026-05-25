@@ -71,12 +71,12 @@ TARGET_NAMES = (
     "torso_heading_cos",
     "torso_lean_x",
     "torso_lean_z",
-    "left_shoulder_offset_x",
-    "left_shoulder_offset_y",
-    "left_shoulder_offset_z",
-    "right_shoulder_offset_x",
-    "right_shoulder_offset_y",
-    "right_shoulder_offset_z",
+    "left_shoulder_lateral_delta",
+    "left_shoulder_elevation",
+    "left_shoulder_protraction",
+    "right_shoulder_lateral_delta",
+    "right_shoulder_elevation",
+    "right_shoulder_protraction",
     "left_elbow_swivel_sin",
     "left_elbow_swivel_cos",
     "right_elbow_swivel_sin",
@@ -90,12 +90,12 @@ TARGET_GROUPS = {
         "torso_lean_z",
     ),
     "shoulder": (
-        "left_shoulder_offset_x",
-        "left_shoulder_offset_y",
-        "left_shoulder_offset_z",
-        "right_shoulder_offset_x",
-        "right_shoulder_offset_y",
-        "right_shoulder_offset_z",
+        "left_shoulder_lateral_delta",
+        "left_shoulder_elevation",
+        "left_shoulder_protraction",
+        "right_shoulder_lateral_delta",
+        "right_shoulder_elevation",
+        "right_shoulder_protraction",
     ),
     "elbow": (
         "left_elbow_swivel_sin",
@@ -105,6 +105,15 @@ TARGET_GROUPS = {
     ),
 }
 MASK_NAMES = tuple(f"{name}_mask" for name in TARGET_NAMES)
+STATIC_CALIBRATION_FEATURE_NAMES = (
+    "calibration_human_height_m",
+    "calibration_shoulder_width_m",
+    "calibration_upper_arm_m",
+    "calibration_lower_arm_m",
+    "calibration_arm_length_m",
+    "calibration_shoulder_width_to_height",
+    "calibration_arm_length_to_height",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,7 +231,7 @@ class TorchUpperBodyLatentProvider:
         calibration: AvatarCalibration,
         grounding: GroundingContext,
     ) -> UpperBodyLatentPrediction:
-        del calibration, grounding
+        del grounding
         self._history.append(sample)
         if len(self._history) > self.window_size:
             self._history = self._history[-self.window_size :]
@@ -232,7 +241,12 @@ class TorchUpperBodyLatentProvider:
                 masks={name: 0.0 for name in self._target_names},
             )
 
-        features = sparse_window_features(self._history, len(self._history) - 1, self.window_size)
+        features = sparse_window_features(
+            self._history,
+            len(self._history) - 1,
+            self.window_size,
+            calibration=calibration,
+        )
         normalized = [
             (value - mean) / scale
             for value, mean, scale in zip(features, self._mean, self._scale, strict=True)
@@ -290,7 +304,7 @@ class LearnedUpperBodyEstimator:
         base_pose = self.base_estimator.estimate(sample, calibration, grounding)
         prediction = self.latent_provider.predict(sample, calibration, grounding)
         if getattr(self.latent_provider, "prediction_mode", "absolute") == "residual":
-            base_latents = extract_upper_body_latents(pose_joints(base_pose))
+            base_latents = extract_upper_body_latents(pose_joints(base_pose), calibration)
             residual_scale = float(getattr(self.latent_provider, "residual_scale", 1.0))
             prediction = _combine_residual_prediction(
                 base_latents,
@@ -388,6 +402,7 @@ def feature_schema(window_size: int) -> list[str]:
             for component_index in range(6):
                 names.append(f"{prefix}_{role}_rotation6d_velocity_{component_index}")
             names.append(f"{prefix}_{role}_valid")
+    names.extend(STATIC_CALIBRATION_FEATURE_NAMES)
     return names
 
 
@@ -398,7 +413,10 @@ def split_for_subject(subject: str, holdout_folds: int) -> Literal["train", "val
     return "validation" if fold == 0 else "train"
 
 
-def extract_upper_body_latents(joints: Mapping[str, Transform]) -> UpperBodyLatents:
+def extract_upper_body_latents(
+    joints: Mapping[str, Transform],
+    calibration: AvatarCalibration | None = None,
+) -> UpperBodyLatents:
     values = {name: 0.0 for name in TARGET_NAMES}
     masks = {name: 0.0 for name in TARGET_NAMES}
     required = {
@@ -433,15 +451,20 @@ def extract_upper_body_latents(joints: Mapping[str, Transform]) -> UpperBodyLate
         masks["torso_lean_x"] = 1.0
         masks["torso_lean_z"] = 1.0
 
+    effective_calibration = calibration or AvatarCalibration()
     chest_basis = basis_from_rotation(joints["chest"].rotation)
     for side in ("left", "right"):
         shoulder_name = f"{side}_shoulder"
         shoulder_offset = subtract(joints[shoulder_name].position, joints["chest"].position)
         local = vector_to_basis(shoulder_offset, chest_basis)
-        for axis_name, value in zip(("x", "y", "z"), local, strict=True):
-            target = f"{side}_shoulder_offset_{axis_name}"
-            values[target] = value
-            masks[target] = 1.0
+        rest_local = _shoulder_rest_local(side, effective_calibration)
+        scale_m = _shoulder_control_scale(effective_calibration)
+        values[f"{side}_shoulder_lateral_delta"] = (local[0] - rest_local[0]) / scale_m
+        values[f"{side}_shoulder_elevation"] = (local[1] - rest_local[1]) / scale_m
+        values[f"{side}_shoulder_protraction"] = (local[2] - rest_local[2]) / scale_m
+        masks[f"{side}_shoulder_lateral_delta"] = 1.0
+        masks[f"{side}_shoulder_elevation"] = 1.0
+        masks[f"{side}_shoulder_protraction"] = 1.0
 
         swivel_sin, swivel_cos, valid = elbow_swivel_sin_cos(
             shoulder=joints[shoulder_name].position,
@@ -479,6 +502,84 @@ def basis_from_rotation(rotation: tuple[float, float, float, float]) -> Basis3:
 
 def vector_to_basis(vector: Vector3, basis: Basis3) -> Vector3:
     return (dot(vector, basis.right), dot(vector, basis.up), dot(vector, basis.forward))
+
+
+def calibration_feature_values(calibration: AvatarCalibration | None = None) -> list[float]:
+    effective_calibration = calibration or AvatarCalibration()
+    human_height = max(0.1, effective_calibration.human_height_m)
+    shoulder_width = _shoulder_width(effective_calibration)
+    upper_arm = _upper_arm_length(effective_calibration)
+    lower_arm = _lower_arm_length(effective_calibration)
+    arm_length = max(0.1, upper_arm + lower_arm)
+    return [
+        human_height,
+        shoulder_width,
+        upper_arm,
+        lower_arm,
+        arm_length,
+        shoulder_width / human_height,
+        arm_length / human_height,
+    ]
+
+
+def _shoulder_rest_local(
+    side: str,
+    calibration: AvatarCalibration,
+) -> Vector3:
+    chest = calibration.rest_pose.get("chest")
+    shoulder = calibration.rest_pose.get(f"{side}_shoulder")
+    if chest is not None and shoulder is not None:
+        return vector_to_basis(
+            subtract(shoulder.position, chest.position),
+            basis_from_rotation(chest.rotation),
+        )
+    return (_shoulder_side_sign(side) * _shoulder_width(calibration) * 0.5, 0.0, 0.0)
+
+
+def _shoulder_side_sign(side: str) -> float:
+    return 1.0 if side == "left" else -1.0
+
+
+def _shoulder_control_scale(calibration: AvatarCalibration) -> float:
+    return max(0.1, _upper_arm_length(calibration) + _lower_arm_length(calibration))
+
+
+def _shoulder_controls_to_local(
+    side: str,
+    values: Mapping[str, float],
+    *,
+    rest_local: Vector3,
+    scale_m: float,
+) -> Vector3:
+    return (
+        rest_local[0] + values[f"{side}_shoulder_lateral_delta"] * scale_m,
+        rest_local[1] + values[f"{side}_shoulder_elevation"] * scale_m,
+        rest_local[2] + values[f"{side}_shoulder_protraction"] * scale_m,
+    )
+
+
+def _shoulder_width(calibration: AvatarCalibration) -> float:
+    return _calibrated_length(
+        calibration,
+        ("shoulder_width", "left_shoulder_to_right_shoulder"),
+        calibration.human_height_m * 0.201,
+    )
+
+
+def _upper_arm_length(calibration: AvatarCalibration) -> float:
+    return _calibrated_length(
+        calibration,
+        ("upper_arm", "humerus"),
+        calibration.human_height_m * 0.174,
+    )
+
+
+def _lower_arm_length(calibration: AvatarCalibration) -> float:
+    return _calibrated_length(
+        calibration,
+        ("lower_arm", "forearm", "radius"),
+        calibration.human_height_m * 0.151,
+    )
 
 
 def local_position(position: Vector3, *, origin: Vector3, basis: Basis3) -> Vector3:
@@ -580,15 +681,18 @@ def apply_upper_body_latents(
     for side in ("left", "right"):
         shoulder_name = f"{side}_shoulder"
         if "chest" in joints and all(
-            _enabled(values, masks, f"{side}_shoulder_offset_{axis_name}", min_mask)
-            for axis_name in ("x", "y", "z")
+            _enabled(values, masks, f"{side}_shoulder_{control_name}", min_mask)
+            for control_name in ("lateral_delta", "elevation", "protraction")
         ):
             chest_transform = joints["chest"].transform
             chest_basis = basis_from_rotation(chest_transform.rotation)
-            local = (
-                values[f"{side}_shoulder_offset_x"],
-                values[f"{side}_shoulder_offset_y"],
-                values[f"{side}_shoulder_offset_z"],
+            rest_local = _shoulder_rest_local(side, calibration)
+            scale_m = _shoulder_control_scale(calibration)
+            local = _shoulder_controls_to_local(
+                side,
+                values,
+                rest_local=rest_local,
+                scale_m=scale_m,
             )
             shoulder_position = add(
                 add(chest_transform.position, scale(chest_basis.right, local[0])),
@@ -621,16 +725,8 @@ def apply_upper_body_latents(
             elbow_position = solve_two_bone_midpoint(
                 root=joints[shoulder_name].transform.position,
                 tip=joints[hand_name].transform.position,
-                root_to_mid_length=_calibrated_length(
-                    calibration,
-                    ("upper_arm", "humerus"),
-                    calibration.human_height_m * 0.174,
-                ),
-                mid_to_tip_length=_calibrated_length(
-                    calibration,
-                    ("lower_arm", "forearm", "radius"),
-                    calibration.human_height_m * 0.151,
-                ),
+                root_to_mid_length=_upper_arm_length(calibration),
+                mid_to_tip_length=_lower_arm_length(calibration),
                 bend_hint=bend_hint,
             )
             old_joint = joints.get(elbow_name, JointPose(Transform()))
@@ -721,12 +817,21 @@ def _export_clip_windows(
         grounding=grounding,
         estimator_name=config.estimator_name,
     )
-    target_latents = [extract_upper_body_latents(frame.joints) for frame in cached_frames]
-    heuristic_latents = [extract_upper_body_latents(pose_joints(pose)) for pose in estimated_poses]
+    target_latents = [
+        extract_upper_body_latents(frame.joints, calibration) for frame in cached_frames
+    ]
+    heuristic_latents = [
+        extract_upper_body_latents(pose_joints(pose), calibration) for pose in estimated_poses
+    ]
 
     rows: list[dict[str, object]] = []
     for center_index in range(config.window_size - 1, len(cached_frames), config.stride):
-        feature_vector = sparse_window_features(samples, center_index, config.window_size)
+        feature_vector = sparse_window_features(
+            samples,
+            center_index,
+            config.window_size,
+            calibration=calibration,
+        )
         if len(feature_vector) != len(feature_names):
             raise ValueError("Feature vector length does not match feature schema")
         row: dict[str, object] = {
@@ -756,6 +861,8 @@ def sparse_window_features(
     samples: Sequence[TrackedPoseSample],
     center_index: int,
     window_size: int,
+    *,
+    calibration: AvatarCalibration | None = None,
 ) -> list[float]:
     center_sample = samples[center_index]
     basis = yaw_basis_from_rotation(center_sample.hmd.transform.rotation)
@@ -791,6 +898,7 @@ def sparse_window_features(
             features.extend(rotation_velocity)
             features.append(1.0 if state.valid else 0.0)
             previous_by_role[role] = (position, rotation, timestamp)
+    features.extend(calibration_feature_values(calibration))
     return [float(value) if isfinite(float(value)) else 0.0 for value in features]
 
 

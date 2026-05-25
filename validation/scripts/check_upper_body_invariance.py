@@ -120,12 +120,12 @@ def _mirror_selected_target_delta(joints: Mapping[str, Transform]) -> float:
         "torso_heading_cos": original["torso_heading_cos"],
         "torso_lean_x": -original["torso_lean_x"],
         "torso_lean_z": original["torso_lean_z"],
-        "left_shoulder_offset_x": -original["right_shoulder_offset_x"],
-        "left_shoulder_offset_y": original["right_shoulder_offset_y"],
-        "left_shoulder_offset_z": original["right_shoulder_offset_z"],
-        "right_shoulder_offset_x": -original["left_shoulder_offset_x"],
-        "right_shoulder_offset_y": original["left_shoulder_offset_y"],
-        "right_shoulder_offset_z": original["left_shoulder_offset_z"],
+        "left_shoulder_lateral_delta": -original["right_shoulder_lateral_delta"],
+        "left_shoulder_elevation": original["right_shoulder_elevation"],
+        "left_shoulder_protraction": original["right_shoulder_protraction"],
+        "right_shoulder_lateral_delta": -original["left_shoulder_lateral_delta"],
+        "right_shoulder_elevation": original["left_shoulder_elevation"],
+        "right_shoulder_protraction": original["left_shoulder_protraction"],
     }
     return max(abs(mirrored[name] - value) for name, value in expected.items())
 

@@ -652,6 +652,10 @@ class SurrogateFeatureIndices:
     head_y: int
     left_hand: tuple[int, int, int]
     right_hand: tuple[int, int, int]
+    shoulder_width: int
+    upper_arm: int
+    lower_arm: int
+    arm_length: int
 
 
 def _is_residual_model(model_name: TorchModelName) -> bool:
@@ -883,6 +887,10 @@ def _upper_body_surrogate_points(
     forward = torch.stack((heading_sin, zeros, heading_cos), dim=1)
     right = torch.stack((heading_cos, zeros, -heading_sin), dim=1)
     up = torch.stack((zeros, ones, zeros), dim=1)
+    shoulder_width = raw_features[:, surrogate_indices.shoulder_width]
+    upper_arm = raw_features[:, surrogate_indices.upper_arm]
+    lower_arm = raw_features[:, surrogate_indices.lower_arm]
+    arm_length = raw_features[:, surrogate_indices.arm_length].clamp_min(0.1)
 
     left_shoulder = _surrogate_shoulder(
         latents,
@@ -892,6 +900,8 @@ def _upper_body_surrogate_points(
         right=right,
         up=up,
         forward=forward,
+        shoulder_width=shoulder_width,
+        arm_length=arm_length,
     )
     right_shoulder = _surrogate_shoulder(
         latents,
@@ -901,6 +911,8 @@ def _upper_body_surrogate_points(
         right=right,
         up=up,
         forward=forward,
+        shoulder_width=shoulder_width,
+        arm_length=arm_length,
     )
     left_hand = _feature_position(raw_features, surrogate_indices.left_hand)
     right_hand = _feature_position(raw_features, surrogate_indices.right_hand)
@@ -911,6 +923,8 @@ def _upper_body_surrogate_points(
         side="left",
         shoulder=left_shoulder,
         hand=left_hand,
+        upper_arm=upper_arm,
+        lower_arm=lower_arm,
     )
     right_elbow = _surrogate_elbow(
         torch,
@@ -919,6 +933,8 @@ def _upper_body_surrogate_points(
         side="right",
         shoulder=right_shoulder,
         hand=right_hand,
+        upper_arm=upper_arm,
+        lower_arm=lower_arm,
     )
     return torch.stack(
         (chest_position, left_shoulder, right_shoulder, left_elbow, right_elbow),
@@ -935,10 +951,16 @@ def _surrogate_shoulder(
     right: Any,
     up: Any,
     forward: Any,
+    shoulder_width: Any,
+    arm_length: Any,
 ) -> Any:
-    offset_x = latents[:, _target_index(target_names, f"{side}_shoulder_offset_x")]
-    offset_y = latents[:, _target_index(target_names, f"{side}_shoulder_offset_y")]
-    offset_z = latents[:, _target_index(target_names, f"{side}_shoulder_offset_z")]
+    side_sign = 1.0 if side == "left" else -1.0
+    offset_x = (
+        side_sign * shoulder_width * 0.5
+        + latents[:, _target_index(target_names, f"{side}_shoulder_lateral_delta")] * arm_length
+    )
+    offset_y = latents[:, _target_index(target_names, f"{side}_shoulder_elevation")] * arm_length
+    offset_z = latents[:, _target_index(target_names, f"{side}_shoulder_protraction")] * arm_length
     return (
         chest_position
         + right * offset_x[:, None]
@@ -955,6 +977,8 @@ def _surrogate_elbow(
     side: Literal["left", "right"],
     shoulder: Any,
     hand: Any,
+    upper_arm: Any,
+    lower_arm: Any,
 ) -> Any:
     arm_axis = _torch_normalize(torch, hand - shoulder, fallback=(0.0, 1.0, 0.0))
     world_down = torch.tensor((0.0, -1.0, 0.0), dtype=latents.dtype, device=latents.device)
@@ -972,8 +996,8 @@ def _surrogate_elbow(
         torch,
         root=shoulder,
         tip=hand,
-        root_to_mid_length=0.313,
-        mid_to_tip_length=0.272,
+        root_to_mid_length=upper_arm,
+        mid_to_tip_length=lower_arm,
         bend_hint=bend_hint,
     )
 
@@ -983,15 +1007,18 @@ def _torch_two_bone_midpoint(
     *,
     root: Any,
     tip: Any,
-    root_to_mid_length: float,
-    mid_to_tip_length: float,
+    root_to_mid_length: Any,
+    mid_to_tip_length: Any,
     bend_hint: Any,
 ) -> Any:
     root_to_tip = tip - root
     root_tip_distance = torch.linalg.vector_norm(root_to_tip, dim=1).clamp_min(1e-4)
-    max_reach = root_to_mid_length + mid_to_tip_length - 1e-4
-    min_reach = abs(root_to_mid_length - mid_to_tip_length) + 1e-4
-    clamped_distance = root_tip_distance.clamp(min=min_reach, max=max_reach)
+    max_reach = (root_to_mid_length + mid_to_tip_length - 1e-4).clamp_min(1e-4)
+    min_reach = torch.minimum(
+        torch.abs(root_to_mid_length - mid_to_tip_length) + 1e-4,
+        max_reach - 1e-6,
+    )
+    clamped_distance = torch.minimum(torch.maximum(root_tip_distance, min_reach), max_reach)
     direction = _torch_normalize(torch, root_to_tip, fallback=(0.0, 1.0, 0.0))
     along = (
         root_to_mid_length * root_to_mid_length
@@ -1039,6 +1066,10 @@ def _surrogate_feature_indices(
         "t+000_right_hand_position_x",
         "t+000_right_hand_position_y",
         "t+000_right_hand_position_z",
+        "calibration_shoulder_width_m",
+        "calibration_upper_arm_m",
+        "calibration_lower_arm_m",
+        "calibration_arm_length_m",
     )
     if not all(name in feature_names for name in required):
         return None
@@ -1054,6 +1085,10 @@ def _surrogate_feature_indices(
             feature_names.index("t+000_right_hand_position_y"),
             feature_names.index("t+000_right_hand_position_z"),
         ),
+        shoulder_width=feature_names.index("calibration_shoulder_width_m"),
+        upper_arm=feature_names.index("calibration_upper_arm_m"),
+        lower_arm=feature_names.index("calibration_lower_arm_m"),
+        arm_length=feature_names.index("calibration_arm_length_m"),
     )
 
 

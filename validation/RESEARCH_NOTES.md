@@ -123,6 +123,10 @@ Implementation implication:
 - A good next experiment is a "MANIKIN-lite" arm solver for our skeleton:
   choose or predict shoulder position plus elbow swivel, solve the two-bone arm
   analytically, and enforce the controller/wrist target.
+- Condition learned upper-body residuals on avatar/user calibration. EgoPoser's
+  body-shape result is a useful warning here: shoulder and elbow latents should
+  know the target shoulder width, arm lengths, and height instead of baking
+  those proportions into raw meter-space labels.
 - Start with deterministic swivel priors from CMU and live capture, then compare
   cheap predictors: constant default, VRArmIK-like heuristic, linear model, and
   small MLP over sparse temporal windows.
@@ -193,6 +197,6 @@ visible.
    differentiable Torch surrogate of the analytic IK layer, with temporal losses
    on decoded shoulder/elbow/chest trajectories.
 6. Keep learned models isolated from the runtime path at first: train small
-   predictors for low-dimensional parameters such as shoulder offset, torso
-   facing, elbow swivel, cadence, stance width, and step length before trying a
-   full pose network.
+   predictors for low-dimensional parameters such as normalized shoulder
+   elevation/protraction, torso facing, elbow swivel, cadence, stance width, and
+   step length before trying a full pose network.

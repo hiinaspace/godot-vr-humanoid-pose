@@ -133,10 +133,12 @@ uv run --group ml python -m validation.scripts.train_upper_body_latents --datase
 ```
 
 The sparse-window exporter writes ignored Parquet artifacts under `.cache/ml/`.
-Rows use causal HMD/controller windows and GT-derived targets for torso heading
-and lean, shoulder offsets, and elbow swivel. Training reports compare the
-constant baseline, Torch linear, Torch MLP, and native XGBoost CUDA paths.
-Torch CUDA is required by default; pass `--allow-cpu` only for smoke tests.
+Rows use causal HMD/controller windows, static calibration features such as
+height/shoulder width/arm lengths, and GT-derived targets for torso heading and
+lean, normalized shoulder elevation/protraction/lateral controls, and elbow
+swivel. Training reports compare the constant baseline, Torch linear, Torch MLP,
+residual Torch models, and native XGBoost CUDA paths. Torch CUDA is required by
+default; pass `--allow-cpu` only for smoke tests.
 
 Run learned upper-body latents through the full cached CMU metric stack:
 

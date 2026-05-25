@@ -62,7 +62,7 @@ def test_sparse_window_export_writes_causal_rows_and_heuristic_latents(tmp_path)
     assert all(len(row["features"]) == len(feature_schema(3)) for row in rows)
     assert rows[0]["split"] == split_for_subject("01", 3)
     assert "heuristic_left_elbow_swivel_sin" in rows[0]
-    assert "left_shoulder_offset_y" in rows[0]
+    assert "left_shoulder_elevation" in rows[0]
 
 
 def test_rotation6d_is_independent_of_quaternion_sign() -> None:
@@ -101,7 +101,8 @@ def test_learned_latent_application_keeps_controller_hand_target_fixed() -> None
     calibration = AvatarCalibration(human_height_m=1.8)
     base_pose = BasisPortEstimator().estimate(sample, calibration, GroundingContext())
     latents = extract_upper_body_latents(
-        {name: joint.transform for name, joint in base_pose.joints.items()}
+        {name: joint.transform for name, joint in base_pose.joints.items()},
+        calibration,
     )
     provider = StaticUpperBodyLatentProvider(latents.values, latents.masks)
 
