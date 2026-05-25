@@ -35,31 +35,39 @@ def render_report(report_path: Path, output_path: Path) -> None:
     grouped = cast(dict[str, list[dict[str, Any]]], summary.get("grouped_metrics", {}))
     worst = cast(dict[str, list[dict[str, Any]]], summary.get("worst_clips", {}))
 
-    figure, axes = plt.subplots(2, 3, figsize=(20, 10), constrained_layout=True)
+    figure, axes = plt.subplots(3, 3, figsize=(22, 15), constrained_layout=True)
     figure.suptitle(_title(summary), fontsize=15, fontweight="bold")
 
     _plot_overall_metrics(axes[0][0], summary)
     _plot_clip_distribution(axes[0][1], clips)
+    _plot_plausibility_distribution(axes[0][2], clips)
     _plot_group_metric(
-        axes[0][2],
+        axes[1][0],
         grouped.get("environment_split", []),
         "environment_split",
         "By Environment",
     )
     _plot_group_metric(
-        axes[1][0],
+        axes[1][1],
         grouped.get("posture_subset", []) or grouped.get("activity_class", []),
         "posture_subset" if grouped.get("posture_subset") else "activity_class",
         "By Posture Slice" if grouped.get("posture_subset") else "By Activity",
     )
-    _plot_clip_scatter(axes[1][1], clips)
+    _plot_clip_scatter(axes[1][2], clips)
+    _plot_head_turn_scatter(axes[2][0], clips)
     _plot_worst_clips(
-        axes[1][2],
+        axes[2][1],
         worst.get("mean_full_body_reference_error_m")
         or worst.get("reference_error_p95_m")
         or worst.get("mean_reference_error_m", []),
         "Worst Clips: Full-Body Error",
         "mean_full_body_reference_error_m",
+    )
+    _plot_worst_clips(
+        axes[2][2],
+        worst.get("avatar_implausibility_score_0_100", []),
+        "Worst Clips: Avatar Implausibility",
+        "avatar_implausibility_score_0_100",
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -187,6 +195,56 @@ def _plot_clip_distribution(axis, clips: list[dict[str, Any]]) -> None:
     axis.grid(axis="y", alpha=0.2)
 
 
+def _plot_plausibility_distribution(axis, clips: list[dict[str, Any]]) -> None:
+    metric_specs = [
+        ("estimator", "avatar_implausibility_score_0_100"),
+        ("GT/reference", "reference_avatar_implausibility_score_0_100"),
+    ]
+    series = [_metric_values(clips, key) for _label, key in metric_specs]
+    labels = [label for label, _key in metric_specs]
+    nonempty = [(label, values) for label, values in zip(labels, series, strict=True) if values]
+    axis.set_title("Avatar Implausibility Distribution")
+    if not nonempty:
+        axis.text(0.5, 0.5, "No plausibility metrics", ha="center", va="center")
+        axis.axis("off")
+        return
+
+    labels = [label for label, _values in nonempty]
+    series = [values for _label, values in nonempty]
+    parts = axis.violinplot(
+        series,
+        positions=list(range(1, len(series) + 1)),
+        showmeans=True,
+        showextrema=True,
+    )
+    colors = ("#e45756", "#4c78a8")
+    for color, body in zip(colors, parts["bodies"], strict=False):
+        body.set_facecolor(color)
+        body.set_edgecolor("#333333")
+        body.set_alpha(0.34)
+    for key in ("cmeans", "cmins", "cmaxes", "cbars"):
+        parts[key].set_color("#333333")
+
+    for position, values in enumerate(series, start=1):
+        quantiles = _quantiles(values, (0.5, 0.9, 0.95, 0.99))
+        axis.text(
+            position + 0.08,
+            min(100.0, quantiles[0.99] + 2.0),
+            (
+                f"p50 {quantiles[0.5]:.1f}\n"
+                f"p90 {quantiles[0.9]:.1f}\n"
+                f"p95 {quantiles[0.95]:.1f}\n"
+                f"p99 {quantiles[0.99]:.1f}"
+            ),
+            fontsize=8,
+            va="bottom",
+        )
+    axis.set_xticks(list(range(1, len(labels) + 1)), labels)
+    axis.set_ylabel("implausibility score (0-100)")
+    axis.set_ylim(bottom=0.0)
+    axis.grid(axis="y", alpha=0.2)
+
+
 def _plot_group_metric(
     axis,
     groups: list[dict[str, Any]],
@@ -275,6 +333,38 @@ def _plot_clip_scatter(axis, clips: list[dict[str, Any]]) -> None:
     axis.legend(fontsize=8)
 
 
+def _plot_head_turn_scatter(axis, clips: list[dict[str, Any]]) -> None:
+    x_values, y_values = _metric_pairs(
+        clips,
+        "max_reference_head_forward_angular_speed_deg_s",
+        "max_head_forward_angular_speed_deg_s",
+    )
+    if not x_values or not y_values:
+        axis.set_title("Head Angular Speed")
+        axis.text(0.5, 0.5, "No head angular metrics", ha="center", va="center")
+        axis.axis("off")
+        return
+    colors = [
+        "#e45756"
+        if float(clip.get("pct_estimated_fast_head_turns_without_reference_motion", 0.0)) >= 25.0
+        else "#4c78a8"
+        for clip in clips
+        if isinstance(clip.get("max_reference_head_forward_angular_speed_deg_s"), (int, float))
+        and isinstance(clip.get("max_head_forward_angular_speed_deg_s"), (int, float))
+    ]
+    axis.scatter(x_values, y_values, s=9, alpha=0.36, color=colors, linewidths=0)
+    limit = max(max(x_values, default=0.0), max(y_values, default=0.0), 720.0)
+    axis.plot([0.0, limit], [0.0, limit], color="#333333", linewidth=1.0, alpha=0.5)
+    axis.axhline(720.0, color="#e45756", linewidth=0.8, alpha=0.35)
+    axis.axvline(720.0, color="#4c78a8", linewidth=0.8, alpha=0.35)
+    axis.set_xlim(left=0.0)
+    axis.set_ylim(bottom=0.0)
+    axis.set_title("Estimated vs GT Head Angular Speed")
+    axis.set_xlabel("GT max head speed (deg/s)")
+    axis.set_ylabel("estimated max head speed (deg/s)")
+    axis.grid(alpha=0.2)
+
+
 def _plot_worst_clips(
     axis,
     clips: list[dict[str, Any]],
@@ -343,6 +433,20 @@ def _sample_values(values: list[float], *, limit: int) -> list[float]:
         return values
     step = max(1, len(values) // limit)
     return values[::step][:limit]
+
+
+def _quantiles(values: list[float], quantiles: Sequence[float]) -> dict[float, float]:
+    sorted_values = sorted(values)
+    if not sorted_values:
+        return {quantile: 0.0 for quantile in quantiles}
+    result = {}
+    for quantile in quantiles:
+        position = (len(sorted_values) - 1) * min(1.0, max(0.0, quantile))
+        lower = int(position)
+        upper = min(len(sorted_values) - 1, lower + 1)
+        blend = position - lower
+        result[quantile] = sorted_values[lower] * (1.0 - blend) + sorted_values[upper] * blend
+    return result
 
 
 def _jitter_offsets(count: int, *, width: float) -> list[float]:

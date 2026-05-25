@@ -13,6 +13,10 @@ from typing import cast
 from zipfile import ZipFile
 
 from validation.vr_pose_validation.baseline import EstimatorName, create_estimator
+from validation.vr_pose_validation.calibration import (
+    calibration_from_reference_frames,
+    humanoid_poses_from_reference_frames,
+)
 from validation.vr_pose_validation.cmu import (
     CmuSkeleton,
     parse_amc_text_sampled,
@@ -43,7 +47,7 @@ from validation.vr_pose_validation.metrics import (
 )
 from validation.vr_pose_validation.plausibility import summarize_avatar_plausibility
 from validation.vr_pose_validation.synthetic_trackers import iter_three_point_samples
-from validation.vr_pose_validation.types import AvatarCalibration, GroundingContext
+from validation.vr_pose_validation.types import GroundingContext
 
 DEFAULT_ARCHIVE_PATH = Path(".cache/cmu/allasfamc.zip")
 DEFAULT_REPORT_PATH = Path("validation/reports/baseline_smoke.json")
@@ -64,6 +68,9 @@ AVATAR_PLAUSIBILITY_SUMMARY_FIELDS = (
     "avatar_p95_joint_jerk_m_per_s3",
     "avatar_max_joint_jerk_m_per_s3",
     "avatar_pct_joint_jerk_over_threshold",
+)
+REFERENCE_AVATAR_PLAUSIBILITY_SUMMARY_FIELDS = tuple(
+    f"reference_{field}" for field in AVATAR_PLAUSIBILITY_SUMMARY_FIELDS
 )
 
 
@@ -188,6 +195,15 @@ class ClipResult:
     p95_head_forward_angular_speed_deg_s: float = 0.0
     max_head_forward_angular_speed_deg_s: float = 0.0
     pct_head_forward_angular_speed_over_720deg_s: float = 0.0
+    p95_reference_head_forward_angular_speed_deg_s: float = 0.0
+    max_reference_head_forward_angular_speed_deg_s: float = 0.0
+    pct_reference_head_forward_angular_speed_over_720deg_s: float = 0.0
+    p95_reference_chest_forward_angular_speed_deg_s: float = 0.0
+    max_reference_chest_forward_angular_speed_deg_s: float = 0.0
+    p95_reference_spine_forward_angular_speed_deg_s: float = 0.0
+    max_reference_spine_forward_angular_speed_deg_s: float = 0.0
+    pct_reference_fast_head_turns_with_torso_follow: float = 0.0
+    pct_estimated_fast_head_turns_without_reference_motion: float = 0.0
     posture_class: str = "unknown"
     posture_subset: str = "unknown_ood"
     posture_vr_candidate: bool = False
@@ -230,6 +246,24 @@ class ClipResult:
     avatar_p95_joint_jerk_m_per_s3: float = 0.0
     avatar_max_joint_jerk_m_per_s3: float = 0.0
     avatar_pct_joint_jerk_over_threshold: float = 0.0
+    reference_avatar_plausibility_bucket: str = "unknown"
+    reference_avatar_plausibility_tags: tuple[str, ...] = ()
+    reference_avatar_plausibility_score_0_100: float = 0.0
+    reference_avatar_implausibility_score_0_100: float = 0.0
+    reference_avatar_joint_limit_penalty: float = 0.0
+    reference_avatar_sustained_awkwardness_penalty: float = 0.0
+    reference_avatar_endpoint_stretch_penalty: float = 0.0
+    reference_avatar_temporal_jerk_penalty: float = 0.0
+    reference_avatar_min_joint_limit_margin_deg: float = 0.0
+    reference_avatar_mean_joint_limit_excess_deg: float = 0.0
+    reference_avatar_pct_joint_limit_violation_frames: float = 0.0
+    reference_avatar_pct_sustained_awkward_frames: float = 0.0
+    reference_avatar_max_endpoint_stretch_ratio: float = 0.0
+    reference_avatar_p95_endpoint_stretch_ratio: float = 0.0
+    reference_avatar_pct_endpoint_stretch_over_105pct: float = 0.0
+    reference_avatar_p95_joint_jerk_m_per_s3: float = 0.0
+    reference_avatar_max_joint_jerk_m_per_s3: float = 0.0
+    reference_avatar_pct_joint_jerk_over_threshold: float = 0.0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -287,8 +321,6 @@ def run_validation(
 ) -> dict[str, object]:
     start = time.perf_counter()
     clip_results: list[ClipResult] = []
-    calibration = AvatarCalibration()
-    grounding = GroundingContext()
 
     with ZipFile(archive_path) as zf:
         names = zf.namelist()
@@ -331,6 +363,12 @@ def run_validation(
                 )
             )
             canonical_frames = [canonical_pose_from_cmu(frame) for frame in pose_frames]
+            inferred_floor_height_m = infer_reference_floor_height(canonical_frames)
+            calibration = calibration_from_reference_frames(
+                canonical_frames,
+                floor_height_m=inferred_floor_height_m,
+            )
+            grounding = GroundingContext(floor_height_m=inferred_floor_height_m)
             samples = iter_three_point_samples(canonical_frames)
             estimated_poses = []
             for reference_frame, sample in zip(canonical_frames, samples, strict=True):
@@ -353,7 +391,6 @@ def run_validation(
                 estimated_poses,
                 canonical_frames,
             )
-            inferred_floor_height_m = infer_reference_floor_height(canonical_frames)
             contact_summary = evaluate_foot_contact_sequence(
                 estimated_poses,
                 canonical_frames,
@@ -365,6 +402,14 @@ def run_validation(
             )
             avatar_plausibility_summary = summarize_avatar_plausibility(
                 estimated_poses,
+                calibration=calibration,
+                floor_height_m=inferred_floor_height_m,
+            )
+            reference_avatar_plausibility_summary = summarize_avatar_plausibility(
+                humanoid_poses_from_reference_frames(
+                    canonical_frames,
+                    timestamps_seconds=(pose.timestamp_seconds for pose in estimated_poses),
+                ),
                 calibration=calibration,
                 floor_height_m=inferred_floor_height_m,
             )
@@ -637,6 +682,35 @@ def run_validation(
                     pct_head_forward_angular_speed_over_720deg_s=orientation_summary[
                         "pct_head_forward_angular_speed_over_720deg_s"
                     ],
+                    p95_reference_head_forward_angular_speed_deg_s=orientation_summary[
+                        "p95_reference_head_forward_angular_speed_deg_s"
+                    ],
+                    max_reference_head_forward_angular_speed_deg_s=orientation_summary[
+                        "max_reference_head_forward_angular_speed_deg_s"
+                    ],
+                    pct_reference_head_forward_angular_speed_over_720deg_s=(
+                        orientation_summary[
+                            "pct_reference_head_forward_angular_speed_over_720deg_s"
+                        ]
+                    ),
+                    p95_reference_chest_forward_angular_speed_deg_s=orientation_summary[
+                        "p95_reference_chest_forward_angular_speed_deg_s"
+                    ],
+                    max_reference_chest_forward_angular_speed_deg_s=orientation_summary[
+                        "max_reference_chest_forward_angular_speed_deg_s"
+                    ],
+                    p95_reference_spine_forward_angular_speed_deg_s=orientation_summary[
+                        "p95_reference_spine_forward_angular_speed_deg_s"
+                    ],
+                    max_reference_spine_forward_angular_speed_deg_s=orientation_summary[
+                        "max_reference_spine_forward_angular_speed_deg_s"
+                    ],
+                    pct_reference_fast_head_turns_with_torso_follow=orientation_summary[
+                        "pct_reference_fast_head_turns_with_torso_follow"
+                    ],
+                    pct_estimated_fast_head_turns_without_reference_motion=orientation_summary[
+                        "pct_estimated_fast_head_turns_without_reference_motion"
+                    ],
                     avatar_plausibility_bucket=avatar_plausibility_summary.bucket,
                     avatar_plausibility_tags=avatar_plausibility_summary.tags,
                     avatar_plausibility_score_0_100=(
@@ -684,6 +758,58 @@ def run_validation(
                     ),
                     avatar_pct_joint_jerk_over_threshold=(
                         avatar_plausibility_summary.pct_joint_jerk_over_threshold
+                    ),
+                    reference_avatar_plausibility_bucket=(
+                        reference_avatar_plausibility_summary.bucket
+                    ),
+                    reference_avatar_plausibility_tags=(reference_avatar_plausibility_summary.tags),
+                    reference_avatar_plausibility_score_0_100=(
+                        reference_avatar_plausibility_summary.plausibility_score_0_100
+                    ),
+                    reference_avatar_implausibility_score_0_100=(
+                        100.0 - reference_avatar_plausibility_summary.plausibility_score_0_100
+                    ),
+                    reference_avatar_joint_limit_penalty=(
+                        reference_avatar_plausibility_summary.joint_limit_penalty
+                    ),
+                    reference_avatar_sustained_awkwardness_penalty=(
+                        reference_avatar_plausibility_summary.sustained_awkwardness_penalty
+                    ),
+                    reference_avatar_endpoint_stretch_penalty=(
+                        reference_avatar_plausibility_summary.endpoint_stretch_penalty
+                    ),
+                    reference_avatar_temporal_jerk_penalty=(
+                        reference_avatar_plausibility_summary.temporal_jerk_penalty
+                    ),
+                    reference_avatar_min_joint_limit_margin_deg=(
+                        reference_avatar_plausibility_summary.min_joint_limit_margin_deg
+                    ),
+                    reference_avatar_mean_joint_limit_excess_deg=(
+                        reference_avatar_plausibility_summary.mean_joint_limit_excess_deg
+                    ),
+                    reference_avatar_pct_joint_limit_violation_frames=(
+                        reference_avatar_plausibility_summary.pct_joint_limit_violation_frames
+                    ),
+                    reference_avatar_pct_sustained_awkward_frames=(
+                        reference_avatar_plausibility_summary.pct_sustained_awkward_frames
+                    ),
+                    reference_avatar_max_endpoint_stretch_ratio=(
+                        reference_avatar_plausibility_summary.max_endpoint_stretch_ratio
+                    ),
+                    reference_avatar_p95_endpoint_stretch_ratio=(
+                        reference_avatar_plausibility_summary.p95_endpoint_stretch_ratio
+                    ),
+                    reference_avatar_pct_endpoint_stretch_over_105pct=(
+                        reference_avatar_plausibility_summary.pct_endpoint_stretch_over_105pct
+                    ),
+                    reference_avatar_p95_joint_jerk_m_per_s3=(
+                        reference_avatar_plausibility_summary.p95_joint_jerk_m_per_s3
+                    ),
+                    reference_avatar_max_joint_jerk_m_per_s3=(
+                        reference_avatar_plausibility_summary.max_joint_jerk_m_per_s3
+                    ),
+                    reference_avatar_pct_joint_jerk_over_threshold=(
+                        reference_avatar_plausibility_summary.pct_joint_jerk_over_threshold
                     ),
                 )
             )
@@ -762,6 +888,9 @@ def run_validation(
         ),
         "gait_low_foot_frames": sum(result.gait_low_foot_frames for result in clip_results),
         "avatar_plausibility_bucket_counts": _avatar_plausibility_bucket_counts(clip_results),
+        "reference_avatar_plausibility_bucket_counts": (
+            _reference_avatar_plausibility_bucket_counts(clip_results)
+        ),
         "mean_joint_errors_m": _mean_joint_errors(clip_results),
     }
     for metric in (
@@ -771,6 +900,7 @@ def run_validation(
         *ORIENTATION_SUMMARY_FIELDS,
         *GAIT_PLAUSIBILITY_SUMMARY_FIELDS,
         *AVATAR_PLAUSIBILITY_SUMMARY_FIELDS,
+        *REFERENCE_AVATAR_PLAUSIBILITY_SUMMARY_FIELDS,
     ):
         summary[metric] = _mean(float(getattr(result, metric)) for result in clip_results)
 
@@ -821,6 +951,17 @@ def _avatar_plausibility_bucket_counts(results: Iterable[ClipResult]) -> dict[st
     for result in results:
         counts[result.avatar_plausibility_bucket] = (
             counts.get(result.avatar_plausibility_bucket, 0) + 1
+        )
+    return dict(sorted(counts.items()))
+
+
+def _reference_avatar_plausibility_bucket_counts(
+    results: Iterable[ClipResult],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result.reference_avatar_plausibility_bucket] = (
+            counts.get(result.reference_avatar_plausibility_bucket, 0) + 1
         )
     return dict(sorted(counts.items()))
 

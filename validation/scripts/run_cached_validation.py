@@ -16,10 +16,15 @@ import polars as pl
 
 from validation.scripts.run_baseline_validation import (
     AVATAR_PLAUSIBILITY_SUMMARY_FIELDS,
+    REFERENCE_AVATAR_PLAUSIBILITY_SUMMARY_FIELDS,
     ClipResult,
     write_clip_csv,
 )
 from validation.vr_pose_validation.baseline import EstimatorName, create_estimator
+from validation.vr_pose_validation.calibration import (
+    calibration_from_reference_frames,
+    humanoid_poses_from_reference_frames,
+)
 from validation.vr_pose_validation.cmu_metadata import ActivityClass, EnvironmentSplit
 from validation.vr_pose_validation.geometry import Transform, add
 from validation.vr_pose_validation.metrics import (
@@ -55,7 +60,6 @@ from validation.vr_pose_validation.synthetic_trackers import (
     head_tracker_rotation_from_pose_frame,
 )
 from validation.vr_pose_validation.types import (
-    AvatarCalibration,
     GroundingContext,
     TrackedPoseSample,
     TrackerRole,
@@ -90,6 +94,7 @@ SUMMARY_METRICS = (
     *ORIENTATION_SUMMARY_FIELDS,
     *GAIT_PLAUSIBILITY_SUMMARY_FIELDS,
     *AVATAR_PLAUSIBILITY_SUMMARY_FIELDS,
+    *REFERENCE_AVATAR_PLAUSIBILITY_SUMMARY_FIELDS,
     "mean_contact_foot_error_m",
     "mean_contact_slip_m_per_s",
 )
@@ -134,6 +139,15 @@ TOP_CLIP_METRICS = (
     "p95_head_forward_angular_speed_deg_s",
     "max_head_forward_angular_speed_deg_s",
     "pct_head_forward_angular_speed_over_720deg_s",
+    "p95_reference_head_forward_angular_speed_deg_s",
+    "max_reference_head_forward_angular_speed_deg_s",
+    "pct_reference_head_forward_angular_speed_over_720deg_s",
+    "p95_reference_chest_forward_angular_speed_deg_s",
+    "max_reference_chest_forward_angular_speed_deg_s",
+    "p95_reference_spine_forward_angular_speed_deg_s",
+    "max_reference_spine_forward_angular_speed_deg_s",
+    "pct_reference_fast_head_turns_with_torso_follow",
+    "pct_estimated_fast_head_turns_without_reference_motion",
     "mean_contact_foot_error_m",
     "mean_contact_slip_m_per_s",
     "mean_low_foot_slip_m_per_s",
@@ -156,6 +170,14 @@ TOP_CLIP_METRICS = (
     "avatar_p95_endpoint_stretch_ratio",
     "avatar_p95_joint_jerk_m_per_s3",
     "avatar_max_joint_jerk_m_per_s3",
+    "reference_avatar_implausibility_score_0_100",
+    "reference_avatar_joint_limit_penalty",
+    "reference_avatar_endpoint_stretch_penalty",
+    "reference_avatar_temporal_jerk_penalty",
+    "reference_avatar_max_endpoint_stretch_ratio",
+    "reference_avatar_p95_endpoint_stretch_ratio",
+    "reference_avatar_p95_joint_jerk_m_per_s3",
+    "reference_avatar_max_joint_jerk_m_per_s3",
 )
 
 
@@ -366,6 +388,9 @@ def run_cached_validation(
             ),
             "gait_low_foot_frames": _sum_column(summary_frame, "gait_low_foot_frames"),
             "avatar_plausibility_bucket_counts": _avatar_plausibility_bucket_counts(clip_results),
+            "reference_avatar_plausibility_bucket_counts": (
+                _reference_avatar_plausibility_bucket_counts(clip_results)
+            ),
             **{
                 metric: _mean_column(summary_frame, metric)
                 for metric in (
@@ -375,6 +400,7 @@ def run_cached_validation(
                     *ORIENTATION_SUMMARY_FIELDS,
                     *GAIT_PLAUSIBILITY_SUMMARY_FIELDS,
                     *AVATAR_PLAUSIBILITY_SUMMARY_FIELDS,
+                    *REFERENCE_AVATAR_PLAUSIBILITY_SUMMARY_FIELDS,
                 )
             },
             "mean_joint_errors_m": _mean_joint_errors(clip_results),
@@ -396,13 +422,17 @@ def run_cached_validation(
 def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
     start = time.perf_counter()
     estimator = create_estimator(task.estimator_name)
-    calibration = AvatarCalibration()
     frame_metrics = []
     reference_metrics: list[ReferencePoseMetrics] = []
     estimated_poses = []
     cached_frame_list = list(iter_cached_pose_frames(Path(task.path)))
     reference_frames = [frame.joints for frame in cached_frame_list]
+    timestamps_seconds = [frame.timestamp_s for frame in cached_frame_list]
     inferred_floor_height_m = infer_reference_floor_height(reference_frames)
+    calibration = calibration_from_reference_frames(
+        reference_frames,
+        floor_height_m=inferred_floor_height_m,
+    )
     grounding = GroundingContext(floor_height_m=inferred_floor_height_m)
     environment_split = "unknown"
     environment_tags: tuple[str, ...] = ()
@@ -450,12 +480,20 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         calibration=calibration,
         floor_height_m=inferred_floor_height_m,
     )
+    reference_avatar_plausibility_summary = summarize_avatar_plausibility(
+        humanoid_poses_from_reference_frames(
+            reference_frames,
+            timestamps_seconds=timestamps_seconds,
+        ),
+        calibration=calibration,
+        floor_height_m=inferred_floor_height_m,
+    )
     posture_summary = summarize_reference_posture(
         reference_frames,
         environment_split=environment_split,
         activity_class=activity_class,
         floor_height_m=inferred_floor_height_m,
-        timestamps_seconds=(frame.timestamp_s for frame in cached_frame_list),
+        timestamps_seconds=timestamps_seconds,
     )
     mean_joint_errors_m = cast(dict[str, float], reference_summary["mean_joint_errors_m"])
     subject, clip = _subject_and_clip_from_path(Path(task.path))
@@ -649,6 +687,33 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         pct_head_forward_angular_speed_over_720deg_s=orientation_summary[
             "pct_head_forward_angular_speed_over_720deg_s"
         ],
+        p95_reference_head_forward_angular_speed_deg_s=orientation_summary[
+            "p95_reference_head_forward_angular_speed_deg_s"
+        ],
+        max_reference_head_forward_angular_speed_deg_s=orientation_summary[
+            "max_reference_head_forward_angular_speed_deg_s"
+        ],
+        pct_reference_head_forward_angular_speed_over_720deg_s=orientation_summary[
+            "pct_reference_head_forward_angular_speed_over_720deg_s"
+        ],
+        p95_reference_chest_forward_angular_speed_deg_s=orientation_summary[
+            "p95_reference_chest_forward_angular_speed_deg_s"
+        ],
+        max_reference_chest_forward_angular_speed_deg_s=orientation_summary[
+            "max_reference_chest_forward_angular_speed_deg_s"
+        ],
+        p95_reference_spine_forward_angular_speed_deg_s=orientation_summary[
+            "p95_reference_spine_forward_angular_speed_deg_s"
+        ],
+        max_reference_spine_forward_angular_speed_deg_s=orientation_summary[
+            "max_reference_spine_forward_angular_speed_deg_s"
+        ],
+        pct_reference_fast_head_turns_with_torso_follow=orientation_summary[
+            "pct_reference_fast_head_turns_with_torso_follow"
+        ],
+        pct_estimated_fast_head_turns_without_reference_motion=orientation_summary[
+            "pct_estimated_fast_head_turns_without_reference_motion"
+        ],
         avatar_plausibility_bucket=avatar_plausibility_summary.bucket,
         avatar_plausibility_tags=avatar_plausibility_summary.tags,
         avatar_plausibility_score_0_100=avatar_plausibility_summary.plausibility_score_0_100,
@@ -680,6 +745,56 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
         avatar_max_joint_jerk_m_per_s3=avatar_plausibility_summary.max_joint_jerk_m_per_s3,
         avatar_pct_joint_jerk_over_threshold=(
             avatar_plausibility_summary.pct_joint_jerk_over_threshold
+        ),
+        reference_avatar_plausibility_bucket=reference_avatar_plausibility_summary.bucket,
+        reference_avatar_plausibility_tags=reference_avatar_plausibility_summary.tags,
+        reference_avatar_plausibility_score_0_100=(
+            reference_avatar_plausibility_summary.plausibility_score_0_100
+        ),
+        reference_avatar_implausibility_score_0_100=(
+            100.0 - reference_avatar_plausibility_summary.plausibility_score_0_100
+        ),
+        reference_avatar_joint_limit_penalty=(
+            reference_avatar_plausibility_summary.joint_limit_penalty
+        ),
+        reference_avatar_sustained_awkwardness_penalty=(
+            reference_avatar_plausibility_summary.sustained_awkwardness_penalty
+        ),
+        reference_avatar_endpoint_stretch_penalty=(
+            reference_avatar_plausibility_summary.endpoint_stretch_penalty
+        ),
+        reference_avatar_temporal_jerk_penalty=(
+            reference_avatar_plausibility_summary.temporal_jerk_penalty
+        ),
+        reference_avatar_min_joint_limit_margin_deg=(
+            reference_avatar_plausibility_summary.min_joint_limit_margin_deg
+        ),
+        reference_avatar_mean_joint_limit_excess_deg=(
+            reference_avatar_plausibility_summary.mean_joint_limit_excess_deg
+        ),
+        reference_avatar_pct_joint_limit_violation_frames=(
+            reference_avatar_plausibility_summary.pct_joint_limit_violation_frames
+        ),
+        reference_avatar_pct_sustained_awkward_frames=(
+            reference_avatar_plausibility_summary.pct_sustained_awkward_frames
+        ),
+        reference_avatar_max_endpoint_stretch_ratio=(
+            reference_avatar_plausibility_summary.max_endpoint_stretch_ratio
+        ),
+        reference_avatar_p95_endpoint_stretch_ratio=(
+            reference_avatar_plausibility_summary.p95_endpoint_stretch_ratio
+        ),
+        reference_avatar_pct_endpoint_stretch_over_105pct=(
+            reference_avatar_plausibility_summary.pct_endpoint_stretch_over_105pct
+        ),
+        reference_avatar_p95_joint_jerk_m_per_s3=(
+            reference_avatar_plausibility_summary.p95_joint_jerk_m_per_s3
+        ),
+        reference_avatar_max_joint_jerk_m_per_s3=(
+            reference_avatar_plausibility_summary.max_joint_jerk_m_per_s3
+        ),
+        reference_avatar_pct_joint_jerk_over_threshold=(
+            reference_avatar_plausibility_summary.pct_joint_jerk_over_threshold
         ),
         posture_class=posture_summary.posture_class,
         posture_subset=posture_summary.posture_subset,
@@ -768,6 +883,7 @@ def _scalar_clip_result(result: ClipResult) -> dict[str, Any]:
     data.pop("environment_tags", None)
     data.pop("activity_tags", None)
     data.pop("avatar_plausibility_tags", None)
+    data.pop("reference_avatar_plausibility_tags", None)
     data.pop("motion_description", None)
     return data
 
@@ -790,6 +906,17 @@ def _avatar_plausibility_bucket_counts(results: Iterable[ClipResult]) -> dict[st
     for result in results:
         counts[result.avatar_plausibility_bucket] = (
             counts.get(result.avatar_plausibility_bucket, 0) + 1
+        )
+    return dict(sorted(counts.items()))
+
+
+def _reference_avatar_plausibility_bucket_counts(
+    results: Iterable[ClipResult],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result.reference_avatar_plausibility_bucket] = (
+            counts.get(result.reference_avatar_plausibility_bucket, 0) + 1
         )
     return dict(sorted(counts.items()))
 
@@ -853,6 +980,9 @@ def _summarize_result_group(
                 result.evaluated_frames for result in results if result.posture_vr_candidate
             ),
             "avatar_plausibility_bucket_counts": _avatar_plausibility_bucket_counts(results),
+            "reference_avatar_plausibility_bucket_counts": (
+                _reference_avatar_plausibility_bucket_counts(results)
+            ),
             "posture_upright_pct": _mean(result.posture_upright_pct for result in results),
             "posture_crouched_pct": _mean(result.posture_crouched_pct for result in results),
             "posture_sitting_pct": _mean(result.posture_sitting_pct for result in results),

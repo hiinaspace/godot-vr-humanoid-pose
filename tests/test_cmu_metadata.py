@@ -60,6 +60,13 @@ QUARREL_SUBJECT_HTML = """
 </table>
 """
 
+FLOATING_FLOOR_T_POSE_HTML = """
+<table>
+<tr><td>Subject #79 (actor everyday activities) file index</td></tr>
+<tr><td></td><td>77</td><td>vacuuming</td></tr>
+</table>
+"""
+
 
 def test_label_environment_marks_motion_description_nonflat() -> None:
     split, tags, source = label_environment("Walking up and down stairs")
@@ -160,6 +167,7 @@ def test_parse_subject_page_applies_visual_review_clip_overrides() -> None:
     shoulder_walk = clip_metadata_from_subject_page("114", SHOULDER_WALK_SUBJECT_HTML)[0]
     sweep_floor = clip_metadata_from_subject_page("14", SWEEP_FLOOR_SUBJECT_HTML)[0]
     quarrel = clip_metadata_from_subject_page("18", QUARREL_SUBJECT_HTML)[0]
+    floating = clip_metadata_from_subject_page("79", FLOATING_FLOOR_T_POSE_HTML)[0]
 
     assert shoulder_walk.environment_split == "unknown"
     assert shoulder_walk.environment_tags == ("data_issue", "inverted_segment")
@@ -170,6 +178,9 @@ def test_parse_subject_page_applies_visual_review_clip_overrides() -> None:
     assert quarrel.environment_split == "unknown"
     assert quarrel.environment_tags == ("data_issue", "inverted_segment")
     assert quarrel.activity_class == "unknown"
+    assert floating.environment_split == "unknown"
+    assert floating.environment_tags == ("data_issue", "floating_floor_t_pose")
+    assert floating.activity_class == "unknown"
 
 
 def test_generic_motion_description_can_inherit_subject_label() -> None:
@@ -201,3 +212,9 @@ def test_committed_cmu_metadata_file_is_readable() -> None:
     assert metadata["133_25"].environment_split == "unknown"
     assert metadata["133_25"].environment_tags == ("data_issue", "sideways_t_pose")
     assert metadata["133_25"].activity_class == "unknown"
+    assert metadata["79_77"].environment_split == "unknown"
+    assert metadata["79_77"].environment_tags == ("data_issue", "floating_floor_t_pose")
+    assert metadata["79_77"].activity_class == "unknown"
+    assert metadata["138_54"].environment_split == "unknown"
+    assert metadata["138_54"].environment_tags == ("data_issue", "floating_floor_t_pose")
+    assert metadata["138_54"].activity_class == "unknown"

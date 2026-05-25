@@ -10,6 +10,7 @@ from typing import Any
 
 from validation.scripts.run_cached_validation import DEFAULT_SYNTHETIC_TRACKER_CONFIG
 from validation.vr_pose_validation.baseline import EstimatorName, create_estimator
+from validation.vr_pose_validation.calibration import calibration_from_reference_frames
 from validation.vr_pose_validation.geometry import (
     Transform,
     Vector3,
@@ -27,7 +28,6 @@ from validation.vr_pose_validation.parquet_cache import (
 )
 from validation.vr_pose_validation.synthetic_trackers import head_tracker_rotation_from_pose_frame
 from validation.vr_pose_validation.types import (
-    AvatarCalibration,
     GroundingContext,
     HumanoidPoseFrame,
     TrackedPoseSample,
@@ -37,6 +37,7 @@ from validation.vr_pose_validation.types import (
 
 DEFAULT_CACHE_DIR = Path(".cache/cmu/parquet/canonical_full")
 DEFAULT_OUTPUT = Path("godot/tests/fixtures/cmu_walk_replay_fixture.json")
+DEFAULT_WARMUP_FRAMES = 120
 WORLD_UP: Vector3 = (0.0, 1.0, 0.0)
 WORLD_FORWARD: Vector3 = (0.0, 0.0, 1.0)
 VISUAL_HAND_LENGTH_M = 0.09
@@ -74,6 +75,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-frames", type=int, default=90)
     parser.add_argument("--frame-stride", type=int, default=2)
     parser.add_argument(
+        "--warmup-frames",
+        type=int,
+        default=DEFAULT_WARMUP_FRAMES,
+        help="Full-rate source frames before start-frame used only to warm stateful estimators.",
+    )
+    parser.add_argument(
         "--estimator",
         choices=(
             "trivial",
@@ -98,6 +105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         start_frame=args.start_frame,
         max_frames=args.max_frames,
         frame_stride=args.frame_stride,
+        warmup_frames=args.warmup_frames,
         estimator_name=args.estimator,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -115,26 +123,40 @@ def build_fixture(
     max_frames: int,
     frame_stride: int,
     estimator_name: EstimatorName,
+    warmup_frames: int = DEFAULT_WARMUP_FRAMES,
 ) -> dict[str, Any]:
     source_path = clip_cache_path(cache_dir, subject, clip)
     if not source_path.exists():
         raise FileNotFoundError(source_path)
 
-    source_frames = _select_frames(
-        list(iter_cached_pose_frames(source_path)),
+    all_frames = list(iter_cached_pose_frames(source_path))
+    selected_indices = _selected_frame_indices(
+        len(all_frames),
         start_frame=start_frame,
         max_frames=max_frames,
         frame_stride=frame_stride,
     )
+    source_frames = [all_frames[index] for index in selected_indices]
     reference_frames = [frame.joints for frame in source_frames]
-    floor_height_m = infer_reference_floor_height(reference_frames)
+    full_reference_frames = [frame.joints for frame in all_frames]
+    floor_height_m = infer_reference_floor_height(full_reference_frames)
     grounding = GroundingContext(floor_height_m=floor_height_m)
-    calibration = AvatarCalibration()
+    calibration = calibration_from_reference_frames(
+        full_reference_frames,
+        floor_height_m=floor_height_m,
+    )
     estimator = create_estimator(estimator_name)
-    estimated_frames = [
-        estimator.estimate(_tracked_sample_from_replay_frame(frame), calibration, grounding)
-        for frame in source_frames
-    ]
+    selected_index_set = set(selected_indices)
+    warmup_start = max(0, selected_indices[0] - max(0, warmup_frames))
+    estimated_frames = []
+    for frame_index in range(warmup_start, selected_indices[-1] + 1):
+        pose = estimator.estimate(
+            _tracked_sample_from_replay_frame(all_frames[frame_index]),
+            calibration,
+            grounding,
+        )
+        if frame_index in selected_index_set:
+            estimated_frames.append(pose)
 
     first_frame = source_frames[0]
     return {
@@ -149,6 +171,8 @@ def build_fixture(
             "motion_description": first_frame.motion_description,
             "start_frame": start_frame,
             "subject": subject,
+            "warmup_frames": max(0, warmup_frames),
+            "warmup_start_frame": warmup_start,
         },
         "bone_pairs": [list(pair) for pair in DEFAULT_BONES],
         "floor_height_m": floor_height_m,
@@ -160,18 +184,18 @@ def build_fixture(
     }
 
 
-def _select_frames(
-    frames: list[CachedPoseFrame],
+def _selected_frame_indices(
+    frame_count: int,
     *,
     start_frame: int,
     max_frames: int,
     frame_stride: int,
-) -> list[CachedPoseFrame]:
+) -> list[int]:
     if max_frames <= 0:
         raise ValueError("max_frames must be positive")
     if frame_stride <= 0:
         raise ValueError("frame_stride must be positive")
-    selected = frames[start_frame::frame_stride][:max_frames]
+    selected = list(range(start_frame, frame_count, frame_stride))[:max_frames]
     if not selected:
         raise ValueError("No frames selected")
     return selected

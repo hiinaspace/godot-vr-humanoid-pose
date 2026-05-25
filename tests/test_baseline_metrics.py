@@ -370,6 +370,49 @@ def test_orientation_metrics_report_head_flip_and_torso_axis_error() -> None:
     assert summary["pct_spine_axis_error_over_45deg"] == approx(50.0)
     assert summary["max_head_forward_angular_speed_deg_s"] == approx(1800.0)
     assert summary["pct_head_forward_angular_speed_over_720deg_s"] == approx(100.0)
+    assert summary["max_reference_head_forward_angular_speed_deg_s"] == approx(0.0)
+    assert summary["pct_estimated_fast_head_turns_without_reference_motion"] == approx(100.0)
+
+
+def test_orientation_metrics_separate_natural_reference_turns_from_estimator_flips() -> None:
+    identity = Transform().rotation
+    turn = axis_name_quaternion("y", 180.0)
+    reference_frames = [
+        _orientation_reference(
+            head_rotation=identity,
+            chest_rotation=identity,
+            spine_rotation=identity,
+        ),
+        _orientation_reference(
+            head_rotation=turn,
+            chest_rotation=turn,
+            spine_rotation=turn,
+        ),
+    ]
+    poses = [
+        _orientation_pose(
+            timestamp_seconds=0.0,
+            head_rotation=identity,
+            hips=(0.0, 0.0, 0.0),
+            chest=(0.0, 1.0, 0.0),
+            head=(0.0, 2.0, 0.0),
+        ),
+        _orientation_pose(
+            timestamp_seconds=0.1,
+            head_rotation=turn,
+            hips=(0.0, 0.0, 0.0),
+            chest=(0.0, 1.0, 0.0),
+            head=(0.0, 2.0, 0.0),
+        ),
+    ]
+
+    summary = summarize_orientation_sequence(poses, reference_frames)
+
+    assert summary["max_head_forward_angular_speed_deg_s"] == approx(1800.0)
+    assert summary["max_reference_head_forward_angular_speed_deg_s"] == approx(1800.0)
+    assert summary["max_reference_chest_forward_angular_speed_deg_s"] == approx(1800.0)
+    assert summary["pct_reference_fast_head_turns_with_torso_follow"] == approx(100.0)
+    assert summary["pct_estimated_fast_head_turns_without_reference_motion"] == approx(0.0)
 
 
 def _foot_pose(left_x: float, timestamp_seconds: float) -> HumanoidPoseFrame:
@@ -403,11 +446,18 @@ def _gait_pose(
     )
 
 
-def _orientation_reference() -> dict[str, Transform]:
+def _orientation_reference(
+    *,
+    head_rotation: tuple[float, float, float, float] | None = None,
+    chest_rotation: tuple[float, float, float, float] | None = None,
+    spine_rotation: tuple[float, float, float, float] | None = None,
+) -> dict[str, Transform]:
+    identity = Transform().rotation
     return {
         "hips": Transform(position=(0.0, 0.0, 0.0)),
-        "chest": Transform(position=(0.0, 1.0, 0.0)),
-        "head": Transform(position=(0.0, 2.0, 0.0)),
+        "spine": Transform(position=(0.0, 0.5, 0.0), rotation=spine_rotation or identity),
+        "chest": Transform(position=(0.0, 1.0, 0.0), rotation=chest_rotation or identity),
+        "head": Transform(position=(0.0, 2.0, 0.0), rotation=head_rotation or identity),
     }
 
 

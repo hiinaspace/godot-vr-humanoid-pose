@@ -162,3 +162,49 @@ def test_build_outlier_review_buckets_head_torso_orientation_failures() -> None:
 
     assert rows[0]["review_hint"] == "candidate_head_torso_failure"
     assert rows[0]["primary_metric"] == "head_forward_error_p95_deg"
+
+
+def test_build_outlier_review_identifies_natural_reference_turns() -> None:
+    rows = build_outlier_review(
+        [
+            {
+                "clip": "75_08",
+                "subject": "75",
+                "motion_description": "jump turn",
+                "environment_split": "flat",
+                "activity_class": "locomotion",
+                "posture_subset": "vr_locomotion",
+                "max_head_forward_angular_speed_deg_s": 1400.0,
+                "max_reference_head_forward_angular_speed_deg_s": 1300.0,
+                "pct_reference_fast_head_turns_with_torso_follow": 100.0,
+                "pct_estimated_fast_head_turns_without_reference_motion": 0.0,
+            }
+        ],
+        metrics=("max_head_forward_angular_speed_deg_s",),
+        top_per_metric=1,
+    )
+
+    assert rows[0]["review_hint"] == "likely_natural_reference_turn"
+
+
+def test_build_outlier_review_identifies_reference_torso_follow_metric_as_natural_turn() -> None:
+    rows = build_outlier_review(
+        [
+            {
+                "clip": "07_12",
+                "subject": "07",
+                "motion_description": "brisk walk",
+                "environment_split": "flat",
+                "activity_class": "locomotion",
+                "posture_subset": "vr_locomotion",
+                "max_head_forward_angular_speed_deg_s": 1400.0,
+                "max_reference_head_forward_angular_speed_deg_s": 1300.0,
+                "pct_reference_fast_head_turns_with_torso_follow": 100.0,
+                "pct_estimated_fast_head_turns_without_reference_motion": 0.0,
+            }
+        ],
+        metrics=("pct_reference_fast_head_turns_with_torso_follow",),
+        top_per_metric=1,
+    )
+
+    assert rows[0]["review_hint"] == "likely_natural_reference_turn"

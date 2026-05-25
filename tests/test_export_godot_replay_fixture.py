@@ -5,6 +5,7 @@ from pytest import approx
 from validation.scripts.export_godot_replay_fixture import (
     WORLD_FORWARD,
     _head_rotation_from_reference,
+    _selected_frame_indices,
     _with_visual_helper_joints,
 )
 from validation.vr_pose_validation.geometry import (
@@ -26,11 +27,11 @@ def test_replay_hmd_rotation_preserves_source_head_pitch() -> None:
     replay_rotation = _head_rotation_from_reference(joints)
     replay_forward = rotate_vector(replay_rotation, WORLD_FORWARD)
 
-    assert replay_forward[1] == approx(-0.40824829046)
-    assert replay_forward[2] > 0.9
+    assert replay_forward[1] == approx(-0.4472135955)
+    assert replay_forward[2] == approx(0.8944271910)
 
 
-def test_replay_hmd_rotation_uses_source_head_to_disambiguate_shoulder_forward() -> None:
+def test_replay_hmd_rotation_uses_source_head_yaw_even_when_shoulders_are_reversed() -> None:
     source_head_rotation = look_rotation(WORLD_FORWARD)
     joints = {
         "left_shoulder": Transform(position=(0.3, 1.3, 0.0)),
@@ -81,3 +82,12 @@ def test_replay_visual_helpers_add_hand_forward_marker() -> None:
 
     assert "left_hand_forward" in visual_joints
     assert visual_joints["left_hand_forward"].position[2] > visual_joints["left_hand"].position[2]
+
+
+def test_replay_fixture_selects_strided_frame_indices() -> None:
+    assert _selected_frame_indices(20, start_frame=3, max_frames=4, frame_stride=3) == [
+        3,
+        6,
+        9,
+        12,
+    ]

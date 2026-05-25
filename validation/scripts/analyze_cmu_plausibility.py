@@ -13,6 +13,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from validation.scripts.run_baseline_validation import REFERENCE_AVATAR_PLAUSIBILITY_SUMMARY_FIELDS
+from validation.vr_pose_validation.calibration import (
+    calibration_from_reference_frames,
+    humanoid_poses_from_reference_frames,
+)
 from validation.vr_pose_validation.cmu_metadata import ActivityClass, EnvironmentSplit
 from validation.vr_pose_validation.metrics import infer_reference_floor_height
 from validation.vr_pose_validation.parquet_cache import (
@@ -20,7 +25,10 @@ from validation.vr_pose_validation.parquet_cache import (
     iter_cached_pose_frames,
     list_clip_cache_files,
 )
-from validation.vr_pose_validation.plausibility import summarize_reference_plausibility
+from validation.vr_pose_validation.plausibility import (
+    summarize_avatar_plausibility,
+    summarize_reference_plausibility,
+)
 from validation.vr_pose_validation.posture import summarize_reference_posture
 
 DEFAULT_CACHE_DIR = Path(".cache/cmu/parquet/canonical_full")
@@ -54,6 +62,9 @@ CSV_FIELDS = (
     "reference_max_joint_acceleration_m_per_s2",
     "reference_max_bone_length_cv",
     "reference_p95_bone_length_cv",
+    "reference_avatar_plausibility_bucket",
+    "reference_avatar_plausibility_tags",
+    *REFERENCE_AVATAR_PLAUSIBILITY_SUMMARY_FIELDS,
 )
 
 
@@ -161,7 +172,20 @@ def _analyze_clip(path_text: str) -> dict[str, Any]:
         floor_height_m=floor_height_m,
         posture_summary=posture_summary,
     )
+    calibration = calibration_from_reference_frames(
+        reference_frames,
+        floor_height_m=floor_height_m,
+    )
+    avatar_plausibility = summarize_avatar_plausibility(
+        humanoid_poses_from_reference_frames(
+            reference_frames,
+            timestamps_seconds=timestamps,
+        ),
+        calibration=calibration,
+        floor_height_m=floor_height_m,
+    )
     plausibility_payload = asdict(plausibility)
+    avatar_plausibility_payload = asdict(avatar_plausibility)
     return {
         "subject": first_frame.subject,
         "clip": first_frame.clip,
@@ -177,19 +201,27 @@ def _analyze_clip(path_text: str) -> dict[str, Any]:
         "posture_reclined_pct": posture_summary.reclined_pct,
         "reference_plausibility_bucket": plausibility_payload.pop("bucket"),
         "reference_plausibility_tags": tuple(plausibility_payload.pop("tags")),
+        "reference_avatar_plausibility_bucket": avatar_plausibility_payload.pop("bucket"),
+        "reference_avatar_plausibility_tags": tuple(avatar_plausibility_payload.pop("tags")),
         **{f"reference_{key}": value for key, value in plausibility_payload.items()},
+        **{f"reference_avatar_{key}": value for key, value in avatar_plausibility_payload.items()},
     }
 
 
 def _summary(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
     buckets = Counter(str(row["reference_plausibility_bucket"]) for row in rows)
+    avatar_buckets = Counter(str(row["reference_avatar_plausibility_bucket"]) for row in rows)
     tags: Counter[str] = Counter()
+    avatar_tags: Counter[str] = Counter()
     for row in rows:
         tags.update(str(tag) for tag in row["reference_plausibility_tags"])
+        avatar_tags.update(str(tag) for tag in row["reference_avatar_plausibility_tags"])
     return {
         "clips": len(rows),
         "buckets": dict(sorted(buckets.items())),
         "tags": dict(sorted(tags.items())),
+        "reference_avatar_buckets": dict(sorted(avatar_buckets.items())),
+        "reference_avatar_tags": dict(sorted(avatar_tags.items())),
     }
 
 

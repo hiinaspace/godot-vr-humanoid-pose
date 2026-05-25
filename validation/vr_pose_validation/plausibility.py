@@ -65,7 +65,7 @@ REFERENCE_PLAUSIBILITY_BONES = (
 )
 AVATAR_PLAUSIBILITY_JOINTS = REFERENCE_PLAUSIBILITY_JOINTS
 WORLD_UP: Vector3 = (0.0, 1.0, 0.0)
-DEFAULT_JERK_THRESHOLD_M_PER_S3 = 2500.0
+DEFAULT_JERK_THRESHOLD_M_PER_S3 = 50000.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,6 +400,7 @@ def summarize_avatar_plausibility(
         p95_endpoint_stretch_ratio=_quantile(stretch_ratios, 0.95),
         p95_joint_jerk_m_per_s3=_quantile(jerk_values, 0.95),
         max_joint_jerk_m_per_s3=max(jerk_values, default=0.0),
+        pct_joint_jerk_over_threshold=pct_joint_jerk_over_threshold,
         joint_jerk_threshold_m_per_s3=joint_jerk_threshold_m_per_s3,
         floor_penetration_m=_max_floor_penetration(pose_list, inferred_floor),
     )
@@ -435,6 +436,7 @@ def _avatar_plausibility_tags(
     p95_endpoint_stretch_ratio: float,
     p95_joint_jerk_m_per_s3: float,
     max_joint_jerk_m_per_s3: float,
+    pct_joint_jerk_over_threshold: float,
     joint_jerk_threshold_m_per_s3: float,
     floor_penetration_m: float,
 ) -> tuple[str, ...]:
@@ -447,9 +449,9 @@ def _avatar_plausibility_tags(
         tags.append("endpoint_stretch")
     elif p95_endpoint_stretch_ratio >= 1.05:
         tags.append("minor_endpoint_stretch")
-    if (
-        p95_joint_jerk_m_per_s3 >= joint_jerk_threshold_m_per_s3
-        or max_joint_jerk_m_per_s3 >= joint_jerk_threshold_m_per_s3 * 6.0
+    if p95_joint_jerk_m_per_s3 >= joint_jerk_threshold_m_per_s3 or (
+        max_joint_jerk_m_per_s3 >= joint_jerk_threshold_m_per_s3 * 20.0
+        and pct_joint_jerk_over_threshold >= 0.5
     ):
         tags.append("temporal_jerk_spike")
     if floor_penetration_m > 0.05:

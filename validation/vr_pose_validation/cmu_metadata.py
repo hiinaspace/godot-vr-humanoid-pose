@@ -462,6 +462,24 @@ KNOWN_CLIP_LABEL_OVERRIDES: Mapping[str, ClipLabelOverride] = {
         activity_tags=("parse_issue", "sideways_t_pose"),
         activity_label_source="manual_clip_override",
     ),
+    # Visual review: clip begins in a T-pose, then motion appears detached from the floor plane.
+    "79_77": ClipLabelOverride(
+        environment_split="unknown",
+        environment_tags=("data_issue", "floating_floor_t_pose"),
+        label_source="manual_clip_override",
+        activity_class="unknown",
+        activity_tags=("data_issue", "floating_floor_t_pose"),
+        activity_label_source="manual_clip_override",
+    ),
+    # Visual review: clip begins in a T-pose, then motion appears detached from the floor plane.
+    "138_54": ClipLabelOverride(
+        environment_split="unknown",
+        environment_tags=("data_issue", "floating_floor_t_pose"),
+        label_source="manual_clip_override",
+        activity_class="unknown",
+        activity_tags=("data_issue", "floating_floor_t_pose"),
+        activity_label_source="manual_clip_override",
+    ),
 }
 
 

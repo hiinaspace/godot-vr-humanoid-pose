@@ -31,6 +31,7 @@ DEFAULT_REVIEW_METRICS = (
     "mean_neck_axis_error_deg",
     "mean_spine_axis_error_deg",
     "max_head_forward_angular_speed_deg_s",
+    "pct_estimated_fast_head_turns_without_reference_motion",
     "mean_joint_estimated_jerk_m_per_s3",
     "avatar_implausibility_score_0_100",
     "avatar_joint_limit_penalty",
@@ -68,6 +69,17 @@ REVIEW_FIELDS = (
     "avatar_p95_endpoint_stretch_ratio",
     "avatar_p95_joint_jerk_m_per_s3",
     "avatar_max_joint_jerk_m_per_s3",
+    "reference_avatar_plausibility_bucket",
+    "reference_avatar_plausibility_tags",
+    "reference_avatar_plausibility_score_0_100",
+    "reference_avatar_implausibility_score_0_100",
+    "reference_avatar_joint_limit_penalty",
+    "reference_avatar_endpoint_stretch_penalty",
+    "reference_avatar_temporal_jerk_penalty",
+    "reference_avatar_max_endpoint_stretch_ratio",
+    "reference_avatar_p95_endpoint_stretch_ratio",
+    "reference_avatar_p95_joint_jerk_m_per_s3",
+    "reference_avatar_max_joint_jerk_m_per_s3",
     "reference_max_joint_speed_m_per_s",
     "reference_pct_frames_over_20m_s",
     "reference_min_head_height_m",
@@ -99,6 +111,15 @@ REVIEW_FIELDS = (
     "p95_head_forward_angular_speed_deg_s",
     "max_head_forward_angular_speed_deg_s",
     "pct_head_forward_angular_speed_over_720deg_s",
+    "p95_reference_head_forward_angular_speed_deg_s",
+    "max_reference_head_forward_angular_speed_deg_s",
+    "pct_reference_head_forward_angular_speed_over_720deg_s",
+    "p95_reference_chest_forward_angular_speed_deg_s",
+    "max_reference_chest_forward_angular_speed_deg_s",
+    "p95_reference_spine_forward_angular_speed_deg_s",
+    "max_reference_spine_forward_angular_speed_deg_s",
+    "pct_reference_fast_head_turns_with_torso_follow",
+    "pct_estimated_fast_head_turns_without_reference_motion",
     "mean_joint_estimated_jerk_m_per_s3",
     "hip_horizontal_path_m",
     "mean_hip_horizontal_speed_m_per_s",
@@ -322,6 +343,23 @@ def _classify_outlier(clip: dict[str, Any], *, primary_metric: str = "") -> tupl
         return "likely_ood_posture", ["inverted head/hip frames"]
     if posture_subset in OOD_POSTURE_SUBSETS:
         return "likely_ood_posture", [f"posture_subset={posture_subset}"]
+    if (
+        primary_metric
+        in {
+            "p95_head_forward_angular_speed_deg_s",
+            "max_head_forward_angular_speed_deg_s",
+            "pct_head_forward_angular_speed_over_720deg_s",
+            "pct_reference_fast_head_turns_with_torso_follow",
+        }
+        and _metric_at_least(clip, "max_reference_head_forward_angular_speed_deg_s", 720.0)
+        and _metric_at_least(clip, "pct_reference_fast_head_turns_with_torso_follow", 50.0)
+        and not _metric_at_least(
+            clip,
+            "pct_estimated_fast_head_turns_without_reference_motion",
+            25.0,
+        )
+    ):
+        return "likely_natural_reference_turn", ["GT head turn follows torso"]
 
     candidate_reasons: list[tuple[str, str]] = []
     if activity_class == "locomotion" and (
@@ -343,6 +381,11 @@ def _classify_outlier(clip: dict[str, Any], *, primary_metric: str = "") -> tupl
         or _metric_at_least(clip, "pct_head_up_error_over_90deg", 5.0)
         or _metric_at_least(clip, "pct_neck_axis_error_over_45deg", 10.0)
         or _metric_at_least(clip, "pct_spine_axis_error_over_45deg", 10.0)
+        or _metric_at_least(
+            clip,
+            "pct_estimated_fast_head_turns_without_reference_motion",
+            25.0,
+        )
     ):
         candidate_reasons.append(("candidate_head_torso_failure", "head/torso orientation"))
     if _metric_at_least(clip, "mean_joint_estimated_jerk_m_per_s3", 3000.0):

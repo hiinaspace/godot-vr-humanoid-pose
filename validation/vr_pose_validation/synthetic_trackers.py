@@ -6,17 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from random import Random
 
-from validation.vr_pose_validation.geometry import (
-    Transform,
-    Vector3,
-    add,
-    cross,
-    dot,
-    look_rotation,
-    normalize,
-    rotate_vector,
-    scale,
-)
+from validation.vr_pose_validation.geometry import Transform, Vector3, add, look_rotation
 from validation.vr_pose_validation.types import (
     TrackedPoseSample,
     TrackerAttachment,
@@ -109,16 +99,17 @@ def _make_tracker_state(
 
 
 def head_tracker_rotation_from_pose_frame(frame: PoseFrame) -> tuple[float, float, float, float]:
-    """Derive a VR-style HMD rotation from CMU head and shoulder transforms."""
+    """Derive a VR-style HMD rotation from CMU head orientation.
+
+    The sparse tracker stream should expose the user's head pose, not an inferred
+    torso yaw. Earlier versions projected head pitch onto a shoulder-derived
+    body forward, but clips where the head looks sideways can make the shoulder
+    normal ambiguous and create adjacent-frame 180-degree HMD flips.
+    """
 
     if "head" not in frame:
-        return look_rotation(_body_forward_from_shoulders(frame), WORLD_UP)
-
-    source_head_forward = rotate_vector(frame["head"].rotation, WORLD_FORWARD)
-    forward = _body_forward_from_shoulders(frame, source_head_forward)
-    source_pitch = max(-0.85, min(0.85, source_head_forward[1]))
-    pitched_forward = normalize(add(forward, scale(WORLD_UP, source_pitch)), fallback=forward)
-    return look_rotation(pitched_forward, WORLD_UP)
+        return look_rotation(WORLD_FORWARD, WORLD_UP)
+    return frame["head"].rotation
 
 
 def _gaussian_vector(rng: Random, standard_deviation: float) -> Vector3:
@@ -127,31 +118,6 @@ def _gaussian_vector(rng: Random, standard_deviation: float) -> Vector3:
         rng.gauss(0.0, standard_deviation),
         rng.gauss(0.0, standard_deviation),
     )
-
-
-def _body_forward_from_shoulders(
-    frame: PoseFrame,
-    reference_forward: Vector3 | None = None,
-) -> Vector3:
-    if "left_shoulder" not in frame or "right_shoulder" not in frame:
-        return WORLD_FORWARD
-    body_right = (
-        frame["right_shoulder"].position[0] - frame["left_shoulder"].position[0],
-        0.0,
-        frame["right_shoulder"].position[2] - frame["left_shoulder"].position[2],
-    )
-    body_right = normalize(body_right, fallback=(1.0, 0.0, 0.0))
-    candidates = (
-        normalize(cross(WORLD_UP, body_right), fallback=WORLD_FORWARD),
-        normalize(cross(body_right, WORLD_UP), fallback=WORLD_FORWARD),
-    )
-    if reference_forward is None:
-        return candidates[0]
-    reference = normalize(
-        (reference_forward[0], 0.0, reference_forward[2]),
-        fallback=candidates[0],
-    )
-    return max(candidates, key=lambda candidate: dot(candidate, reference))
 
 
 def pose_frame_from_positions(joints: Mapping[str, Sequence[float]]) -> PoseFrame:

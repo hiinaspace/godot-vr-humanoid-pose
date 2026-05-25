@@ -160,6 +160,15 @@ ORIENTATION_SUMMARY_FIELDS = (
     "p95_head_forward_angular_speed_deg_s",
     "max_head_forward_angular_speed_deg_s",
     "pct_head_forward_angular_speed_over_720deg_s",
+    "p95_reference_head_forward_angular_speed_deg_s",
+    "max_reference_head_forward_angular_speed_deg_s",
+    "pct_reference_head_forward_angular_speed_over_720deg_s",
+    "p95_reference_chest_forward_angular_speed_deg_s",
+    "max_reference_chest_forward_angular_speed_deg_s",
+    "p95_reference_spine_forward_angular_speed_deg_s",
+    "max_reference_spine_forward_angular_speed_deg_s",
+    "pct_reference_fast_head_turns_with_torso_follow",
+    "pct_estimated_fast_head_turns_without_reference_motion",
 )
 
 
@@ -615,6 +624,8 @@ def summarize_orientation_sequence(
     head_error_threshold_deg: float = 90.0,
     axis_error_threshold_deg: float = 45.0,
     head_angular_speed_threshold_deg_s: float = 720.0,
+    reference_head_motion_threshold_deg_s: float = 360.0,
+    reference_torso_follow_threshold_deg_s: float = 240.0,
 ) -> dict[str, float]:
     """Report head and upper-torso orientation errors from sparse canonical joints."""
 
@@ -623,13 +634,24 @@ def summarize_orientation_sequence(
     neck_axis_errors: list[float] = []
     spine_axis_errors: list[float] = []
     head_forward_speeds: list[float] = []
+    reference_head_forward_speeds: list[float] = []
+    reference_chest_forward_speeds: list[float] = []
+    reference_spine_forward_speeds: list[float] = []
+    reference_fast_head_torso_follow_flags: list[float] = []
+    estimated_fast_head_without_reference_motion_flags: list[float] = []
     previous_head_forward: Vector3 | None = None
+    previous_reference_head_forward: Vector3 | None = None
+    previous_reference_chest_forward: Vector3 | None = None
+    previous_reference_spine_forward: Vector3 | None = None
     previous_timestamp_seconds: float | None = None
 
     for pose, reference in zip(poses, reference_frames, strict=False):
         estimated_head = pose.joints.get("head")
         reference_head = reference.get("head")
         estimated_head_forward: Vector3 | None = None
+        reference_head_forward: Vector3 | None = None
+        reference_chest_forward = _reference_joint_forward(reference, "chest")
+        reference_spine_forward = _reference_joint_forward(reference, "spine")
         if estimated_head is not None and reference_head is not None:
             estimated_head_forward = rotate_vector(
                 estimated_head.transform.rotation,
@@ -660,14 +682,70 @@ def summarize_orientation_sequence(
         if spine_error is not None:
             spine_axis_errors.append(spine_error)
 
-        if estimated_head_forward is not None:
-            if previous_head_forward is not None and previous_timestamp_seconds is not None:
-                dt = _frame_dt(previous_timestamp_seconds, pose.timestamp_seconds)
-                head_forward_speeds.append(
-                    _vector_angle_deg(estimated_head_forward, previous_head_forward) / dt
+        if previous_timestamp_seconds is not None:
+            dt = _frame_dt(previous_timestamp_seconds, pose.timestamp_seconds)
+            estimated_speed = _angular_speed_deg_s(
+                estimated_head_forward,
+                previous_head_forward,
+                dt,
+            )
+            reference_head_speed = _angular_speed_deg_s(
+                reference_head_forward,
+                previous_reference_head_forward,
+                dt,
+            )
+            reference_chest_speed = _angular_speed_deg_s(
+                reference_chest_forward,
+                previous_reference_chest_forward,
+                dt,
+            )
+            reference_spine_speed = _angular_speed_deg_s(
+                reference_spine_forward,
+                previous_reference_spine_forward,
+                dt,
+            )
+            if estimated_speed is not None:
+                head_forward_speeds.append(estimated_speed)
+            if reference_head_speed is not None:
+                reference_head_forward_speeds.append(reference_head_speed)
+            if reference_chest_speed is not None:
+                reference_chest_forward_speeds.append(reference_chest_speed)
+            if reference_spine_speed is not None:
+                reference_spine_forward_speeds.append(reference_spine_speed)
+            reference_torso_speed = max(
+                value
+                for value in (reference_chest_speed, reference_spine_speed, 0.0)
+                if value is not None
+            )
+            if (
+                reference_head_speed is not None
+                and reference_head_speed >= reference_head_motion_threshold_deg_s
+            ):
+                reference_fast_head_torso_follow_flags.append(
+                    1.0 if reference_torso_speed >= reference_torso_follow_threshold_deg_s else 0.0
                 )
+            if (
+                estimated_speed is not None
+                and estimated_speed >= head_angular_speed_threshold_deg_s
+            ):
+                reference_motion_speed = max(
+                    value
+                    for value in (reference_head_speed, reference_torso_speed, 0.0)
+                    if value is not None
+                )
+                estimated_fast_head_without_reference_motion_flags.append(
+                    1.0 if reference_motion_speed < reference_head_motion_threshold_deg_s else 0.0
+                )
+
+        if estimated_head_forward is not None:
             previous_head_forward = estimated_head_forward
-            previous_timestamp_seconds = pose.timestamp_seconds
+        if reference_head_forward is not None:
+            previous_reference_head_forward = reference_head_forward
+        if reference_chest_forward is not None:
+            previous_reference_chest_forward = reference_chest_forward
+        if reference_spine_forward is not None:
+            previous_reference_spine_forward = reference_spine_forward
+        previous_timestamp_seconds = pose.timestamp_seconds
 
     return {
         "mean_head_forward_error_deg": _mean_values(head_forward_errors),
@@ -699,6 +777,40 @@ def summarize_orientation_sequence(
         "pct_head_forward_angular_speed_over_720deg_s": _percent_over(
             head_forward_speeds,
             head_angular_speed_threshold_deg_s,
+        ),
+        "p95_reference_head_forward_angular_speed_deg_s": _quantile(
+            reference_head_forward_speeds,
+            0.95,
+        ),
+        "max_reference_head_forward_angular_speed_deg_s": max(
+            reference_head_forward_speeds,
+            default=0.0,
+        ),
+        "pct_reference_head_forward_angular_speed_over_720deg_s": _percent_over(
+            reference_head_forward_speeds,
+            head_angular_speed_threshold_deg_s,
+        ),
+        "p95_reference_chest_forward_angular_speed_deg_s": _quantile(
+            reference_chest_forward_speeds,
+            0.95,
+        ),
+        "max_reference_chest_forward_angular_speed_deg_s": max(
+            reference_chest_forward_speeds,
+            default=0.0,
+        ),
+        "p95_reference_spine_forward_angular_speed_deg_s": _quantile(
+            reference_spine_forward_speeds,
+            0.95,
+        ),
+        "max_reference_spine_forward_angular_speed_deg_s": max(
+            reference_spine_forward_speeds,
+            default=0.0,
+        ),
+        "pct_reference_fast_head_turns_with_torso_follow": _percent_flags(
+            reference_fast_head_torso_follow_flags,
+        ),
+        "pct_estimated_fast_head_turns_without_reference_motion": _percent_flags(
+            estimated_fast_head_without_reference_motion_flags,
         ),
     }
 
@@ -1213,6 +1325,23 @@ def _reference_segment_axis(
     if start_joint not in reference or end_joint not in reference:
         return None
     return subtract(reference[end_joint].position, reference[start_joint].position)
+
+
+def _reference_joint_forward(reference: dict[str, Transform], joint_name: str) -> Vector3 | None:
+    transform = reference.get(joint_name)
+    if transform is None:
+        return None
+    return rotate_vector(transform.rotation, WORLD_FORWARD)
+
+
+def _angular_speed_deg_s(
+    current_axis: Vector3 | None,
+    previous_axis: Vector3 | None,
+    dt: float,
+) -> float | None:
+    if current_axis is None or previous_axis is None:
+        return None
+    return _vector_angle_deg(current_axis, previous_axis) / dt
 
 
 def _segment_axis_error_deg(

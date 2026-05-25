@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pytest import approx
 
+from validation.vr_pose_validation.geometry import Transform, look_rotation, rotate_vector
 from validation.vr_pose_validation.synthetic_trackers import (
+    WORLD_FORWARD,
     NoiseProfile,
     SyntheticTrackerConfig,
     generate_three_point_samples,
@@ -56,3 +58,30 @@ def test_noise_and_dropout_are_seeded() -> None:
     assert first.hmd.transform.position == second.hmd.transform.position
     assert not first.hmd.valid
     assert first.hmd.confidence == 0.0
+
+
+def test_head_tracker_uses_source_head_rotation_when_head_is_sideways_to_shoulders() -> None:
+    head_rotation = look_rotation((-1.0, 0.0, 0.0))
+    frames = [
+        {
+            "head": Transform(position=(0.0, 1.6, 0.0), rotation=head_rotation),
+            "left_shoulder": Transform(position=(-0.3, 1.3, -0.01)),
+            "right_shoulder": Transform(position=(0.3, 1.3, 0.01)),
+            "left_hand": Transform(position=(-0.4, 1.2, 0.1)),
+            "right_hand": Transform(position=(0.4, 1.2, 0.1)),
+        },
+        {
+            "head": Transform(position=(0.0, 1.6, 0.0), rotation=head_rotation),
+            "left_shoulder": Transform(position=(-0.3, 1.3, 0.01)),
+            "right_shoulder": Transform(position=(0.3, 1.3, -0.01)),
+            "left_hand": Transform(position=(-0.4, 1.2, 0.1)),
+            "right_hand": Transform(position=(0.4, 1.2, 0.1)),
+        },
+    ]
+
+    samples = generate_three_point_samples(frames)
+    first_forward = rotate_vector(samples[0].hmd.transform.rotation, WORLD_FORWARD)
+    second_forward = rotate_vector(samples[1].hmd.transform.rotation, WORLD_FORWARD)
+
+    assert first_forward == approx((-1.0, 0.0, 0.0))
+    assert second_forward == approx(first_forward)

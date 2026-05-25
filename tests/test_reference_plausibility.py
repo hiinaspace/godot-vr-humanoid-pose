@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from pytest import approx
+
+from validation.vr_pose_validation.calibration import (
+    calibration_from_reference_frames,
+    humanoid_poses_from_reference_frames,
+)
 from validation.vr_pose_validation.geometry import Transform
 from validation.vr_pose_validation.parquet_cache import CACHE_JOINTS
 from validation.vr_pose_validation.plausibility import (
@@ -133,6 +139,27 @@ def test_avatar_plausibility_flags_temporal_jerk_without_gt() -> None:
     assert summary.temporal_jerk_penalty > 0.0
 
 
+def test_reference_calibration_keeps_gt_avatar_plausibility_low() -> None:
+    frames = [
+        _reference_frame(head=(0.0, 1.85, 0.0), hips=(0.0, 1.02, 0.0)) for _index in range(40)
+    ]
+    calibration = calibration_from_reference_frames(frames, floor_height_m=0.0)
+
+    summary = summarize_avatar_plausibility(
+        humanoid_poses_from_reference_frames(
+            frames,
+            timestamps_seconds=[index / 120.0 for index in range(len(frames))],
+        ),
+        calibration=calibration,
+        floor_height_m=0.0,
+    )
+
+    assert calibration.bone_lengths_m["upper_arm"] == approx(0.19799, abs=1e-6)
+    assert calibration.human_height_m > 1.6
+    assert summary.endpoint_stretch_penalty == 0.0
+    assert summary.plausibility_score_0_100 > 99.0
+
+
 def _reference_frame(
     *,
     head: tuple[float, float, float],
@@ -144,6 +171,7 @@ def _reference_frame(
     joints.update(
         {
             "head": Transform(position=head),
+            "neck": Transform(position=(hips[0], head[1] - 0.12, hips[2])),
             "hips": Transform(position=hips),
             "chest": Transform(position=(hips[0], hips[1] + 0.42, hips[2])),
             "spine": Transform(position=(hips[0], hips[1] + 0.25, hips[2])),

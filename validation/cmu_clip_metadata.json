@@ -17198,15 +17198,19 @@
       "trial": 76
     },
     {
-      "activity_class": "stationary_upper_body",
-      "activity_label_source": "motion_description",
+      "activity_class": "unknown",
+      "activity_label_source": "manual_clip_override",
       "activity_tags": [
-        "daily_action"
+        "data_issue",
+        "floating_floor_t_pose"
       ],
       "clip": "79_77",
-      "environment_split": "flat",
-      "environment_tags": [],
-      "label_source": "motion_description",
+      "environment_split": "unknown",
+      "environment_tags": [
+        "data_issue",
+        "floating_floor_t_pose"
+      ],
+      "label_source": "manual_clip_override",
       "motion_description": "vacuuming",
       "subject": "79",
       "subject_description": "actor everyday activities",
@@ -36003,15 +36007,19 @@
       "trial": 53
     },
     {
-      "activity_class": "locomotion",
-      "activity_label_source": "subject_description",
+      "activity_class": "unknown",
+      "activity_label_source": "manual_clip_override",
       "activity_tags": [
-        "walk"
+        "data_issue",
+        "floating_floor_t_pose"
       ],
       "clip": "138_54",
-      "environment_split": "flat",
-      "environment_tags": [],
-      "label_source": "motion_description",
+      "environment_split": "unknown",
+      "environment_tags": [
+        "data_issue",
+        "floating_floor_t_pose"
+      ],
+      "label_source": "manual_clip_override",
       "motion_description": "Story",
       "subject": "138",
       "subject_description": "Marching, Walking and Talking",
@@ -38619,6 +38627,20 @@
         ],
         "label_source": "manual_clip_override"
       },
+      "138_54": {
+        "activity_class": "unknown",
+        "activity_label_source": "manual_clip_override",
+        "activity_tags": [
+          "data_issue",
+          "floating_floor_t_pose"
+        ],
+        "environment_split": "unknown",
+        "environment_tags": [
+          "data_issue",
+          "floating_floor_t_pose"
+        ],
+        "label_source": "manual_clip_override"
+      },
       "14_16": {
         "activity_class": "unknown",
         "activity_label_source": "manual_clip_override",
@@ -38644,6 +38666,20 @@
         "environment_tags": [
           "data_issue",
           "inverted_segment"
+        ],
+        "label_source": "manual_clip_override"
+      },
+      "79_77": {
+        "activity_class": "unknown",
+        "activity_label_source": "manual_clip_override",
+        "activity_tags": [
+          "data_issue",
+          "floating_floor_t_pose"
+        ],
+        "environment_split": "unknown",
+        "environment_tags": [
+          "data_issue",
+          "floating_floor_t_pose"
         ],
         "label_source": "manual_clip_override"
       }

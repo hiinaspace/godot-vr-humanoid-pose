@@ -8,10 +8,14 @@ const DEFAULT_FIXTURE_PATH = "res://tests/fixtures/cmu_walk_replay_fixture.json"
 @export var playback_fps = 30.0
 @export var lane_offset_m = 0.85
 @export var view_row_gap_m = 1.9
-@export var camera_padding = 1.30
-@export var minimum_camera_size_m = 4.4
+@export var camera_padding = 2.10
+@export var joint_bounds_margin_m = 0.25
+@export var camera_top_padding_m = 0.80
+@export var camera_bottom_padding_m = 0.65
+@export var minimum_camera_size_m = 7.0
 @export var center_on_pose = true
 @export var fixed_window_camera = true
+@export var render_window_size = Vector2i(1600, 1200)
 
 var fixture: Dictionary = {}
 var frame_index = 0
@@ -23,10 +27,13 @@ var _estimated_side_armature
 var _camera: Camera3D
 var _light: DirectionalLight3D
 var _fixture_bounds: Dictionary = {}
+var _debug_camera = false
+var _debug_camera_printed = false
 
 
 func _ready() -> void:
     _apply_user_args()
+    _configure_render_window()
     _setup_scene()
     load_fixture(fixture_path)
     set_frame_index(0)
@@ -98,6 +105,7 @@ func _setup_scene() -> void:
         _camera = Camera3D.new()
         _camera.name = "Camera3D"
         _camera.fov = 38.0
+        _camera.keep_aspect = Camera3D.KEEP_HEIGHT
         add_child(_camera)
         _camera.make_current()
     if _light == null:
@@ -109,12 +117,14 @@ func _setup_scene() -> void:
 
 func _update_camera(reference_frame: Dictionary, estimated_frame: Dictionary) -> void:
     var bounds = _camera_bounds(reference_frame, estimated_frame)
+    bounds = _padded_camera_bounds(bounds)
     var target = (bounds["min"] + bounds["max"]) * 0.5
     var span = bounds["max"] - bounds["min"]
     _camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-    var viewport_size = Vector2(1600.0, 1200.0)
+    _camera.keep_aspect = Camera3D.KEEP_HEIGHT
+    var viewport_size = Vector2(render_window_size)
     var viewport = get_viewport()
-    if viewport != null:
+    if viewport != null and (render_window_size.x <= 0 or render_window_size.y <= 0):
         viewport_size = viewport.get_visible_rect().size
     var aspect = maxf(viewport_size.x / maxf(viewport_size.y, 1.0), 0.1)
     var vertical_size = span.y * camera_padding
@@ -122,6 +132,19 @@ func _update_camera(reference_frame: Dictionary, estimated_frame: Dictionary) ->
     _camera.size = maxf(maxf(vertical_size, horizontal_size), minimum_camera_size_m)
     _camera.position = target + Vector3(0.0, 0.0, 10.0)
     _camera.look_at_from_position(_camera.position, target, Vector3.UP)
+    if _debug_camera and not _debug_camera_printed:
+        _debug_camera_printed = true
+        print(
+            JSON.stringify(
+                {
+                    "camera_size": _camera.size,
+                    "target": _vector_to_array(target),
+                    "bounds_min": _vector_to_array(bounds["min"]),
+                    "bounds_max": _vector_to_array(bounds["max"]),
+                    "viewport_size": [viewport_size.x, viewport_size.y],
+                }
+            )
+        )
 
 
 func _joint_position(frame: Dictionary, joint_name: String) -> Vector3:
@@ -139,6 +162,20 @@ func _apply_user_args() -> void:
     for index in range(args.size()):
         if args[index] == "--fixture" and index + 1 < args.size():
             fixture_path = args[index + 1]
+        if args[index] == "--render-size" and index + 1 < args.size():
+            var parsed_size = _parse_render_size(args[index + 1])
+            if parsed_size.x > 0 and parsed_size.y > 0:
+                render_window_size = parsed_size
+        if args[index] == "--debug-camera":
+            _debug_camera = true
+
+
+func _configure_render_window() -> void:
+    if render_window_size.x <= 0 or render_window_size.y <= 0:
+        return
+    var window = get_window()
+    if window != null:
+        window.size = render_window_size
 
 
 func _new_armature(armature_name: String):
@@ -215,6 +252,17 @@ func _camera_bounds(reference_frame: Dictionary, estimated_frame: Dictionary) ->
     return _frame_pair_bounds(reference_frame, estimated_frame)
 
 
+func _padded_camera_bounds(bounds: Dictionary) -> Dictionary:
+    var min_position: Vector3 = bounds["min"]
+    var max_position: Vector3 = bounds["max"]
+    return {
+        "min": min_position
+            - Vector3(joint_bounds_margin_m, joint_bounds_margin_m + camera_bottom_padding_m, 0.0),
+        "max": max_position
+            + Vector3(joint_bounds_margin_m, joint_bounds_margin_m + camera_top_padding_m, 0.0),
+    }
+
+
 func _compute_fixture_bounds() -> Dictionary:
     var reference_frames: Array = fixture.get("reference_frames", [])
     var estimated_frames: Array = fixture.get("estimated_frames", [])
@@ -252,3 +300,14 @@ func _position_from_transform(transform: Dictionary) -> Vector3:
     if value is Vector3:
         return value
     return Vector3(value[0], value[1], value[2])
+
+
+func _parse_render_size(value: String) -> Vector2i:
+    var parts = value.to_lower().split("x")
+    if parts.size() != 2:
+        return Vector2i.ZERO
+    return Vector2i(int(parts[0]), int(parts[1]))
+
+
+func _vector_to_array(value: Vector3) -> Array:
+    return [value.x, value.y, value.z]
