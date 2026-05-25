@@ -33,7 +33,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--models",
         nargs="*",
-        choices=("constant", "torch_linear", "torch_mlp", "xgboost"),
+        choices=(
+            "constant",
+            "torch_linear",
+            "torch_mlp",
+            "torch_residual_linear",
+            "torch_residual_mlp",
+            "xgboost",
+        ),
         default=("constant", "torch_linear", "torch_mlp", "xgboost"),
     )
     parser.add_argument("--epochs", type=int, default=80)
@@ -44,6 +51,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--allow-cpu", action="store_true")
     parser.add_argument("--xgboost-estimators", type=int, default=256)
+    parser.add_argument("--residual-regularization-weight", type=float, default=1e-3)
+    parser.add_argument("--residual-scale", type=float, default=1.0)
+    parser.add_argument("--residual-smoothing-alpha", type=float, default=1.0)
+    parser.add_argument("--surrogate-position-weight", type=float, default=0.0)
+    parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
+    parser.add_argument("--temporal-acceleration-weight", type=float, default=0.0)
     parser.add_argument(
         "--validate-cache-dir",
         type=Path,
@@ -51,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--validation-model",
-        choices=("torch_linear", "torch_mlp"),
+        choices=("torch_linear", "torch_mlp", "torch_residual_linear", "torch_residual_mlp"),
         default="torch_mlp",
         help="Torch artifact to use for optional downstream cached validation.",
     )
@@ -93,6 +106,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=args.seed,
         allow_cpu=args.allow_cpu,
         xgboost_estimators=max(1, args.xgboost_estimators),
+        residual_regularization_weight=max(0.0, args.residual_regularization_weight),
+        residual_scale=max(0.0, args.residual_scale),
+        residual_smoothing_alpha=min(max(0.0, args.residual_smoothing_alpha), 1.0),
+        surrogate_position_weight=max(0.0, args.surrogate_position_weight),
+        temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
+        temporal_acceleration_weight=max(0.0, args.temporal_acceleration_weight),
         validate_cache_dir=args.validate_cache_dir,
         validation_model=args.validation_model,
         max_validation_clips=args.max_validation_clips,
@@ -117,6 +136,12 @@ def run_upper_body_latent_cross_validation(
     seed: int = 0,
     allow_cpu: bool = False,
     xgboost_estimators: int = 256,
+    residual_regularization_weight: float = 1e-3,
+    residual_scale: float = 1.0,
+    residual_smoothing_alpha: float = 1.0,
+    surrogate_position_weight: float = 0.0,
+    temporal_velocity_weight: float = 0.0,
+    temporal_acceleration_weight: float = 0.0,
     validate_cache_dir: Path | None = None,
     validation_model: str = "torch_mlp",
     max_validation_clips: int | None = None,
@@ -146,6 +171,12 @@ def run_upper_body_latent_cross_validation(
             seed=seed + fold_index,
             allow_cpu=allow_cpu,
             xgboost_estimators=xgboost_estimators,
+            residual_regularization_weight=residual_regularization_weight,
+            residual_scale=residual_scale,
+            residual_smoothing_alpha=residual_smoothing_alpha,
+            surrogate_position_weight=surrogate_position_weight,
+            temporal_velocity_weight=temporal_velocity_weight,
+            temporal_acceleration_weight=temporal_acceleration_weight,
             validation_subjects=set(validation_subjects),
         )
         fold_report: dict[str, object] = {
