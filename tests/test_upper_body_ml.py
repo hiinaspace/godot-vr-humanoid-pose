@@ -10,7 +10,7 @@ from validation.scripts.check_upper_body_invariance import (
 )
 from validation.vr_pose_validation.baseline import BasisPortEstimator
 from validation.vr_pose_validation.cmu_metadata import ActivityClass, EnvironmentSplit
-from validation.vr_pose_validation.geometry import Transform, look_rotation
+from validation.vr_pose_validation.geometry import Transform, distance, look_rotation
 from validation.vr_pose_validation.parquet_cache import (
     CACHE_JOINTS,
     append_cached_pose_frame,
@@ -64,6 +64,7 @@ def test_sparse_window_export_writes_causal_rows_and_heuristic_latents(tmp_path)
     assert "heuristic_left_elbow_swivel_sin" in rows[0]
     assert "left_shoulder_elevation" in rows[0]
     assert rows[0]["reference_left_elbow_valid"] == 1.0
+    assert rows[0]["reference_neck_valid"] == 1.0
     assert rows[0]["heuristic_left_elbow_valid"] == 1.0
     assert rows[0]["reference_left_shoulder_position_x"] == approx(0.22)
 
@@ -94,7 +95,7 @@ def test_sparse_window_export_writes_loadable_shards(tmp_path) -> None:
     assert (output_dir / "windows_shards").exists()
     assert dataset.features.shape[0] == 4
     assert dataset.decoded_reference_points is not None
-    assert dataset.decoded_reference_points.shape == (4, 5, 3)
+    assert dataset.decoded_reference_points.shape == (4, 6, 3)
 
 
 def test_rotation6d_is_independent_of_quaternion_sign() -> None:
@@ -149,6 +150,41 @@ def test_learned_latent_application_keeps_controller_hand_target_fixed() -> None
     assert adjusted.joints["left_elbow"].transform.position == approx(
         base_pose.joints["left_elbow"].transform.position,
         abs=1e-6,
+    )
+
+
+def test_torso_lean_latents_move_runtime_torso_chain() -> None:
+    frame = _pose_frame(0.0)
+    sample = generate_three_point_samples([frame])[0]
+    calibration = AvatarCalibration(human_height_m=1.8)
+    base_pose = BasisPortEstimator().estimate(sample, calibration, GroundingContext())
+    latents = extract_upper_body_latents(
+        {name: joint.transform for name, joint in base_pose.joints.items()},
+        calibration,
+    )
+    values = dict(latents.values)
+    masks = dict(latents.masks)
+    values["torso_lean_z"] = 0.35
+    masks["torso_lean_z"] = 1.0
+    provider = StaticUpperBodyLatentProvider(values, masks)
+
+    adjusted = apply_upper_body_latents(
+        base_pose,
+        provider.predict(sample, calibration, GroundingContext()),
+        calibration=calibration,
+    )
+
+    base_head = base_pose.joints["head"].transform.position
+    base_hips = base_pose.joints["hips"].transform.position
+    adjusted_head = adjusted.joints["head"].transform.position
+    adjusted_hips = adjusted.joints["hips"].transform.position
+
+    assert adjusted_head == base_head
+    assert distance(adjusted_head, adjusted_hips) == approx(distance(base_head, base_hips))
+    assert adjusted_hips[2] < base_hips[2]
+    assert (
+        adjusted.joints["chest"].transform.position[2]
+        < base_pose.joints["chest"].transform.position[2]
     )
 
 

@@ -27,6 +27,7 @@ from validation.vr_pose_validation.geometry import (
     distance,
     dot,
     horizontal,
+    lerp,
     look_rotation,
     multiply_quaternion,
     normalize,
@@ -118,6 +119,7 @@ STATIC_CALIBRATION_FEATURE_NAMES = (
 )
 DECODED_REFERENCE_JOINTS = (
     "chest",
+    "neck",
     "left_shoulder",
     "right_shoulder",
     "left_elbow",
@@ -773,7 +775,7 @@ def apply_upper_body_latents(
             head_basis.forward,
         )
         rotation = look_rotation(forward, WORLD_UP)
-        for joint_name in ("hips", "spine", "chest"):
+        for joint_name in ("hips", "spine", "chest", "neck"):
             if joint_name in joints:
                 old_joint = joints[joint_name]
                 joints[joint_name] = JointPose(
@@ -781,6 +783,9 @@ def apply_upper_body_latents(
                     confidence=old_joint.confidence,
                     estimated=old_joint.estimated,
                 )
+
+    if _torso_lean_enabled(values, masks, min_mask) and "head" in joints and "hips" in joints:
+        _apply_torso_lean_positions(joints, values)
 
     for side in ("left", "right"):
         shoulder_name = f"{side}_shoulder"
@@ -842,6 +847,64 @@ def apply_upper_body_latents(
     return HumanoidPoseFrame(
         timestamp_seconds=pose.timestamp_seconds, root=pose.root, joints=joints
     )
+
+
+def _torso_lean_enabled(
+    values: Mapping[str, float],
+    masks: Mapping[str, float],
+    min_mask: float,
+) -> bool:
+    return all(_enabled(values, masks, name, min_mask) for name in ("torso_lean_x", "torso_lean_z"))
+
+
+def _apply_torso_lean_positions(
+    joints: dict[str, JointPose],
+    values: Mapping[str, float],
+) -> None:
+    head = joints["head"].transform.position
+    hips = joints["hips"].transform.position
+    head_to_hips = subtract(hips, head)
+    torso_length = max(distance(head, hips), 1e-4)
+    head_basis = yaw_basis_from_rotation(joints["head"].transform.rotation)
+    lean_x = max(-0.95, min(0.95, values.get("torso_lean_x", 0.0)))
+    lean_z = max(-0.95, min(0.95, values.get("torso_lean_z", 0.0)))
+    lean_y = sqrt(max(1e-4, 1.0 - lean_x * lean_x - lean_z * lean_z))
+    hips_to_head = normalize(
+        add(
+            add(scale(head_basis.right, lean_x), scale(WORLD_UP, lean_y)),
+            scale(head_basis.forward, lean_z),
+        ),
+        WORLD_UP,
+    )
+    current_hips_to_head = normalize(subtract(head, hips), WORLD_UP)
+    if distance(hips_to_head, current_hips_to_head) <= 1e-6:
+        return
+    new_hips = subtract(head, scale(hips_to_head, torso_length))
+    for joint_name in ("neck", "chest", "spine", "hips"):
+        if joint_name not in joints:
+            continue
+        fraction = _torso_chain_fraction(joints[joint_name].transform.position, head, head_to_hips)
+        old_joint = joints[joint_name]
+        joints[joint_name] = JointPose(
+            transform=Transform(
+                position=lerp(head, new_hips, fraction),
+                rotation=old_joint.transform.rotation,
+            ),
+            confidence=old_joint.confidence,
+            estimated=True,
+        )
+
+
+def _torso_chain_fraction(
+    position: Vector3,
+    head: Vector3,
+    head_to_hips: Vector3,
+) -> float:
+    denominator = dot(head_to_hips, head_to_hips)
+    if denominator <= 1e-8:
+        return 1.0
+    fraction = dot(subtract(position, head), head_to_hips) / denominator
+    return max(0.0, min(1.0, fraction))
 
 
 def _combine_residual_prediction(
@@ -988,6 +1051,8 @@ def _add_decoded_reference_points(
 ) -> None:
     for joint_name in DECODED_REFERENCE_JOINTS:
         transform = joints.get(joint_name)
+        if transform is None and joint_name == "neck":
+            transform = _synthetic_neck_transform(joints)
         valid = transform is not None
         position = (
             local_position(transform.position, origin=origin, basis=basis)
@@ -997,6 +1062,17 @@ def _add_decoded_reference_points(
         for component, value in zip(("x", "y", "z"), position, strict=True):
             row[f"{prefix}_{joint_name}_position_{component}"] = float(value)
         row[f"{prefix}_{joint_name}_valid"] = 1.0 if valid else 0.0
+
+
+def _synthetic_neck_transform(joints: Mapping[str, Transform]) -> Transform | None:
+    head = joints.get("head")
+    chest = joints.get("chest")
+    if head is None or chest is None:
+        return None
+    return Transform(
+        position=lerp(chest.position, head.position, 0.7),
+        rotation=head.rotation,
+    )
 
 
 def sparse_window_features(
@@ -1129,6 +1205,11 @@ def _empty_windows_frame(feature_names: Sequence[str]) -> pl.DataFrame:
         schema[f"{name}_mask"] = pl.Float64
         schema[f"heuristic_{name}"] = pl.Float64
         schema[f"heuristic_{name}_mask"] = pl.Float64
+    for prefix in ("reference", "heuristic"):
+        for joint_name in DECODED_REFERENCE_JOINTS:
+            for component in ("x", "y", "z"):
+                schema[f"{prefix}_{joint_name}_position_{component}"] = pl.Float64
+            schema[f"{prefix}_{joint_name}_valid"] = pl.Float64
     return pl.DataFrame(schema=schema)
 
 

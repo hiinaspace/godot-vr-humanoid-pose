@@ -20,7 +20,10 @@ from validation.scripts.train_upper_body_latents import (
     train_upper_body_latents,
 )
 from validation.vr_pose_validation.cmu_metadata import ActivityClass, EnvironmentSplit
-from validation.vr_pose_validation.upper_body_ml import DEFAULT_CLEAN_ACTIVITY_CLASSES
+from validation.vr_pose_validation.upper_body_ml import (
+    DEFAULT_CLEAN_ACTIVITY_CLASSES,
+    TARGET_GROUPS,
+)
 
 DEFAULT_REPORT_NAME = "cross_validation.json"
 
@@ -57,6 +60,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--residual-gate-search", action="store_true")
     parser.add_argument("--latent-loss-weight", type=float, default=1.0)
     parser.add_argument("--decoded-pose-weight", type=float, default=0.0)
+    parser.add_argument("--decoded-torso-weight", type=float, default=0.0)
     parser.add_argument("--decoded-shoulder-weight", type=float, default=1.0)
     parser.add_argument("--decoded-elbow-weight", type=float, default=1.0)
     parser.add_argument("--decoded-arm-direction-weight", type=float, default=0.25)
@@ -64,6 +68,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--surrogate-position-weight", type=float, default=0.0)
     parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
     parser.add_argument("--temporal-acceleration-weight", type=float, default=0.0)
+    parser.add_argument("--temporal-jerk-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--disabled-target-groups",
+        nargs="*",
+        choices=tuple(TARGET_GROUPS),
+        default=(),
+        help="Residual target groups to leave at the heuristic baseline.",
+    )
     parser.add_argument(
         "--validate-cache-dir",
         type=Path,
@@ -119,6 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         residual_gate_search=args.residual_gate_search,
         latent_loss_weight=max(0.0, args.latent_loss_weight),
         decoded_pose_weight=max(0.0, args.decoded_pose_weight),
+        decoded_torso_weight=max(0.0, args.decoded_torso_weight),
         decoded_shoulder_weight=max(0.0, args.decoded_shoulder_weight),
         decoded_elbow_weight=max(0.0, args.decoded_elbow_weight),
         decoded_arm_direction_weight=max(0.0, args.decoded_arm_direction_weight),
@@ -126,6 +139,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         surrogate_position_weight=max(0.0, args.surrogate_position_weight),
         temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
         temporal_acceleration_weight=max(0.0, args.temporal_acceleration_weight),
+        temporal_jerk_weight=max(0.0, args.temporal_jerk_weight),
+        disabled_target_groups=set(args.disabled_target_groups),
         validate_cache_dir=args.validate_cache_dir,
         validation_model=args.validation_model,
         max_validation_clips=args.max_validation_clips,
@@ -156,6 +171,7 @@ def run_upper_body_latent_cross_validation(
     residual_gate_search: bool = False,
     latent_loss_weight: float = 1.0,
     decoded_pose_weight: float = 0.0,
+    decoded_torso_weight: float = 0.0,
     decoded_shoulder_weight: float = 1.0,
     decoded_elbow_weight: float = 1.0,
     decoded_arm_direction_weight: float = 0.25,
@@ -163,6 +179,8 @@ def run_upper_body_latent_cross_validation(
     surrogate_position_weight: float = 0.0,
     temporal_velocity_weight: float = 0.0,
     temporal_acceleration_weight: float = 0.0,
+    temporal_jerk_weight: float = 0.0,
+    disabled_target_groups: set[str] | None = None,
     validate_cache_dir: Path | None = None,
     validation_model: str = "torch_mlp",
     max_validation_clips: int | None = None,
@@ -198,6 +216,7 @@ def run_upper_body_latent_cross_validation(
             residual_gate_search=residual_gate_search,
             latent_loss_weight=latent_loss_weight,
             decoded_pose_weight=decoded_pose_weight,
+            decoded_torso_weight=decoded_torso_weight,
             decoded_shoulder_weight=decoded_shoulder_weight,
             decoded_elbow_weight=decoded_elbow_weight,
             decoded_arm_direction_weight=decoded_arm_direction_weight,
@@ -205,6 +224,8 @@ def run_upper_body_latent_cross_validation(
             surrogate_position_weight=surrogate_position_weight,
             temporal_velocity_weight=temporal_velocity_weight,
             temporal_acceleration_weight=temporal_acceleration_weight,
+            temporal_jerk_weight=temporal_jerk_weight,
+            disabled_target_groups=disabled_target_groups,
             validation_subjects=set(validation_subjects),
         )
         fold_report: dict[str, object] = {

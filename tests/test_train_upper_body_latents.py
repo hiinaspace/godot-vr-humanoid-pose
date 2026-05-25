@@ -7,7 +7,7 @@ from typing import cast
 import polars as pl
 import pytest
 
-from validation.vr_pose_validation.upper_body_ml import TARGET_NAMES
+from validation.vr_pose_validation.upper_body_ml import TARGET_GROUPS, TARGET_NAMES
 
 
 def test_torch_linear_smoke_reduces_synthetic_validation_loss(tmp_path) -> None:
@@ -74,6 +74,32 @@ def test_residual_mlp_smoke_learns_correction_over_heuristic(tmp_path) -> None:
     )
 
 
+def test_disabled_target_groups_zero_residual_artifact_gates(tmp_path) -> None:
+    pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import train_upper_body_latents
+
+    report = train_upper_body_latents(
+        dataset_dir=_write_synthetic_dataset(tmp_path),
+        output_dir=tmp_path / "models",
+        model_names=("torch_residual_linear",),
+        epochs=1,
+        batch_size=16,
+        allow_cpu=True,
+        disabled_target_groups={"torso"},
+    )
+    leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
+    row = next(row for row in leaderboard_rows if row["model"] == "torch_residual_linear")
+    gates = cast(Mapping[str, float], row["residual_gates"])
+
+    for target_name in TARGET_GROUPS["torso"]:
+        assert gates[target_name] == pytest.approx(0.0)
+    assert gates["left_shoulder_elevation"] == pytest.approx(1.0)
+    assert row["disabled_target_groups"] == ["torso"]
+    assert (tmp_path / "models" / "torch_residual_linear.pt").exists()
+
+
 def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
     torch = pytest.importorskip("torch")
 
@@ -90,13 +116,14 @@ def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
         "t+00_right_hand_position_x",
         "t+00_right_hand_position_y",
         "t+00_right_hand_position_z",
+        "calibration_human_height_m",
         "calibration_shoulder_width_m",
         "calibration_upper_arm_m",
         "calibration_lower_arm_m",
         "calibration_arm_length_m",
     ]
     raw_features = torch.tensor(
-        [[1.60, 0.42, 1.20, 0.12, -0.42, 1.20, 0.12, 0.40, 0.30, 0.25, 0.55]],
+        [[1.60, 0.42, 1.20, 0.12, -0.42, 1.20, 0.12, 1.80, 0.40, 0.30, 0.25, 0.55]],
         dtype=torch.float32,
     )
     target = torch.zeros((1, len(TARGET_NAMES)), dtype=torch.float32)
@@ -119,6 +146,7 @@ def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
         decoded_reference_masks=None,
         surrogate_indices=surrogate_indices,
         target_names=TARGET_NAMES,
+        torso_weight=1.0,
         shoulder_weight=1.0,
         elbow_weight=1.0,
         arm_direction_weight=1.0,
@@ -134,6 +162,7 @@ def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
         decoded_reference_masks=None,
         surrogate_indices=surrogate_indices,
         target_names=TARGET_NAMES,
+        torso_weight=1.0,
         shoulder_weight=1.0,
         elbow_weight=1.0,
         arm_direction_weight=1.0,
@@ -142,6 +171,38 @@ def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
 
     assert float(matching_loss) == pytest.approx(0.0, abs=1e-6)
     assert float(perturbed_loss) > 0.001
+
+
+def test_decoded_temporal_validation_metric_penalizes_jerk() -> None:
+    torch = pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import _decoded_temporal_validation_metric
+
+    target_points = torch.zeros((4, 5, 3), dtype=torch.float32)
+    prediction_points = target_points.clone()
+    prediction_points[3, 1, 0] = 1.0
+    point_masks = torch.ones((4, 5), dtype=torch.float32)
+    windows = torch.tensor([[0, 1, 2, 3]], dtype=torch.long)
+
+    matching = _decoded_temporal_validation_metric(
+        torch,
+        target_points,
+        target_points,
+        point_masks,
+        windows,
+        order=3,
+    )
+    perturbed = _decoded_temporal_validation_metric(
+        torch,
+        prediction_points,
+        target_points,
+        point_masks,
+        windows,
+        order=3,
+    )
+
+    assert matching == pytest.approx(0.0)
+    assert perturbed > 0.0
 
 
 def test_xgboost_cuda_smoke_when_available(tmp_path) -> None:
