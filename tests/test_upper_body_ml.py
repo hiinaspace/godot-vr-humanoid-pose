@@ -20,6 +20,7 @@ from validation.vr_pose_validation.parquet_cache import (
 from validation.vr_pose_validation.synthetic_trackers import generate_three_point_samples
 from validation.vr_pose_validation.types import AvatarCalibration, GroundingContext
 from validation.vr_pose_validation.upper_body_ml import (
+    RUNTIME_DECODER_CONTEXT_JOINTS,
     SparseWindowConfig,
     StaticUpperBodyLatentProvider,
     apply_upper_body_latents,
@@ -66,6 +67,8 @@ def test_sparse_window_export_writes_causal_rows_and_heuristic_latents(tmp_path)
     assert rows[0]["reference_left_elbow_valid"] == 1.0
     assert rows[0]["reference_neck_valid"] == 1.0
     assert rows[0]["heuristic_left_elbow_valid"] == 1.0
+    assert rows[0]["heuristic_context_hips_valid"] == 1.0
+    assert rows[0]["heuristic_context_left_hand_valid"] == 1.0
     assert rows[0]["reference_left_shoulder_position_x"] == approx(0.22)
 
 
@@ -96,6 +99,8 @@ def test_sparse_window_export_writes_loadable_shards(tmp_path) -> None:
     assert dataset.features.shape[0] == 4
     assert dataset.decoded_reference_points is not None
     assert dataset.decoded_reference_points.shape == (4, 6, 3)
+    assert dataset.runtime_context_points is not None
+    assert dataset.runtime_context_points.shape == (4, len(RUNTIME_DECODER_CONTEXT_JOINTS), 3)
 
 
 def test_rotation6d_is_independent_of_quaternion_sign() -> None:

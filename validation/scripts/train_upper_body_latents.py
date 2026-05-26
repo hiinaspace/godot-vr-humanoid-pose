@@ -13,8 +13,14 @@ from typing import Any, Literal, cast
 
 import numpy as np
 
+from validation.vr_pose_validation.torch_upper_body_decoder import (
+    RuntimeDecoderFeatureIndices,
+    decode_upper_body_runtime_points,
+    runtime_decoder_feature_indices,
+)
 from validation.vr_pose_validation.upper_body_ml import (
     DECODED_REFERENCE_JOINTS,
+    RUNTIME_DECODER_CONTEXT_JOINTS,
     TARGET_GROUPS,
     TARGET_NAMES,
     read_sparse_window_dataframe,
@@ -41,6 +47,8 @@ class LoadedDataset:
     heuristic_masks: np.ndarray | None
     decoded_reference_points: np.ndarray | None
     decoded_reference_masks: np.ndarray | None
+    runtime_context_points: np.ndarray | None
+    runtime_context_masks: np.ndarray | None
     splits: np.ndarray
     subjects: np.ndarray
     clips: np.ndarray
@@ -334,6 +342,7 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
         heuristics = None
         heuristic_masks = None
     decoded_reference_points, decoded_reference_masks = _load_decoded_reference_points(dataframe)
+    runtime_context_points, runtime_context_masks = _load_runtime_decoder_context_points(dataframe)
     splits = np.asarray(dataframe["split"].to_list(), dtype=str)
     subjects = np.asarray(dataframe["subject"].to_list(), dtype=str)
     clips = np.asarray(dataframe["clip"].to_list(), dtype=str)
@@ -347,6 +356,8 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
         heuristic_masks=heuristic_masks,
         decoded_reference_points=decoded_reference_points,
         decoded_reference_masks=decoded_reference_masks,
+        runtime_context_points=runtime_context_points,
+        runtime_context_masks=runtime_context_masks,
         splits=splits,
         subjects=subjects,
         clips=clips,
@@ -375,6 +386,28 @@ def _load_decoded_reference_points(dataframe: Any) -> tuple[np.ndarray | None, n
     points = np.asarray(dataframe.select(point_columns).to_numpy(), dtype=np.float32).reshape(
         dataframe.height,
         len(DECODED_REFERENCE_JOINTS),
+        3,
+    )
+    masks = np.asarray(dataframe.select(mask_columns).to_numpy(), dtype=np.float32)
+    return points, masks
+
+
+def _load_runtime_decoder_context_points(
+    dataframe: Any,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    point_columns = [
+        f"heuristic_context_{joint_name}_position_{component}"
+        for joint_name in RUNTIME_DECODER_CONTEXT_JOINTS
+        for component in ("x", "y", "z")
+    ]
+    mask_columns = [
+        f"heuristic_context_{joint_name}_valid" for joint_name in RUNTIME_DECODER_CONTEXT_JOINTS
+    ]
+    if not all(name in dataframe.columns for name in (*point_columns, *mask_columns)):
+        return None, None
+    points = np.asarray(dataframe.select(point_columns).to_numpy(), dtype=np.float32).reshape(
+        dataframe.height,
+        len(RUNTIME_DECODER_CONTEXT_JOINTS),
         3,
     )
     masks = np.asarray(dataframe.select(mask_columns).to_numpy(), dtype=np.float32)
@@ -536,6 +569,32 @@ def _train_torch_model(
         decoded_masks_train = None
         decoded_points_val = None
         decoded_masks_val = None
+    if dataset.runtime_context_points is not None and dataset.runtime_context_masks is not None:
+        runtime_context_points_train = torch.as_tensor(
+            dataset.runtime_context_points[train_mask],
+            dtype=torch.float32,
+            device=device,
+        )
+        runtime_context_masks_train = torch.as_tensor(
+            dataset.runtime_context_masks[train_mask],
+            dtype=torch.float32,
+            device=device,
+        )
+        runtime_context_points_val = torch.as_tensor(
+            dataset.runtime_context_points[validation_mask],
+            dtype=torch.float32,
+            device=device,
+        )
+        runtime_context_masks_val = torch.as_tensor(
+            dataset.runtime_context_masks[validation_mask],
+            dtype=torch.float32,
+            device=device,
+        )
+    else:
+        runtime_context_points_train = None
+        runtime_context_masks_train = None
+        runtime_context_points_val = None
+        runtime_context_masks_val = None
     residual_group_gates = _residual_gates_for_disabled_groups(
         target_names,
         active_disabled_target_groups,
@@ -552,6 +611,14 @@ def _train_torch_model(
     effective_m_train = effective_m_train * group_mask[None, :]
     effective_m_val = effective_m_val * group_mask[None, :]
     surrogate_indices = _surrogate_feature_indices(feature_names)
+    runtime_decoder_indices = runtime_decoder_feature_indices(feature_names)
+    decoded_decoder = (
+        "runtime"
+        if runtime_decoder_indices is not None
+        and runtime_context_points_train is not None
+        and runtime_context_masks_train is not None
+        else "surrogate"
+    )
     train_pairs = torch.as_tensor(
         _temporal_pairs(dataset, train_mask),
         dtype=torch.long,
@@ -651,6 +718,17 @@ def _train_torch_model(
                         if decoded_masks_train is not None
                         else None
                     ),
+                    runtime_context_points=(
+                        runtime_context_points_train[batch_indices]
+                        if runtime_context_points_train is not None
+                        else None
+                    ),
+                    runtime_context_masks=(
+                        runtime_context_masks_train[batch_indices]
+                        if runtime_context_masks_train is not None
+                        else None
+                    ),
+                    runtime_decoder_indices=runtime_decoder_indices,
                     surrogate_indices=surrogate_indices,
                     target_names=target_names,
                     torso_weight=decoded_torso_weight,
@@ -671,6 +749,9 @@ def _train_torch_model(
                     train_pairs,
                     decoded_reference_points=decoded_points_train,
                     decoded_reference_masks=decoded_masks_train,
+                    runtime_context_points=runtime_context_points_train,
+                    runtime_context_masks=runtime_context_masks_train,
+                    runtime_decoder_indices=runtime_decoder_indices,
                     order=1,
                     prediction_mode=prediction_mode,
                     residual_scale=residual_scale,
@@ -691,6 +772,9 @@ def _train_torch_model(
                     train_triples,
                     decoded_reference_points=decoded_points_train,
                     decoded_reference_masks=decoded_masks_train,
+                    runtime_context_points=runtime_context_points_train,
+                    runtime_context_masks=runtime_context_masks_train,
+                    runtime_decoder_indices=runtime_decoder_indices,
                     order=2,
                     prediction_mode=prediction_mode,
                     residual_scale=residual_scale,
@@ -711,6 +795,9 @@ def _train_torch_model(
                     train_quads,
                     decoded_reference_points=decoded_points_train,
                     decoded_reference_masks=decoded_masks_train,
+                    runtime_context_points=runtime_context_points_train,
+                    runtime_context_masks=runtime_context_masks_train,
+                    runtime_decoder_indices=runtime_decoder_indices,
                     order=3,
                     prediction_mode=prediction_mode,
                     residual_scale=residual_scale,
@@ -744,6 +831,9 @@ def _train_torch_model(
                 raw_x_val,
                 decoded_reference_points=decoded_points_val,
                 decoded_reference_masks=decoded_masks_val,
+                runtime_context_points=runtime_context_points_val,
+                runtime_context_masks=runtime_context_masks_val,
+                runtime_decoder_indices=runtime_decoder_indices,
                 prediction_mode=prediction_mode,
                 residual_scale=residual_scale,
                 target_names=target_names,
@@ -789,6 +879,9 @@ def _train_torch_model(
         raw_x_val,
         decoded_reference_points=decoded_points_val,
         decoded_reference_masks=decoded_masks_val,
+        runtime_context_points=runtime_context_points_val,
+        runtime_context_masks=runtime_context_masks_val,
+        runtime_decoder_indices=runtime_decoder_indices,
         feature_names=feature_names,
         target_names=target_names,
         temporal_pairs=validation_pairs,
@@ -814,6 +907,7 @@ def _train_torch_model(
             "temporal_acceleration_weight": temporal_acceleration_weight,
             "temporal_jerk_weight": temporal_jerk_weight,
             "disabled_target_groups": sorted(active_disabled_target_groups),
+            "decoded_decoder": decoded_decoder,
             "model_state_dict": model.state_dict(),
             "feature_names": list(feature_names),
             "target_names": list(target_names),
@@ -843,6 +937,7 @@ def _train_torch_model(
         "decoded_stretch_weight": decoded_stretch_weight,
         "temporal_jerk_weight": temporal_jerk_weight,
         "disabled_target_groups": sorted(active_disabled_target_groups),
+        "decoded_decoder": decoded_decoder,
         **extra_metrics,
         **_metric_dict(
             targets[validation_mask],
@@ -989,6 +1084,9 @@ def _fit_residual_gates(
     *,
     decoded_reference_points: Any | None,
     decoded_reference_masks: Any | None,
+    runtime_context_points: Any | None,
+    runtime_context_masks: Any | None,
+    runtime_decoder_indices: RuntimeDecoderFeatureIndices | None,
     prediction_mode: Literal["absolute", "residual"],
     residual_scale: float,
     target_names: Sequence[str],
@@ -1042,6 +1140,9 @@ def _fit_residual_gates(
                     raw_features,
                     decoded_reference_points=decoded_reference_points,
                     decoded_reference_masks=decoded_reference_masks,
+                    runtime_context_points=runtime_context_points,
+                    runtime_context_masks=runtime_context_masks,
+                    runtime_decoder_indices=runtime_decoder_indices,
                     feature_names=feature_names,
                     target_names=target_names,
                     surrogate_position_weight=surrogate_position_weight,
@@ -1070,6 +1171,9 @@ def _residual_gate_loss(
     *,
     decoded_reference_points: Any | None,
     decoded_reference_masks: Any | None,
+    runtime_context_points: Any | None,
+    runtime_context_masks: Any | None,
+    runtime_decoder_indices: RuntimeDecoderFeatureIndices | None,
     feature_names: Sequence[str],
     target_names: Sequence[str],
     surrogate_position_weight: float,
@@ -1092,6 +1196,9 @@ def _residual_gate_loss(
             raw_features,
             decoded_reference_points=decoded_reference_points,
             decoded_reference_masks=decoded_reference_masks,
+            runtime_context_points=runtime_context_points,
+            runtime_context_masks=runtime_context_masks,
+            runtime_decoder_indices=runtime_decoder_indices,
             surrogate_indices=surrogate_indices,
             target_names=target_names,
             torso_weight=decoded_torso_weight,
@@ -1168,6 +1275,9 @@ def _decoded_pose_loss(
     elbow_weight: float,
     arm_direction_weight: float,
     stretch_weight: float,
+    runtime_context_points: Any | None = None,
+    runtime_context_masks: Any | None = None,
+    runtime_decoder_indices: RuntimeDecoderFeatureIndices | None = None,
 ) -> Any:
     terms = _decoded_pose_terms(
         torch,
@@ -1177,6 +1287,9 @@ def _decoded_pose_loss(
         raw_features,
         decoded_reference_points=decoded_reference_points,
         decoded_reference_masks=decoded_reference_masks,
+        runtime_context_points=runtime_context_points,
+        runtime_context_masks=runtime_context_masks,
+        runtime_decoder_indices=runtime_decoder_indices,
         surrogate_indices=surrogate_indices,
         target_names=target_names,
     )
@@ -1205,45 +1318,55 @@ def _decoded_pose_terms(
     target_mask: Any,
     raw_features: Any,
     *,
-    decoded_reference_points: Any | None = None,
-    decoded_reference_masks: Any | None = None,
+    decoded_reference_points: Any | None,
+    decoded_reference_masks: Any | None,
     surrogate_indices: SurrogateFeatureIndices,
     target_names: Sequence[str],
+    runtime_context_points: Any | None = None,
+    runtime_context_masks: Any | None = None,
+    runtime_decoder_indices: RuntimeDecoderFeatureIndices | None = None,
 ) -> dict[str, Any]:
-    prediction_points = _upper_body_surrogate_points(
+    prediction_points, prediction_point_masks = _decoded_prediction_points_and_masks(
         torch,
         prediction,
         raw_features,
+        runtime_context_points=runtime_context_points,
+        runtime_context_masks=runtime_context_masks,
+        runtime_decoder_indices=runtime_decoder_indices,
         surrogate_indices=surrogate_indices,
         target_names=target_names,
     )
-    target_points = (
-        decoded_reference_points
-        if decoded_reference_points is not None
-        else _upper_body_surrogate_points(
-            torch,
-            target,
-            raw_features,
-            surrogate_indices=surrogate_indices,
-            target_names=target_names,
-        )
+    target_points, target_point_masks = _decoded_target_points_and_masks(
+        torch,
+        target,
+        target_mask,
+        raw_features,
+        decoded_reference_points=decoded_reference_points,
+        decoded_reference_masks=decoded_reference_masks,
+        surrogate_indices=surrogate_indices,
+        target_names=target_names,
     )
-    left_hand = _feature_position(raw_features, surrogate_indices.left_hand)
-    right_hand = _feature_position(raw_features, surrogate_indices.right_hand)
+    point_masks = target_point_masks * prediction_point_masks
+    left_hand = _runtime_context_joint_point(
+        runtime_context_points,
+        runtime_context_masks,
+        "left_hand",
+        fallback=_feature_position(raw_features, surrogate_indices.left_hand),
+    )
+    right_hand = _runtime_context_joint_point(
+        runtime_context_points,
+        runtime_context_masks,
+        "right_hand",
+        fallback=_feature_position(raw_features, surrogate_indices.right_hand),
+    )
     upper_arm = raw_features[:, surrogate_indices.upper_arm]
     lower_arm = raw_features[:, surrogate_indices.lower_arm]
 
-    torso_mask = _decoded_torso_mask(target_mask, target_names)
-    left_shoulder_mask = _decoded_joint_mask(target_mask, target_names, "left", "shoulder")
-    right_shoulder_mask = _decoded_joint_mask(target_mask, target_names, "right", "shoulder")
-    left_elbow_mask = _decoded_joint_mask(target_mask, target_names, "left", "elbow")
-    right_elbow_mask = _decoded_joint_mask(target_mask, target_names, "right", "elbow")
-    if decoded_reference_masks is not None:
-        torso_mask = torso_mask * decoded_reference_masks[:, 0] * decoded_reference_masks[:, 1]
-        left_shoulder_mask = left_shoulder_mask * decoded_reference_masks[:, 2]
-        right_shoulder_mask = right_shoulder_mask * decoded_reference_masks[:, 3]
-        left_elbow_mask = left_elbow_mask * decoded_reference_masks[:, 4]
-        right_elbow_mask = right_elbow_mask * decoded_reference_masks[:, 5]
+    torso_mask = point_masks[:, 0] * point_masks[:, 1]
+    left_shoulder_mask = point_masks[:, 2]
+    right_shoulder_mask = point_masks[:, 3]
+    left_elbow_mask = point_masks[:, 4]
+    right_elbow_mask = point_masks[:, 5]
 
     torso_mse = _average_losses(
         torch,
@@ -1406,6 +1529,9 @@ def _decoded_temporal_motion_loss(
     *,
     decoded_reference_points: Any | None,
     decoded_reference_masks: Any | None,
+    runtime_context_points: Any | None,
+    runtime_context_masks: Any | None,
+    runtime_decoder_indices: RuntimeDecoderFeatureIndices | None,
     order: Literal[1, 2, 3],
     prediction_mode: Literal["absolute", "residual"],
     residual_scale: float,
@@ -1446,10 +1572,17 @@ def _decoded_temporal_motion_loss(
         decoded_reference_masks=(
             decoded_reference_masks[flat_indices] if decoded_reference_masks is not None else None
         ),
+        runtime_context_points=(
+            runtime_context_points[flat_indices] if runtime_context_points is not None else None
+        ),
+        runtime_context_masks=(
+            runtime_context_masks[flat_indices] if runtime_context_masks is not None else None
+        ),
         window_count=selected_windows.shape[0],
         window_width=selected_windows.shape[1],
         prediction_mode=prediction_mode,
         residual_scale=residual_scale,
+        runtime_decoder_indices=runtime_decoder_indices,
         surrogate_indices=surrogate_indices,
         target_names=target_names,
     )
@@ -1469,10 +1602,13 @@ def _decoded_temporal_points(
     *,
     decoded_reference_points: Any | None,
     decoded_reference_masks: Any | None,
+    runtime_context_points: Any | None,
+    runtime_context_masks: Any | None,
     window_count: int,
     window_width: int,
     prediction_mode: Literal["absolute", "residual"],
     residual_scale: float,
+    runtime_decoder_indices: RuntimeDecoderFeatureIndices | None,
     surrogate_indices: SurrogateFeatureIndices,
     target_names: Sequence[str],
 ) -> tuple[Any, Any, Any]:
@@ -1484,13 +1620,16 @@ def _decoded_temporal_points(
         residual_scale=residual_scale,
         target_names=target_names,
     )
-    prediction_points = _upper_body_surrogate_points(
+    prediction_points, prediction_point_masks = _decoded_prediction_points_and_masks(
         torch,
         prediction,
         raw_features,
+        runtime_context_points=runtime_context_points,
+        runtime_context_masks=runtime_context_masks,
+        runtime_decoder_indices=runtime_decoder_indices,
         surrogate_indices=surrogate_indices,
         target_names=target_names,
-    ).reshape(window_count, window_width, -1, 3)
+    )
     target_points, point_masks = _decoded_target_points_and_masks(
         torch,
         targets,
@@ -1501,11 +1640,65 @@ def _decoded_temporal_points(
         surrogate_indices=surrogate_indices,
         target_names=target_names,
     )
+    point_masks = point_masks * prediction_point_masks
     return (
-        prediction_points,
+        prediction_points.reshape(window_count, window_width, -1, 3),
         target_points.reshape(window_count, window_width, -1, 3),
         point_masks.reshape(window_count, window_width, -1),
     )
+
+
+def _decoded_prediction_points_and_masks(
+    torch: Any,
+    prediction: Any,
+    raw_features: Any,
+    *,
+    runtime_context_points: Any | None,
+    runtime_context_masks: Any | None,
+    runtime_decoder_indices: RuntimeDecoderFeatureIndices | None,
+    surrogate_indices: SurrogateFeatureIndices,
+    target_names: Sequence[str],
+) -> tuple[Any, Any]:
+    if (
+        runtime_decoder_indices is not None
+        and runtime_context_points is not None
+        and runtime_context_masks is not None
+    ):
+        return decode_upper_body_runtime_points(
+            torch,
+            prediction,
+            raw_features,
+            runtime_context_points,
+            runtime_context_masks,
+            feature_indices=runtime_decoder_indices,
+            target_names=target_names,
+        )
+    points = _upper_body_surrogate_points(
+        torch,
+        prediction,
+        raw_features,
+        surrogate_indices=surrogate_indices,
+        target_names=target_names,
+    )
+    return points, torch.ones(
+        points.shape[:2],
+        dtype=points.dtype,
+        device=points.device,
+    )
+
+
+def _runtime_context_joint_point(
+    runtime_context_points: Any | None,
+    runtime_context_masks: Any | None,
+    joint_name: str,
+    *,
+    fallback: Any,
+) -> Any:
+    if runtime_context_points is None or runtime_context_masks is None:
+        return fallback
+    joint_index = RUNTIME_DECODER_CONTEXT_JOINTS.index(joint_name)
+    mask = runtime_context_masks[:, joint_index].to(dtype=fallback.dtype)[:, None]
+    return fallback * (1.0 - mask) + runtime_context_points[:, joint_index] * mask
 
 
 def _decoded_target_points_and_masks(
@@ -1570,6 +1763,9 @@ def _surrogate_validation_metrics(
     *,
     decoded_reference_points: Any | None,
     decoded_reference_masks: Any | None,
+    runtime_context_points: Any | None,
+    runtime_context_masks: Any | None,
+    runtime_decoder_indices: RuntimeDecoderFeatureIndices | None,
     feature_names: Sequence[str],
     target_names: Sequence[str],
     temporal_pairs: Any,
@@ -1580,10 +1776,13 @@ def _surrogate_validation_metrics(
     if surrogate_indices is None:
         return {}
     with torch.no_grad():
-        prediction_points = _upper_body_surrogate_points(
+        prediction_points, prediction_point_masks = _decoded_prediction_points_and_masks(
             torch,
             prediction,
             raw_features,
+            runtime_context_points=runtime_context_points,
+            runtime_context_masks=runtime_context_masks,
+            runtime_decoder_indices=runtime_decoder_indices,
             surrogate_indices=surrogate_indices,
             target_names=target_names,
         )
@@ -1597,6 +1796,7 @@ def _surrogate_validation_metrics(
             surrogate_indices=surrogate_indices,
             target_names=target_names,
         )
+        point_masks = point_masks * prediction_point_masks
         terms = _decoded_pose_terms(
             torch,
             prediction,
@@ -1605,6 +1805,9 @@ def _surrogate_validation_metrics(
             raw_features,
             decoded_reference_points=decoded_reference_points,
             decoded_reference_masks=decoded_reference_masks,
+            runtime_context_points=runtime_context_points,
+            runtime_context_masks=runtime_context_masks,
+            runtime_decoder_indices=runtime_decoder_indices,
             surrogate_indices=surrogate_indices,
             target_names=target_names,
         )

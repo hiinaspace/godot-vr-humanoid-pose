@@ -125,6 +125,19 @@ DECODED_REFERENCE_JOINTS = (
     "left_elbow",
     "right_elbow",
 )
+RUNTIME_DECODER_CONTEXT_JOINTS = (
+    "head",
+    "hips",
+    "spine",
+    "chest",
+    "neck",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_hand",
+    "right_hand",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1032,6 +1045,13 @@ def _export_clip_windows(
             origin=center_origin,
             basis=center_basis,
         )
+        _add_runtime_decoder_context_points(
+            row,
+            prefix="heuristic_context",
+            joints=pose_joints(estimated_poses[center_index]),
+            origin=center_origin,
+            basis=center_basis,
+        )
         for name in TARGET_NAMES:
             row[name] = target.values[name]
             row[f"{name}_mask"] = target.masks[name]
@@ -1050,6 +1070,29 @@ def _add_decoded_reference_points(
     basis: Basis3,
 ) -> None:
     for joint_name in DECODED_REFERENCE_JOINTS:
+        transform = joints.get(joint_name)
+        if transform is None and joint_name == "neck":
+            transform = _synthetic_neck_transform(joints)
+        valid = transform is not None
+        position = (
+            local_position(transform.position, origin=origin, basis=basis)
+            if transform is not None
+            else (0.0, 0.0, 0.0)
+        )
+        for component, value in zip(("x", "y", "z"), position, strict=True):
+            row[f"{prefix}_{joint_name}_position_{component}"] = float(value)
+        row[f"{prefix}_{joint_name}_valid"] = 1.0 if valid else 0.0
+
+
+def _add_runtime_decoder_context_points(
+    row: dict[str, object],
+    *,
+    prefix: str,
+    joints: Mapping[str, Transform],
+    origin: Vector3,
+    basis: Basis3,
+) -> None:
+    for joint_name in RUNTIME_DECODER_CONTEXT_JOINTS:
         transform = joints.get(joint_name)
         if transform is None and joint_name == "neck":
             transform = _synthetic_neck_transform(joints)
@@ -1210,6 +1253,10 @@ def _empty_windows_frame(feature_names: Sequence[str]) -> pl.DataFrame:
             for component in ("x", "y", "z"):
                 schema[f"{prefix}_{joint_name}_position_{component}"] = pl.Float64
             schema[f"{prefix}_{joint_name}_valid"] = pl.Float64
+    for joint_name in RUNTIME_DECODER_CONTEXT_JOINTS:
+        for component in ("x", "y", "z"):
+            schema[f"heuristic_context_{joint_name}_position_{component}"] = pl.Float64
+        schema[f"heuristic_context_{joint_name}_valid"] = pl.Float64
     return pl.DataFrame(schema=schema)
 
 

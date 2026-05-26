@@ -139,12 +139,15 @@ causal HMD/controller windows, static calibration features such as
 height/shoulder width/arm lengths, and GT-derived targets for torso heading and
 lean, normalized shoulder elevation/protraction/lateral controls, and elbow
 swivel. Rows also include local reference and heuristic chest/neck/shoulder/elbow
-points for decoded post-IK losses. Training reports compare the constant
-baseline, Torch linear, Torch MLP, residual Torch models, and native XGBoost CUDA
-paths. Residual models can run validation-time gate search to shrink unsafe
-residual groups before saving an artifact, or `--disabled-target-groups torso`
-to leave a group at the heuristic baseline while testing another group. Torch
-CUDA is required by default; pass `--allow-cpu` only for smoke tests.
+points plus local heuristic base-pose context for decoded post-IK losses. When
+that context is present, Torch training decodes predicted latents through the
+differentiable runtime arm/torso chain instead of the older approximate
+surrogate. Training reports compare the constant baseline, Torch linear, Torch
+MLP, residual Torch models, and native XGBoost CUDA paths. Residual models can
+run validation-time gate search to shrink unsafe residual groups before saving
+an artifact, or `--disabled-target-groups torso` to leave a group at the
+heuristic baseline while testing another group. Torch CUDA is required by
+default; pass `--allow-cpu` only for smoke tests.
 
 For shoulder/elbow experiments, use decoded losses against the exported
 reference points instead of only latent MAE:

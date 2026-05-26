@@ -130,6 +130,10 @@ Implementation implication:
 - Start with deterministic swivel priors from CMU and live capture, then compare
   cheap predictors: constant default, VRArmIK-like heuristic, linear model, and
   small MLP over sparse temporal windows.
+- The current Torch training path now has a differentiable runtime decoder for
+  this MANIKIN-lite shape: torso heading/lean, shoulder base offsets, and elbow
+  swivel are decoded against the heuristic base pose before applying decoded
+  point, direction, stretch, and temporal losses.
 - Metrics should include hand target error, elbow position error, elbow swivel
   error, elbow side-flip rate, and upper-body MPJPE.
 
