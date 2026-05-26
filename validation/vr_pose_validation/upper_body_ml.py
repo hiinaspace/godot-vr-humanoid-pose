@@ -69,42 +69,51 @@ DEFAULT_CLEAN_ACTIVITY_CLASSES: tuple[ActivityClass, ...] = (
     "locomotion",
 )
 EXCLUDED_TAGS = frozenset(("data_issue", "parse_issue", "inverted_segment"))
+TARGET_SCHEMA = "upper_body_chain_v1"
 TARGET_NAMES = (
-    "torso_heading_sin",
-    "torso_heading_cos",
-    "torso_lean_x",
-    "torso_lean_z",
-    "left_shoulder_lateral_delta",
-    "left_shoulder_elevation",
-    "left_shoulder_protraction",
-    "right_shoulder_lateral_delta",
-    "right_shoulder_elevation",
-    "right_shoulder_protraction",
-    "left_elbow_swivel_sin",
-    "left_elbow_swivel_cos",
-    "right_elbow_swivel_sin",
-    "right_elbow_swivel_cos",
+    "chest_rel_x",
+    "chest_rel_y",
+    "chest_rel_z",
+    "neck_rel_x",
+    "neck_rel_y",
+    "neck_rel_z",
+    "left_shoulder_rel_x",
+    "left_shoulder_rel_y",
+    "left_shoulder_rel_z",
+    "right_shoulder_rel_x",
+    "right_shoulder_rel_y",
+    "right_shoulder_rel_z",
+    "left_elbow_pole_x",
+    "left_elbow_pole_y",
+    "left_elbow_pole_z",
+    "right_elbow_pole_x",
+    "right_elbow_pole_y",
+    "right_elbow_pole_z",
 )
 TARGET_GROUPS = {
     "torso": (
-        "torso_heading_sin",
-        "torso_heading_cos",
-        "torso_lean_x",
-        "torso_lean_z",
+        "chest_rel_x",
+        "chest_rel_y",
+        "chest_rel_z",
+        "neck_rel_x",
+        "neck_rel_y",
+        "neck_rel_z",
     ),
     "shoulder": (
-        "left_shoulder_lateral_delta",
-        "left_shoulder_elevation",
-        "left_shoulder_protraction",
-        "right_shoulder_lateral_delta",
-        "right_shoulder_elevation",
-        "right_shoulder_protraction",
+        "left_shoulder_rel_x",
+        "left_shoulder_rel_y",
+        "left_shoulder_rel_z",
+        "right_shoulder_rel_x",
+        "right_shoulder_rel_y",
+        "right_shoulder_rel_z",
     ),
     "elbow": (
-        "left_elbow_swivel_sin",
-        "left_elbow_swivel_cos",
-        "right_elbow_swivel_sin",
-        "right_elbow_swivel_cos",
+        "left_elbow_pole_x",
+        "left_elbow_pole_y",
+        "left_elbow_pole_z",
+        "right_elbow_pole_x",
+        "right_elbow_pole_y",
+        "right_elbow_pole_z",
     ),
 }
 MASK_NAMES = tuple(f"{name}_mask" for name in TARGET_NAMES)
@@ -227,10 +236,6 @@ class TorchUpperBodyLatentProvider:
     _scale: list[float] = field(default_factory=list, init=False)
     _target_names: list[str] = field(default_factory=list, init=False)
     _prediction_mode: str = field(default="absolute", init=False)
-    _residual_scale: float = field(default=1.0, init=False)
-    _residual_smoothing_alpha: float = field(default=1.0, init=False)
-    _residual_gates: dict[str, float] = field(default_factory=dict, init=False)
-    _smoothed_residuals: dict[str, float] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         torch = _import_torch()
@@ -239,11 +244,6 @@ class TorchUpperBodyLatentProvider:
         artifact = torch.load(self.artifact_path, map_location=self._device, weights_only=False)
         self._target_names = [str(name) for name in artifact["target_names"]]
         self._prediction_mode = str(artifact.get("prediction_mode", "absolute"))
-        self._residual_scale = float(artifact.get("residual_scale", 1.0))
-        self._residual_smoothing_alpha = float(artifact.get("residual_smoothing_alpha", 1.0))
-        self._residual_gates = {
-            str(name): float(value) for name, value in artifact.get("residual_gates", {}).items()
-        }
         self._model = _make_torch_provider_model(
             torch,
             model_name=str(artifact["model_name"]),
@@ -289,12 +289,6 @@ class TorchUpperBodyLatentProvider:
             )
             prediction = self._model(tensor).detach().cpu().numpy()[0]
         values = {name: float(prediction[index]) for index, name in enumerate(self._target_names)}
-        if self._prediction_mode == "residual" and self._residual_gates:
-            values = {
-                name: value * self._residual_gates.get(name, 1.0) for name, value in values.items()
-            }
-        if self._prediction_mode == "residual" and self._residual_smoothing_alpha < 1.0:
-            values = self._smooth_residuals(values)
         return UpperBodyLatentPrediction(
             values=values,
             masks={name: 1.0 for name in self._target_names},
@@ -302,25 +296,10 @@ class TorchUpperBodyLatentProvider:
 
     def reset(self) -> None:
         self._history.clear()
-        self._smoothed_residuals.clear()
 
     @property
     def prediction_mode(self) -> str:
         return self._prediction_mode
-
-    @property
-    def residual_scale(self) -> float:
-        return self._residual_scale
-
-    def _smooth_residuals(self, values: Mapping[str, float]) -> dict[str, float]:
-        alpha = min(max(self._residual_smoothing_alpha, 0.0), 1.0)
-        smoothed: dict[str, float] = {}
-        for name, value in values.items():
-            previous = self._smoothed_residuals.get(name, value)
-            smoothed_value = previous + alpha * (value - previous)
-            smoothed[name] = smoothed_value
-            self._smoothed_residuals[name] = smoothed_value
-        return smoothed
 
 
 @dataclass(slots=True)
@@ -339,14 +318,6 @@ class LearnedUpperBodyEstimator:
     ) -> HumanoidPoseFrame:
         base_pose = self.base_estimator.estimate(sample, calibration, grounding)
         prediction = self.latent_provider.predict(sample, calibration, grounding)
-        if getattr(self.latent_provider, "prediction_mode", "absolute") == "residual":
-            base_latents = extract_upper_body_latents(pose_joints(base_pose), calibration)
-            residual_scale = float(getattr(self.latent_provider, "residual_scale", 1.0))
-            prediction = _combine_residual_prediction(
-                base_latents,
-                prediction,
-                residual_scale=residual_scale,
-            )
         return apply_upper_body_latents(
             base_pose,
             prediction,
@@ -427,6 +398,7 @@ def build_sparse_window_dataset(
         "feature_names": feature_names,
         "target_names": list(TARGET_NAMES),
         "mask_names": list(MASK_NAMES),
+        "target_schema": TARGET_SCHEMA,
         "target_groups": {key: list(value) for key, value in TARGET_GROUPS.items()},
         "windows_path": "windows_shards/*.parquet" if wrote_shards else "windows.parquet",
         "config": asdict(effective_config),
@@ -538,62 +510,61 @@ def extract_upper_body_latents(
 ) -> UpperBodyLatents:
     values = {name: 0.0 for name in TARGET_NAMES}
     masks = {name: 0.0 for name in TARGET_NAMES}
-    required = {
-        "head",
-        "chest",
-        "spine",
-        "hips",
-        "left_shoulder",
-        "right_shoulder",
-        "left_elbow",
-        "right_elbow",
-        "left_hand",
-        "right_hand",
-    }
-    if not required.issubset(joints):
+    head = joints.get("head")
+    if head is None:
         return UpperBodyLatents(values=values, masks=masks)
 
-    head_basis = yaw_basis_from_rotation(joints["head"].rotation)
-    chest_forward = normalize(horizontal(rotate_vector(joints["chest"].rotation, WORLD_FORWARD)))
-    if _length(chest_forward) > 1e-6:
-        heading_sin, heading_cos = _signed_yaw_sin_cos(head_basis.forward, chest_forward)
-        values["torso_heading_sin"] = heading_sin
-        values["torso_heading_cos"] = heading_cos
-        masks["torso_heading_sin"] = 1.0
-        masks["torso_heading_cos"] = 1.0
-
-    torso_axis = subtract(joints["head"].position, joints["hips"].position)
-    if _length(torso_axis) > 1e-6:
-        torso_direction = normalize(torso_axis)
-        values["torso_lean_x"] = dot(torso_direction, head_basis.right)
-        values["torso_lean_z"] = dot(torso_direction, head_basis.forward)
-        masks["torso_lean_x"] = 1.0
-        masks["torso_lean_z"] = 1.0
-
     effective_calibration = calibration or AvatarCalibration()
-    chest_basis = basis_from_rotation(joints["chest"].rotation)
+    height = max(0.1, effective_calibration.human_height_m)
+    head_basis = yaw_basis_from_rotation(head.rotation)
+    head_position = head.position
+
+    chest = joints.get("chest")
+    neck = joints.get("neck") or _synthetic_neck_transform(joints)
+    for latent_prefix, transform in (("chest", chest), ("neck", neck)):
+        if transform is None:
+            continue
+        rel = _head_relative_position(
+            transform.position,
+            origin=head_position,
+            basis=head_basis,
+            height_m=height,
+        )
+        for component, value in zip(("x", "y", "z"), rel, strict=True):
+            name = f"{latent_prefix}_rel_{component}"
+            values[name] = value
+            masks[name] = 1.0
+
     for side in ("left", "right"):
         shoulder_name = f"{side}_shoulder"
-        shoulder_offset = subtract(joints[shoulder_name].position, joints["chest"].position)
-        local = vector_to_basis(shoulder_offset, chest_basis)
-        rest_local = _shoulder_rest_local(side, effective_calibration)
-        scale_m = _shoulder_control_scale(effective_calibration)
-        values[f"{side}_shoulder_lateral_delta"] = (local[0] - rest_local[0]) / scale_m
-        values[f"{side}_shoulder_elevation"] = (local[1] - rest_local[1]) / scale_m
-        values[f"{side}_shoulder_protraction"] = (local[2] - rest_local[2]) / scale_m
-        masks[f"{side}_shoulder_lateral_delta"] = 1.0
-        masks[f"{side}_shoulder_elevation"] = 1.0
-        masks[f"{side}_shoulder_protraction"] = 1.0
+        shoulder = joints.get(shoulder_name)
+        if shoulder is not None:
+            rel = _head_relative_position(
+                shoulder.position,
+                origin=head_position,
+                basis=head_basis,
+                height_m=height,
+            )
+            for component, value in zip(("x", "y", "z"), rel, strict=True):
+                name = f"{side}_shoulder_rel_{component}"
+                values[name] = value
+                masks[name] = 1.0
 
-        swivel_sin, swivel_cos, valid = elbow_swivel_sin_cos(
-            shoulder=joints[shoulder_name].position,
-            elbow=joints[f"{side}_elbow"].position,
-            hand=joints[f"{side}_hand"].position,
+        elbow = joints.get(f"{side}_elbow")
+        hand = joints.get(f"{side}_hand")
+        if shoulder is None or elbow is None or hand is None:
+            continue
+        pole, valid = elbow_pole_vector(
+            shoulder=shoulder.position,
+            elbow=elbow.position,
+            hand=hand.position,
+            basis=head_basis,
+            min_distance_m=max(0.025, 0.12 * _upper_arm_length(effective_calibration)),
         )
-        values[f"{side}_elbow_swivel_sin"] = swivel_sin
-        values[f"{side}_elbow_swivel_cos"] = swivel_cos
-        masks[f"{side}_elbow_swivel_sin"] = 1.0 if valid else 0.0
-        masks[f"{side}_elbow_swivel_cos"] = 1.0 if valid else 0.0
+        for component, value in zip(("x", "y", "z"), pole, strict=True):
+            name = f"{side}_elbow_pole_{component}"
+            values[name] = value
+            masks[name] = 1.0 if valid else 0.0
 
     return UpperBodyLatents(values=values, masks=masks)
 
@@ -623,6 +594,61 @@ def vector_to_basis(vector: Vector3, basis: Basis3) -> Vector3:
     return (dot(vector, basis.right), dot(vector, basis.up), dot(vector, basis.forward))
 
 
+def _head_relative_position(
+    position: Vector3,
+    *,
+    origin: Vector3,
+    basis: Basis3,
+    height_m: float,
+) -> Vector3:
+    local = vector_to_basis(subtract(position, origin), basis)
+    scale_m = max(0.1, height_m)
+    return (local[0] / scale_m, local[1] / scale_m, local[2] / scale_m)
+
+
+def _world_from_head_relative(
+    rel: Vector3,
+    *,
+    origin: Vector3,
+    basis: Basis3,
+    height_m: float,
+) -> Vector3:
+    scale_m = max(0.1, height_m)
+    return add(
+        origin,
+        add(
+            add(scale(basis.right, rel[0] * scale_m), scale(basis.up, rel[1] * scale_m)),
+            scale(basis.forward, rel[2] * scale_m),
+        ),
+    )
+
+
+def elbow_pole_vector(
+    *,
+    shoulder: Vector3,
+    elbow: Vector3,
+    hand: Vector3,
+    basis: Basis3,
+    min_distance_m: float = 0.03,
+) -> tuple[Vector3, bool]:
+    arm_axis = subtract(hand, shoulder)
+    if _length(arm_axis) <= 1e-6:
+        return (0.0, -1.0, 0.0), False
+    axis = normalize(arm_axis)
+    elbow_offset = subtract(elbow, shoulder)
+    pole_world = project_on_plane(elbow_offset, axis)
+    if _length(pole_world) < min_distance_m:
+        return vector_to_basis(_fallback_bend(axis), basis), False
+    return vector_to_basis(normalize(pole_world), basis), True
+
+
+def _vector_from_basis(vector: Vector3, basis: Basis3) -> Vector3:
+    return add(
+        add(scale(basis.right, vector[0]), scale(basis.up, vector[1])),
+        scale(basis.forward, vector[2]),
+    )
+
+
 def calibration_feature_values(calibration: AvatarCalibration | None = None) -> list[float]:
     effective_calibration = calibration or AvatarCalibration()
     human_height = max(0.1, effective_calibration.human_height_m)
@@ -639,42 +665,6 @@ def calibration_feature_values(calibration: AvatarCalibration | None = None) -> 
         shoulder_width / human_height,
         arm_length / human_height,
     ]
-
-
-def _shoulder_rest_local(
-    side: str,
-    calibration: AvatarCalibration,
-) -> Vector3:
-    chest = calibration.rest_pose.get("chest")
-    shoulder = calibration.rest_pose.get(f"{side}_shoulder")
-    if chest is not None and shoulder is not None:
-        return vector_to_basis(
-            subtract(shoulder.position, chest.position),
-            basis_from_rotation(chest.rotation),
-        )
-    return (_shoulder_side_sign(side) * _shoulder_width(calibration) * 0.5, 0.0, 0.0)
-
-
-def _shoulder_side_sign(side: str) -> float:
-    return 1.0 if side == "left" else -1.0
-
-
-def _shoulder_control_scale(calibration: AvatarCalibration) -> float:
-    return max(0.1, _upper_arm_length(calibration) + _lower_arm_length(calibration))
-
-
-def _shoulder_controls_to_local(
-    side: str,
-    values: Mapping[str, float],
-    *,
-    rest_local: Vector3,
-    scale_m: float,
-) -> Vector3:
-    return (
-        rest_local[0] + values[f"{side}_shoulder_lateral_delta"] * scale_m,
-        rest_local[1] + values[f"{side}_shoulder_elevation"] * scale_m,
-        rest_local[2] + values[f"{side}_shoulder_protraction"] * scale_m,
-    )
 
 
 def _shoulder_width(calibration: AvatarCalibration) -> float:
@@ -742,30 +732,6 @@ def yaw_rotated_sample(sample: TrackedPoseSample, degrees: float) -> TrackedPose
     )
 
 
-def elbow_swivel_sin_cos(
-    *,
-    shoulder: Vector3,
-    elbow: Vector3,
-    hand: Vector3,
-) -> tuple[float, float, bool]:
-    arm_axis = subtract(hand, shoulder)
-    if _length(arm_axis) <= 1e-6:
-        return 0.0, 1.0, False
-    axis = normalize(arm_axis)
-    base = project_on_plane(WORLD_DOWN, axis)
-    if _length(base) <= 1e-6:
-        base = project_on_plane(WORLD_FORWARD, axis)
-    if _length(base) <= 1e-6:
-        return 0.0, 1.0, False
-    base = normalize(base)
-    tangent = normalize(cross(axis, base), (1.0, 0.0, 0.0))
-    elbow_direction = project_on_plane(subtract(elbow, shoulder), axis)
-    if _length(elbow_direction) <= 1e-6:
-        return 0.0, 1.0, False
-    elbow_direction = normalize(elbow_direction)
-    return dot(elbow_direction, tangent), dot(elbow_direction, base), True
-
-
 def apply_upper_body_latents(
     pose: HumanoidPoseFrame,
     prediction: UpperBodyLatentPrediction,
@@ -776,73 +742,60 @@ def apply_upper_body_latents(
     joints = dict(pose.joints)
     values = prediction.values
     masks = prediction.masks
-    if "chest" in joints and _enabled(values, masks, "torso_heading_sin", min_mask):
-        heading_sin = values.get("torso_heading_sin", 0.0)
-        heading_cos = values.get("torso_heading_cos", 1.0)
-        head_forward = rotate_vector(
-            joints.get("head", joints["chest"]).transform.rotation, WORLD_FORWARD
+    head_joint = joints.get("head")
+    if head_joint is None:
+        return HumanoidPoseFrame(
+            timestamp_seconds=pose.timestamp_seconds, root=pose.root, joints=joints
         )
-        head_basis = yaw_basis_from_rotation(look_rotation(head_forward))
-        forward = normalize(
-            add(scale(head_basis.right, heading_sin), scale(head_basis.forward, heading_cos)),
-            head_basis.forward,
-        )
-        rotation = look_rotation(forward, WORLD_UP)
-        for joint_name in ("hips", "spine", "chest", "neck"):
-            if joint_name in joints:
-                old_joint = joints[joint_name]
-                joints[joint_name] = JointPose(
-                    transform=Transform(position=old_joint.transform.position, rotation=rotation),
-                    confidence=old_joint.confidence,
-                    estimated=old_joint.estimated,
-                )
+    head_basis = yaw_basis_from_rotation(head_joint.transform.rotation)
+    head_position = head_joint.transform.position
+    height_m = max(0.1, calibration.human_height_m)
 
-    if _torso_lean_enabled(values, masks, min_mask) and "head" in joints and "hips" in joints:
-        _apply_torso_lean_positions(joints, values)
-
-    for side in ("left", "right"):
-        shoulder_name = f"{side}_shoulder"
-        if "chest" in joints and all(
-            _enabled(values, masks, f"{side}_shoulder_{control_name}", min_mask)
-            for control_name in ("lateral_delta", "elevation", "protraction")
-        ):
-            chest_transform = joints["chest"].transform
-            chest_basis = basis_from_rotation(chest_transform.rotation)
-            rest_local = _shoulder_rest_local(side, calibration)
-            scale_m = _shoulder_control_scale(calibration)
-            local = _shoulder_controls_to_local(
-                side,
-                values,
-                rest_local=rest_local,
-                scale_m=scale_m,
+    for joint_name in ("chest", "neck", "left_shoulder", "right_shoulder"):
+        if _relative_position_enabled(values, masks, joint_name, min_mask):
+            position = _world_from_head_relative(
+                _relative_position_values(values, joint_name),
+                origin=head_position,
+                basis=head_basis,
+                height_m=height_m,
             )
-            shoulder_position = add(
-                add(chest_transform.position, scale(chest_basis.right, local[0])),
-                add(scale(chest_basis.up, local[1]), scale(chest_basis.forward, local[2])),
-            )
-            old_joint = joints.get(shoulder_name, JointPose(Transform()))
-            joints[shoulder_name] = JointPose(
-                transform=Transform(
-                    position=shoulder_position, rotation=old_joint.transform.rotation
-                ),
+            old_joint = joints.get(joint_name, JointPose(Transform()))
+            joints[joint_name] = JointPose(
+                transform=Transform(position=position, rotation=old_joint.transform.rotation),
                 confidence=old_joint.confidence,
                 estimated=True,
             )
 
+    chest_rotation = _derived_chest_rotation(joints, fallback_basis=head_basis)
+    if chest_rotation is not None:
+        for joint_name in ("spine", "chest", "neck"):
+            if joint_name in joints:
+                old_joint = joints[joint_name]
+                joints[joint_name] = JointPose(
+                    transform=Transform(
+                        position=old_joint.transform.position,
+                        rotation=chest_rotation,
+                    ),
+                    confidence=old_joint.confidence,
+                    estimated=old_joint.estimated,
+                )
+
+    for side in ("left", "right"):
+        shoulder_name = f"{side}_shoulder"
         elbow_name = f"{side}_elbow"
         hand_name = f"{side}_hand"
         if (
             shoulder_name in joints
             and hand_name in joints
-            and _enabled(values, masks, f"{side}_elbow_swivel_sin", min_mask)
+            and _pole_enabled(values, masks, side, min_mask)
         ):
-            swivel_sin = values.get(f"{side}_elbow_swivel_sin", 0.0)
-            swivel_cos = values.get(f"{side}_elbow_swivel_cos", 1.0)
-            bend_hint = _bend_hint_from_swivel(
-                shoulder=joints[shoulder_name].transform.position,
-                hand=joints[hand_name].transform.position,
-                swivel_sin=swivel_sin,
-                swivel_cos=swivel_cos,
+            bend_hint = _vector_from_basis(
+                (
+                    values.get(f"{side}_elbow_pole_x", 0.0),
+                    values.get(f"{side}_elbow_pole_y", -1.0),
+                    values.get(f"{side}_elbow_pole_z", 0.0),
+                ),
+                head_basis,
             )
             elbow_position = solve_two_bone_midpoint(
                 root=joints[shoulder_name].transform.position,
@@ -862,91 +815,62 @@ def apply_upper_body_latents(
     )
 
 
-def _torso_lean_enabled(
+def _relative_position_enabled(
     values: Mapping[str, float],
     masks: Mapping[str, float],
+    joint_name: str,
     min_mask: float,
 ) -> bool:
-    return all(_enabled(values, masks, name, min_mask) for name in ("torso_lean_x", "torso_lean_z"))
-
-
-def _apply_torso_lean_positions(
-    joints: dict[str, JointPose],
-    values: Mapping[str, float],
-) -> None:
-    head = joints["head"].transform.position
-    hips = joints["hips"].transform.position
-    head_to_hips = subtract(hips, head)
-    torso_length = max(distance(head, hips), 1e-4)
-    head_basis = yaw_basis_from_rotation(joints["head"].transform.rotation)
-    lean_x = max(-0.95, min(0.95, values.get("torso_lean_x", 0.0)))
-    lean_z = max(-0.95, min(0.95, values.get("torso_lean_z", 0.0)))
-    lean_y = sqrt(max(1e-4, 1.0 - lean_x * lean_x - lean_z * lean_z))
-    hips_to_head = normalize(
-        add(
-            add(scale(head_basis.right, lean_x), scale(WORLD_UP, lean_y)),
-            scale(head_basis.forward, lean_z),
-        ),
-        WORLD_UP,
+    return all(
+        _enabled(values, masks, f"{joint_name}_rel_{component}", min_mask)
+        for component in ("x", "y", "z")
     )
-    current_hips_to_head = normalize(subtract(head, hips), WORLD_UP)
-    if distance(hips_to_head, current_hips_to_head) <= 1e-6:
-        return
-    new_hips = subtract(head, scale(hips_to_head, torso_length))
-    for joint_name in ("neck", "chest", "spine", "hips"):
-        if joint_name not in joints:
-            continue
-        fraction = _torso_chain_fraction(joints[joint_name].transform.position, head, head_to_hips)
-        old_joint = joints[joint_name]
-        joints[joint_name] = JointPose(
-            transform=Transform(
-                position=lerp(head, new_hips, fraction),
-                rotation=old_joint.transform.rotation,
-            ),
-            confidence=old_joint.confidence,
-            estimated=True,
-        )
 
 
-def _torso_chain_fraction(
-    position: Vector3,
-    head: Vector3,
-    head_to_hips: Vector3,
-) -> float:
-    denominator = dot(head_to_hips, head_to_hips)
-    if denominator <= 1e-8:
-        return 1.0
-    fraction = dot(subtract(position, head), head_to_hips) / denominator
-    return max(0.0, min(1.0, fraction))
+def _relative_position_values(values: Mapping[str, float], joint_name: str) -> Vector3:
+    return (
+        values.get(f"{joint_name}_rel_x", 0.0),
+        values.get(f"{joint_name}_rel_y", 0.0),
+        values.get(f"{joint_name}_rel_z", 0.0),
+    )
 
 
-def _combine_residual_prediction(
-    base_latents: UpperBodyLatents,
-    residual_prediction: UpperBodyLatentPrediction,
+def _pole_enabled(
+    values: Mapping[str, float],
+    masks: Mapping[str, float],
+    side: str,
+    min_mask: float,
+) -> bool:
+    return all(
+        _enabled(values, masks, f"{side}_elbow_pole_{component}", min_mask)
+        for component in ("x", "y", "z")
+    )
+
+
+def _derived_chest_rotation(
+    joints: Mapping[str, JointPose],
     *,
-    residual_scale: float,
-) -> UpperBodyLatentPrediction:
-    values = dict(base_latents.values)
-    masks = dict(base_latents.masks)
-    for name, residual_value in residual_prediction.values.items():
-        values[name] = values.get(name, 0.0) + residual_scale * residual_value
-        masks[name] = min(masks.get(name, 1.0), residual_prediction.masks.get(name, 1.0))
-    _normalize_sin_cos(values, "torso_heading")
-    _normalize_sin_cos(values, "left_elbow_swivel")
-    _normalize_sin_cos(values, "right_elbow_swivel")
-    return UpperBodyLatentPrediction(values=values, masks=masks)
-
-
-def _normalize_sin_cos(values: dict[str, float], prefix: str) -> None:
-    sin_name = f"{prefix}_sin"
-    cos_name = f"{prefix}_cos"
-    magnitude = sqrt(values.get(sin_name, 0.0) ** 2 + values.get(cos_name, 1.0) ** 2)
-    if magnitude <= 1e-6:
-        values[sin_name] = 0.0
-        values[cos_name] = 1.0
-        return
-    values[sin_name] = values[sin_name] / magnitude
-    values[cos_name] = values[cos_name] / magnitude
+    fallback_basis: Basis3,
+) -> tuple[float, float, float, float] | None:
+    chest = joints.get("chest")
+    neck = joints.get("neck")
+    left_shoulder = joints.get("left_shoulder")
+    right_shoulder = joints.get("right_shoulder")
+    if chest is None or neck is None or left_shoulder is None or right_shoulder is None:
+        return None
+    lateral = subtract(
+        left_shoulder.transform.position,
+        right_shoulder.transform.position,
+    )
+    up = subtract(neck.transform.position, chest.transform.position)
+    if _length(lateral) <= 1e-5 or _length(up) <= 1e-5:
+        return None
+    lateral = normalize(lateral, fallback_basis.right)
+    up = normalize(up, fallback_basis.up)
+    forward = normalize(cross(lateral, up), fallback_basis.forward)
+    if dot(forward, fallback_basis.forward) < 0.0:
+        forward = scale(forward, -1.0)
+    return look_rotation(forward, up)
 
 
 def solve_two_bone_midpoint(
@@ -1260,12 +1184,6 @@ def _empty_windows_frame(feature_names: Sequence[str]) -> pl.DataFrame:
     return pl.DataFrame(schema=schema)
 
 
-def _signed_yaw_sin_cos(reference_forward: Vector3, target_forward: Vector3) -> tuple[float, float]:
-    ref = normalize(horizontal(reference_forward), WORLD_FORWARD)
-    target = normalize(horizontal(target_forward), WORLD_FORWARD)
-    return dot(cross(ref, target), WORLD_UP), dot(ref, target)
-
-
 def _enabled(
     values: Mapping[str, float],
     masks: Mapping[str, float],
@@ -1273,19 +1191,6 @@ def _enabled(
     min_mask: float,
 ) -> bool:
     return name in values and masks.get(name, 1.0) >= min_mask
-
-
-def _bend_hint_from_swivel(
-    *,
-    shoulder: Vector3,
-    hand: Vector3,
-    swivel_sin: float,
-    swivel_cos: float,
-) -> Vector3:
-    arm_axis = normalize(subtract(hand, shoulder), WORLD_UP)
-    base = normalize(project_on_plane(WORLD_DOWN, arm_axis), _fallback_bend(arm_axis))
-    tangent = normalize(cross(arm_axis, base), (1.0, 0.0, 0.0))
-    return normalize(add(scale(tangent, swivel_sin), scale(base, swivel_cos)), base)
 
 
 def _fallback_bend(direction: Vector3) -> Vector3:
@@ -1339,16 +1244,6 @@ def _make_torch_provider_model(
     if model_name == "torch_linear":
         return torch.nn.Linear(input_dim, output_dim)
     if model_name == "torch_mlp":
-        return torch.nn.Sequential(
-            torch.nn.Linear(input_dim, hidden_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(hidden_dim, hidden_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(hidden_dim, output_dim),
-        )
-    if model_name == "torch_residual_linear":
-        return torch.nn.Linear(input_dim, output_dim)
-    if model_name == "torch_residual_mlp":
         return torch.nn.Sequential(
             torch.nn.Linear(input_dim, hidden_dim),
             torch.nn.GELU(),

@@ -126,22 +126,40 @@ def _base_pose() -> HumanoidPoseFrame:
 
 def _prediction() -> UpperBodyLatentPrediction:
     values = {name: 0.0 for name in TARGET_NAMES}
+    height = 1.8
+    head = (0.0, 1.62, 0.0)
+
+    def rel(position: tuple[float, float, float]) -> tuple[float, float, float]:
+        return (
+            (position[0] - head[0]) / height,
+            (position[1] - head[1]) / height,
+            (position[2] - head[2]) / height,
+        )
+
+    chest = rel((0.04, 1.33, 0.12))
+    neck = rel((0.02, 1.50, 0.09))
+    left_shoulder = rel((0.25, 1.41, 0.10))
+    right_shoulder = rel((-0.19, 1.37, 0.11))
     values.update(
         {
-            "torso_heading_sin": 0.18,
-            "torso_heading_cos": 0.9836666,
-            "torso_lean_x": -0.08,
-            "torso_lean_z": 0.22,
-            "left_shoulder_lateral_delta": 0.03,
-            "left_shoulder_elevation": 0.11,
-            "left_shoulder_protraction": 0.06,
-            "right_shoulder_lateral_delta": -0.02,
-            "right_shoulder_elevation": 0.05,
-            "right_shoulder_protraction": 0.04,
-            "left_elbow_swivel_sin": 0.26,
-            "left_elbow_swivel_cos": 0.965608,
-            "right_elbow_swivel_sin": -0.18,
-            "right_elbow_swivel_cos": 0.983667,
+            "chest_rel_x": chest[0],
+            "chest_rel_y": chest[1],
+            "chest_rel_z": chest[2],
+            "neck_rel_x": neck[0],
+            "neck_rel_y": neck[1],
+            "neck_rel_z": neck[2],
+            "left_shoulder_rel_x": left_shoulder[0],
+            "left_shoulder_rel_y": left_shoulder[1],
+            "left_shoulder_rel_z": left_shoulder[2],
+            "right_shoulder_rel_x": right_shoulder[0],
+            "right_shoulder_rel_y": right_shoulder[1],
+            "right_shoulder_rel_z": right_shoulder[2],
+            "left_elbow_pole_x": 0.15,
+            "left_elbow_pole_y": -0.95,
+            "left_elbow_pole_z": -0.25,
+            "right_elbow_pole_x": -0.1,
+            "right_elbow_pole_y": -0.98,
+            "right_elbow_pole_z": -0.18,
         }
     )
     return UpperBodyLatentPrediction(

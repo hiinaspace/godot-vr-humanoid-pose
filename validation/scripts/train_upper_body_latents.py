@@ -23,6 +23,7 @@ from validation.vr_pose_validation.upper_body_ml import (
     RUNTIME_DECODER_CONTEXT_JOINTS,
     TARGET_GROUPS,
     TARGET_NAMES,
+    TARGET_SCHEMA,
     read_sparse_window_dataframe,
 )
 
@@ -32,8 +33,6 @@ TorchModelName = Literal[
     "constant",
     "torch_linear",
     "torch_mlp",
-    "torch_residual_linear",
-    "torch_residual_mlp",
     "xgboost",
 ]
 
@@ -69,8 +68,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "constant",
             "torch_linear",
             "torch_mlp",
-            "torch_residual_linear",
-            "torch_residual_mlp",
             "xgboost",
         ),
         default=("constant", "torch_linear", "torch_mlp", "xgboost"),
@@ -83,10 +80,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--allow-cpu", action="store_true")
     parser.add_argument("--xgboost-estimators", type=int, default=256)
-    parser.add_argument("--residual-regularization-weight", type=float, default=1e-3)
-    parser.add_argument("--residual-scale", type=float, default=1.0)
-    parser.add_argument("--residual-smoothing-alpha", type=float, default=1.0)
-    parser.add_argument("--residual-gate-search", action="store_true")
     parser.add_argument("--latent-loss-weight", type=float, default=1.0)
     parser.add_argument("--decoded-pose-weight", type=float, default=0.0)
     parser.add_argument("--decoded-torso-weight", type=float, default=0.0)
@@ -114,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         nargs="*",
         choices=tuple(TARGET_GROUPS),
         default=(),
-        help="Residual target groups to leave at the heuristic baseline.",
+        help="Target groups to leave out of Torch latent training.",
     )
     parser.add_argument(
         "--validation-subjects",
@@ -136,10 +129,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_cpu=args.allow_cpu,
         xgboost_estimators=max(1, args.xgboost_estimators),
         validation_subjects=set(args.validation_subjects or []),
-        residual_regularization_weight=max(0.0, args.residual_regularization_weight),
-        residual_scale=max(0.0, args.residual_scale),
-        residual_smoothing_alpha=min(max(0.0, args.residual_smoothing_alpha), 1.0),
-        residual_gate_search=args.residual_gate_search,
         latent_loss_weight=max(0.0, args.latent_loss_weight),
         decoded_pose_weight=max(0.0, args.decoded_pose_weight),
         decoded_torso_weight=max(0.0, args.decoded_torso_weight),
@@ -216,10 +205,6 @@ def train_upper_body_latents(
         "torch_cuda_available": bool(torch.cuda.is_available()),
         "torch_device": str(device),
         "validation_subjects": sorted(validation_subjects or []),
-        "residual_regularization_weight": residual_regularization_weight,
-        "residual_scale": residual_scale,
-        "residual_smoothing_alpha": residual_smoothing_alpha,
-        "residual_gate_search": residual_gate_search,
         "latent_loss_weight": latent_loss_weight,
         "decoded_pose_weight": decoded_pose_weight,
         "decoded_torso_weight": decoded_torso_weight,
@@ -338,6 +323,12 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
             f"Expected sparse-window dataset at {dataset_dir}; run build_sparse_window_dataset"
         )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    target_schema = str(schema.get("target_schema", ""))
+    if target_schema != TARGET_SCHEMA:
+        raise ValueError(
+            f"Expected target_schema={TARGET_SCHEMA!r} in {schema_path}; "
+            "regenerate the sparse-window cache."
+        )
     feature_names = [str(name) for name in schema["feature_names"]]
     target_names = [str(name) for name in schema.get("target_names", TARGET_NAMES)]
     dataframe = read_sparse_window_dataframe(dataset_dir)
@@ -949,9 +940,6 @@ def _train_torch_model(
         {
             "model_name": model_name,
             "prediction_mode": prediction_mode,
-            "residual_scale": residual_scale,
-            "residual_smoothing_alpha": residual_smoothing_alpha,
-            "residual_gates": residual_gates,
             "latent_loss_weight": latent_loss_weight,
             "decoded_pose_weight": decoded_pose_weight,
             "decoded_torso_weight": decoded_torso_weight,
@@ -984,9 +972,6 @@ def _train_torch_model(
         "inference_seconds_per_sample": inference_seconds / max(1, int(validation_mask.sum())),
         "artifact": output_path.as_posix(),
         "prediction_mode": prediction_mode,
-        "residual_scale": residual_scale,
-        "residual_smoothing_alpha": residual_smoothing_alpha,
-        "residual_gates": residual_gates,
         "latent_loss_weight": latent_loss_weight,
         "decoded_pose_weight": decoded_pose_weight,
         "decoded_torso_weight": decoded_torso_weight,
@@ -1075,9 +1060,9 @@ def _make_torch_model(
     output_dim: int,
     hidden_dim: int,
 ) -> Any:
-    if model_name in ("torch_linear", "torch_residual_linear"):
+    if model_name == "torch_linear":
         return torch.nn.Linear(input_dim, output_dim)
-    if model_name in ("torch_mlp", "torch_residual_mlp"):
+    if model_name == "torch_mlp":
         return torch.nn.Sequential(
             torch.nn.Linear(input_dim, hidden_dim),
             torch.nn.GELU(),
@@ -1101,7 +1086,8 @@ class SurrogateFeatureIndices:
 
 
 def _is_residual_model(model_name: TorchModelName) -> bool:
-    return model_name in ("torch_residual_linear", "torch_residual_mlp")
+    del model_name
+    return False
 
 
 def _compose_torch_latents(
@@ -1116,23 +1102,26 @@ def _compose_torch_latents(
     if prediction_mode == "absolute":
         return raw_prediction
     prediction = heuristic + residual_scale * raw_prediction
-    return _normalize_torch_latent_pairs(torch, prediction, target_names)
+    return _normalize_torch_poles(torch, prediction, target_names)
 
 
-def _normalize_torch_latent_pairs(
+def _normalize_torch_poles(
     torch: Any,
     latents: Any,
     target_names: Sequence[str],
 ) -> Any:
     columns = [latents[:, index] for index in range(latents.shape[1])]
-    for prefix in ("torso_heading", "left_elbow_swivel", "right_elbow_swivel"):
-        sin_index = _target_index(target_names, f"{prefix}_sin")
-        cos_index = _target_index(target_names, f"{prefix}_cos")
-        magnitude = torch.sqrt(
-            columns[sin_index] * columns[sin_index] + columns[cos_index] * columns[cos_index]
-        ).clamp_min(1e-6)
-        columns[sin_index] = columns[sin_index] / magnitude
-        columns[cos_index] = columns[cos_index] / magnitude
+    for side in ("left", "right"):
+        indices = [
+            _target_index(target_names, f"{side}_elbow_pole_{component}")
+            for component in ("x", "y", "z")
+        ]
+        magnitude_squared = columns[indices[0]] * columns[indices[0]]
+        for index in indices[1:]:
+            magnitude_squared = magnitude_squared + columns[index] * columns[index]
+        magnitude = torch.sqrt(magnitude_squared).clamp_min(1e-6)
+        for index in indices:
+            columns[index] = columns[index] / magnitude
     return torch.stack(columns, dim=1)
 
 
@@ -1423,6 +1412,21 @@ def _decoded_pose_terms(
     )
     upper_arm = raw_features[:, surrogate_indices.upper_arm]
     lower_arm = raw_features[:, surrogate_indices.lower_arm]
+    human_height = raw_features[:, surrogate_indices.human_height]
+    shoulder_width = raw_features[:, surrogate_indices.shoulder_width]
+    head = _runtime_context_joint_point(
+        runtime_context_points,
+        runtime_context_masks,
+        "head",
+        fallback=torch.stack(
+            (
+                torch.zeros_like(raw_features[:, surrogate_indices.head_y]),
+                raw_features[:, surrogate_indices.head_y],
+                torch.zeros_like(raw_features[:, surrogate_indices.head_y]),
+            ),
+            dim=1,
+        ),
+    )
 
     torso_mask = point_masks[:, 0] * point_masks[:, 1]
     left_shoulder_mask = point_masks[:, 2]
@@ -1501,6 +1505,18 @@ def _decoded_pose_terms(
                 lower_arm=lower_arm,
                 mask=right_elbow_mask,
             ),
+            _decoded_anthropometric_loss(
+                torch,
+                head=head,
+                chest=prediction_points[:, 0],
+                neck=prediction_points[:, 1],
+                left_shoulder=prediction_points[:, 2],
+                right_shoulder=prediction_points[:, 3],
+                human_height=human_height,
+                shoulder_width=shoulder_width,
+                torso_mask=torso_mask,
+                shoulder_mask=left_shoulder_mask * right_shoulder_mask,
+            ),
         ),
     )
     return {
@@ -1514,8 +1530,14 @@ def _decoded_pose_terms(
 
 
 def _decoded_torso_mask(target_mask: Any, target_names: Sequence[str]) -> Any:
-    mask = target_mask[:, _target_index(target_names, "torso_heading_sin")]
-    for name in ("torso_heading_cos", "torso_lean_x", "torso_lean_z"):
+    mask = target_mask[:, _target_index(target_names, "chest_rel_x")]
+    for name in (
+        "chest_rel_y",
+        "chest_rel_z",
+        "neck_rel_x",
+        "neck_rel_y",
+        "neck_rel_z",
+    ):
         mask = mask * target_mask[:, _target_index(target_names, name)]
     return mask
 
@@ -1528,12 +1550,16 @@ def _decoded_joint_mask(
 ) -> Any:
     if joint == "shoulder":
         columns = (
-            f"{side}_shoulder_lateral_delta",
-            f"{side}_shoulder_elevation",
-            f"{side}_shoulder_protraction",
+            f"{side}_shoulder_rel_x",
+            f"{side}_shoulder_rel_y",
+            f"{side}_shoulder_rel_z",
         )
     else:
-        columns = (f"{side}_elbow_swivel_sin", f"{side}_elbow_swivel_cos")
+        columns = (
+            f"{side}_elbow_pole_x",
+            f"{side}_elbow_pole_y",
+            f"{side}_elbow_pole_z",
+        )
     joint_mask = target_mask[:, _target_index(target_names, columns[0])]
     for name in columns[1:]:
         joint_mask = joint_mask * target_mask[:, _target_index(target_names, name)]
@@ -1577,6 +1603,29 @@ def _decoded_stretch_loss(
     lower_error = torch.linalg.vector_norm(hand - elbow, dim=1) - lower_arm
     stretch_error = upper_error * upper_error + lower_error * lower_error
     return (stretch_error * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def _decoded_anthropometric_loss(
+    torch: Any,
+    *,
+    head: Any,
+    chest: Any,
+    neck: Any,
+    left_shoulder: Any,
+    right_shoulder: Any,
+    human_height: Any,
+    shoulder_width: Any,
+    torso_mask: Any,
+    shoulder_mask: Any,
+) -> Any:
+    neck_error = torch.linalg.vector_norm(head - neck, dim=1) - human_height * 0.04
+    chest_error = torch.linalg.vector_norm(neck - chest, dim=1) - human_height * 0.09
+    width_error = torch.linalg.vector_norm(left_shoulder - right_shoulder, dim=1) - shoulder_width
+    torso_loss = ((neck_error * neck_error + chest_error * chest_error) * torso_mask).sum()
+    torso_loss = torso_loss / torso_mask.sum().clamp_min(1.0)
+    shoulder_loss = (width_error * width_error * shoulder_mask).sum()
+    shoulder_loss = shoulder_loss / shoulder_mask.sum().clamp_min(1.0)
+    return (torso_loss + shoulder_loss) * 0.5
 
 
 def _decoded_temporal_motion_loss(
@@ -1818,7 +1867,10 @@ def _decoded_target_points_and_masks(
     target_names: Sequence[str],
 ) -> tuple[Any, Any]:
     if decoded_reference_points is not None and decoded_reference_masks is not None:
-        return decoded_reference_points, decoded_reference_masks
+        return (
+            decoded_reference_points,
+            decoded_reference_masks * _decoded_point_masks(torch, target_mask, target_names),
+        )
     return (
         _upper_body_surrogate_points(
             torch,
@@ -2003,48 +2055,42 @@ def _upper_body_surrogate_points(
     target_names: Sequence[str],
 ) -> Any:
     zeros = torch.zeros_like(latents[:, 0])
-    ones = torch.ones_like(latents[:, 0])
     head_y = raw_features[:, surrogate_indices.head_y]
     human_height = raw_features[:, surrogate_indices.human_height].clamp_min(0.1)
-    torso_x = latents[:, _target_index(target_names, "torso_lean_x")]
-    torso_z = latents[:, _target_index(target_names, "torso_lean_z")]
-    torso_y = torch.sqrt((1.0 - torso_x * torso_x - torso_z * torso_z).clamp_min(1e-4))
-    torso_direction = torch.stack((torso_x, torso_y, torso_z), dim=1)
     head_position = torch.stack((zeros, head_y, zeros), dim=1)
-    neck_position = head_position - (human_height * 0.04)[:, None] * torso_direction
-    chest_position = neck_position - (human_height * 0.09)[:, None] * torso_direction
-
-    heading_sin = latents[:, _target_index(target_names, "torso_heading_sin")]
-    heading_cos = latents[:, _target_index(target_names, "torso_heading_cos")]
-    forward = torch.stack((heading_sin, zeros, heading_cos), dim=1)
-    right = torch.stack((heading_cos, zeros, -heading_sin), dim=1)
-    up = torch.stack((zeros, ones, zeros), dim=1)
-    shoulder_width = raw_features[:, surrogate_indices.shoulder_width]
+    chest_position = _surrogate_relative_point(
+        torch,
+        latents,
+        target_names=target_names,
+        joint_name="chest",
+        head_position=head_position,
+        human_height=human_height,
+    )
+    neck_position = _surrogate_relative_point(
+        torch,
+        latents,
+        target_names=target_names,
+        joint_name="neck",
+        head_position=head_position,
+        human_height=human_height,
+    )
     upper_arm = raw_features[:, surrogate_indices.upper_arm]
     lower_arm = raw_features[:, surrogate_indices.lower_arm]
-    arm_length = raw_features[:, surrogate_indices.arm_length].clamp_min(0.1)
-
-    left_shoulder = _surrogate_shoulder(
+    left_shoulder = _surrogate_relative_point(
+        torch,
         latents,
         target_names=target_names,
-        side="left",
-        chest_position=chest_position,
-        right=right,
-        up=up,
-        forward=forward,
-        shoulder_width=shoulder_width,
-        arm_length=arm_length,
+        joint_name="left_shoulder",
+        head_position=head_position,
+        human_height=human_height,
     )
-    right_shoulder = _surrogate_shoulder(
+    right_shoulder = _surrogate_relative_point(
+        torch,
         latents,
         target_names=target_names,
-        side="right",
-        chest_position=chest_position,
-        right=right,
-        up=up,
-        forward=forward,
-        shoulder_width=shoulder_width,
-        arm_length=arm_length,
+        joint_name="right_shoulder",
+        head_position=head_position,
+        human_height=human_height,
     )
     left_hand = _feature_position(raw_features, surrogate_indices.left_hand)
     right_hand = _feature_position(raw_features, surrogate_indices.right_hand)
@@ -2081,31 +2127,24 @@ def _upper_body_surrogate_points(
     )
 
 
-def _surrogate_shoulder(
+def _surrogate_relative_point(
+    torch: Any,
     latents: Any,
     *,
     target_names: Sequence[str],
-    side: Literal["left", "right"],
-    chest_position: Any,
-    right: Any,
-    up: Any,
-    forward: Any,
-    shoulder_width: Any,
-    arm_length: Any,
+    joint_name: str,
+    head_position: Any,
+    human_height: Any,
 ) -> Any:
-    side_sign = 1.0 if side == "left" else -1.0
-    offset_x = (
-        side_sign * shoulder_width * 0.5
-        + latents[:, _target_index(target_names, f"{side}_shoulder_lateral_delta")] * arm_length
+    rel = torch.stack(
+        (
+            latents[:, _target_index(target_names, f"{joint_name}_rel_x")],
+            latents[:, _target_index(target_names, f"{joint_name}_rel_y")],
+            latents[:, _target_index(target_names, f"{joint_name}_rel_z")],
+        ),
+        dim=1,
     )
-    offset_y = latents[:, _target_index(target_names, f"{side}_shoulder_elevation")] * arm_length
-    offset_z = latents[:, _target_index(target_names, f"{side}_shoulder_protraction")] * arm_length
-    return (
-        chest_position
-        + right * offset_x[:, None]
-        + up * offset_y[:, None]
-        + forward * offset_z[:, None]
-    )
+    return head_position + rel * human_height[:, None]
 
 
 def _surrogate_elbow(
@@ -2119,17 +2158,13 @@ def _surrogate_elbow(
     upper_arm: Any,
     lower_arm: Any,
 ) -> Any:
-    arm_axis = _torch_normalize(torch, hand - shoulder, fallback=(0.0, 1.0, 0.0))
-    world_down = torch.tensor((0.0, -1.0, 0.0), dtype=latents.dtype, device=latents.device)
-    base = _torch_project_on_plane(world_down[None, :].expand_as(arm_axis), arm_axis)
-    base = _torch_normalize(torch, base, fallback=(0.0, 0.0, 1.0))
-    tangent = _torch_normalize(torch, torch.cross(arm_axis, base, dim=1), fallback=(1.0, 0.0, 0.0))
-    swivel_sin = latents[:, _target_index(target_names, f"{side}_elbow_swivel_sin")]
-    swivel_cos = latents[:, _target_index(target_names, f"{side}_elbow_swivel_cos")]
-    bend_hint = _torch_normalize(
-        torch,
-        tangent * swivel_sin[:, None] + base * swivel_cos[:, None],
-        fallback=(0.0, -1.0, 0.0),
+    bend_hint = torch.stack(
+        (
+            latents[:, _target_index(target_names, f"{side}_elbow_pole_x")],
+            latents[:, _target_index(target_names, f"{side}_elbow_pole_y")],
+            latents[:, _target_index(target_names, f"{side}_elbow_pole_z")],
+        ),
+        dim=1,
     )
     return _torch_two_bone_midpoint(
         torch,

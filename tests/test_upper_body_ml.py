@@ -10,7 +10,7 @@ from validation.scripts.check_upper_body_invariance import (
 )
 from validation.vr_pose_validation.baseline import BasisPortEstimator
 from validation.vr_pose_validation.cmu_metadata import ActivityClass, EnvironmentSplit
-from validation.vr_pose_validation.geometry import Transform, distance, look_rotation
+from validation.vr_pose_validation.geometry import Transform, look_rotation
 from validation.vr_pose_validation.parquet_cache import (
     CACHE_JOINTS,
     append_cached_pose_frame,
@@ -21,11 +21,12 @@ from validation.vr_pose_validation.synthetic_trackers import generate_three_poin
 from validation.vr_pose_validation.types import AvatarCalibration, GroundingContext
 from validation.vr_pose_validation.upper_body_ml import (
     RUNTIME_DECODER_CONTEXT_JOINTS,
+    TARGET_SCHEMA,
     SparseWindowConfig,
     StaticUpperBodyLatentProvider,
     apply_upper_body_latents,
     build_sparse_window_dataset,
-    elbow_swivel_sin_cos,
+    elbow_pole_vector,
     extract_upper_body_latents,
     feature_schema,
     rotation6d,
@@ -62,8 +63,12 @@ def test_sparse_window_export_writes_causal_rows_and_heuristic_latents(tmp_path)
     assert [row["frame_index"] for row in rows] == [3, 5]
     assert all(len(row["features"]) == len(feature_schema(3)) for row in rows)
     assert rows[0]["split"] == split_for_subject("01", 3)
-    assert "heuristic_left_elbow_swivel_sin" in rows[0]
-    assert "left_shoulder_elevation" in rows[0]
+    assert "heuristic_left_elbow_pole_x" in rows[0]
+    assert "left_shoulder_rel_y" in rows[0]
+    assert (
+        __import__("json").loads((output_dir / "schema.json").read_text())["target_schema"]
+        == TARGET_SCHEMA
+    )
     assert rows[0]["reference_left_elbow_valid"] == 1.0
     assert rows[0]["reference_neck_valid"] == 1.0
     assert rows[0]["heuristic_left_elbow_valid"] == 1.0
@@ -121,16 +126,30 @@ def test_upper_body_sparse_representation_invariance_smoke() -> None:
     assert summary["max_mirror_selected_abs_delta"] == approx(0.0, abs=1e-6)
 
 
-def test_elbow_swivel_labels_lower_elbow_as_downward_orbit() -> None:
-    swivel_sin, swivel_cos, valid = elbow_swivel_sin_cos(
+def test_elbow_pole_labels_lower_elbow_as_downward_bend() -> None:
+    pole, valid = elbow_pole_vector(
         shoulder=(0.25, 1.4, 0.0),
         elbow=(0.35, 1.1, -0.05),
         hand=(0.45, 1.0, 0.2),
+        basis=yaw_basis_from_rotation(look_rotation((0.0, 0.0, 1.0))),
     )
 
     assert valid
-    assert swivel_cos > 0.6
-    assert abs(swivel_sin) < 0.8
+    assert pole[1] < -0.4
+
+
+def test_elbow_pole_mask_turns_off_for_near_straight_arm() -> None:
+    frame = _pose_frame(0.0)
+    frame["left_elbow"] = Transform(
+        position=(0.44, 1.03, 0.11),
+        rotation=frame["left_elbow"].rotation,
+    )
+
+    latents = extract_upper_body_latents(frame, AvatarCalibration(human_height_m=1.8))
+
+    assert latents.masks["left_elbow_pole_x"] == approx(0.0)
+    assert latents.masks["left_elbow_pole_y"] == approx(0.0)
+    assert latents.masks["left_elbow_pole_z"] == approx(0.0)
 
 
 def test_learned_latent_application_keeps_controller_hand_target_fixed() -> None:
@@ -158,7 +177,7 @@ def test_learned_latent_application_keeps_controller_hand_target_fixed() -> None
     )
 
 
-def test_torso_lean_latents_move_runtime_torso_chain() -> None:
+def test_chain_latents_move_runtime_torso_anchors() -> None:
     frame = _pose_frame(0.0)
     sample = generate_three_point_samples([frame])[0]
     calibration = AvatarCalibration(human_height_m=1.8)
@@ -169,8 +188,10 @@ def test_torso_lean_latents_move_runtime_torso_chain() -> None:
     )
     values = dict(latents.values)
     masks = dict(latents.masks)
-    values["torso_lean_z"] = 0.35
-    masks["torso_lean_z"] = 1.0
+    values["chest_rel_z"] += 0.2
+    values["neck_rel_z"] += 0.2
+    masks["chest_rel_z"] = 1.0
+    masks["neck_rel_z"] = 1.0
     provider = StaticUpperBodyLatentProvider(values, masks)
 
     adjusted = apply_upper_body_latents(
@@ -180,16 +201,12 @@ def test_torso_lean_latents_move_runtime_torso_chain() -> None:
     )
 
     base_head = base_pose.joints["head"].transform.position
-    base_hips = base_pose.joints["hips"].transform.position
     adjusted_head = adjusted.joints["head"].transform.position
-    adjusted_hips = adjusted.joints["hips"].transform.position
 
     assert adjusted_head == base_head
-    assert distance(adjusted_head, adjusted_hips) == approx(distance(base_head, base_hips))
-    assert adjusted_hips[2] < base_hips[2]
     assert (
         adjusted.joints["chest"].transform.position[2]
-        < base_pose.joints["chest"].transform.position[2]
+        > base_pose.joints["chest"].transform.position[2]
     )
 
 

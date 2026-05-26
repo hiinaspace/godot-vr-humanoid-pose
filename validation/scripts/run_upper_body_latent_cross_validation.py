@@ -40,8 +40,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "constant",
             "torch_linear",
             "torch_mlp",
-            "torch_residual_linear",
-            "torch_residual_mlp",
             "xgboost",
         ),
         default=("constant", "torch_linear", "torch_mlp", "xgboost"),
@@ -54,10 +52,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--allow-cpu", action="store_true")
     parser.add_argument("--xgboost-estimators", type=int, default=256)
-    parser.add_argument("--residual-regularization-weight", type=float, default=1e-3)
-    parser.add_argument("--residual-scale", type=float, default=1.0)
-    parser.add_argument("--residual-smoothing-alpha", type=float, default=1.0)
-    parser.add_argument("--residual-gate-search", action="store_true")
     parser.add_argument("--latent-loss-weight", type=float, default=1.0)
     parser.add_argument("--decoded-pose-weight", type=float, default=0.0)
     parser.add_argument("--decoded-torso-weight", type=float, default=0.0)
@@ -74,7 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         nargs="*",
         choices=tuple(TARGET_GROUPS),
         default=(),
-        help="Residual target groups to leave at the heuristic baseline.",
+        help="Target groups to leave out of Torch latent training.",
     )
     parser.add_argument(
         "--validate-cache-dir",
@@ -83,7 +77,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--validation-model",
-        choices=("torch_linear", "torch_mlp", "torch_residual_linear", "torch_residual_mlp"),
+        choices=("torch_linear", "torch_mlp"),
         default="torch_mlp",
         help="Torch artifact to use for optional downstream cached validation.",
     )
@@ -125,10 +119,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=args.seed,
         allow_cpu=args.allow_cpu,
         xgboost_estimators=max(1, args.xgboost_estimators),
-        residual_regularization_weight=max(0.0, args.residual_regularization_weight),
-        residual_scale=max(0.0, args.residual_scale),
-        residual_smoothing_alpha=min(max(0.0, args.residual_smoothing_alpha), 1.0),
-        residual_gate_search=args.residual_gate_search,
         latent_loss_weight=max(0.0, args.latent_loss_weight),
         decoded_pose_weight=max(0.0, args.decoded_pose_weight),
         decoded_torso_weight=max(0.0, args.decoded_torso_weight),

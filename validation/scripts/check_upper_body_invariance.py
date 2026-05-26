@@ -116,16 +116,24 @@ def _mirror_selected_target_delta(joints: Mapping[str, Transform]) -> float:
     original = extract_upper_body_latents(joints).values
     mirrored = extract_upper_body_latents(_mirror_pose_x_swap_sides(joints)).values
     expected = {
-        "torso_heading_sin": -original["torso_heading_sin"],
-        "torso_heading_cos": original["torso_heading_cos"],
-        "torso_lean_x": -original["torso_lean_x"],
-        "torso_lean_z": original["torso_lean_z"],
-        "left_shoulder_lateral_delta": -original["right_shoulder_lateral_delta"],
-        "left_shoulder_elevation": original["right_shoulder_elevation"],
-        "left_shoulder_protraction": original["right_shoulder_protraction"],
-        "right_shoulder_lateral_delta": -original["left_shoulder_lateral_delta"],
-        "right_shoulder_elevation": original["left_shoulder_elevation"],
-        "right_shoulder_protraction": original["left_shoulder_protraction"],
+        "chest_rel_x": -original["chest_rel_x"],
+        "chest_rel_y": original["chest_rel_y"],
+        "chest_rel_z": original["chest_rel_z"],
+        "neck_rel_x": -original["neck_rel_x"],
+        "neck_rel_y": original["neck_rel_y"],
+        "neck_rel_z": original["neck_rel_z"],
+        "left_shoulder_rel_x": -original["right_shoulder_rel_x"],
+        "left_shoulder_rel_y": original["right_shoulder_rel_y"],
+        "left_shoulder_rel_z": original["right_shoulder_rel_z"],
+        "right_shoulder_rel_x": -original["left_shoulder_rel_x"],
+        "right_shoulder_rel_y": original["left_shoulder_rel_y"],
+        "right_shoulder_rel_z": original["left_shoulder_rel_z"],
+        "left_elbow_pole_x": -original["right_elbow_pole_x"],
+        "left_elbow_pole_y": original["right_elbow_pole_y"],
+        "left_elbow_pole_z": original["right_elbow_pole_z"],
+        "right_elbow_pole_x": -original["left_elbow_pole_x"],
+        "right_elbow_pole_y": original["left_elbow_pole_y"],
+        "right_elbow_pole_z": original["left_elbow_pole_z"],
     }
     return max(abs(mirrored[name] - value) for name, value in expected.items())
 

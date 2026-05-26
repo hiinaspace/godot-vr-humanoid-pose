@@ -7,7 +7,7 @@ from typing import cast
 import polars as pl
 import pytest
 
-from validation.vr_pose_validation.upper_body_ml import TARGET_GROUPS, TARGET_NAMES
+from validation.vr_pose_validation.upper_body_ml import TARGET_NAMES, TARGET_SCHEMA
 
 
 def test_torch_linear_smoke_reduces_synthetic_validation_loss(tmp_path) -> None:
@@ -42,7 +42,7 @@ def test_torch_linear_smoke_reduces_synthetic_validation_loss(tmp_path) -> None:
     )
 
 
-def test_residual_mlp_smoke_learns_correction_over_heuristic(tmp_path) -> None:
+def test_torch_mlp_saves_absolute_chain_artifact(tmp_path) -> None:
     pytest.importorskip("numpy")
     pytest.importorskip("torch")
 
@@ -52,52 +52,20 @@ def test_residual_mlp_smoke_learns_correction_over_heuristic(tmp_path) -> None:
     report = train_upper_body_latents(
         dataset_dir=dataset_dir,
         output_dir=tmp_path / "models",
-        model_names=("torch_residual_mlp",),
-        epochs=80,
+        model_names=("torch_mlp",),
+        epochs=2,
         batch_size=16,
-        learning_rate=5e-2,
+        learning_rate=1e-2,
         weight_decay=0.0,
         hidden_dim=16,
         allow_cpu=True,
         seed=1,
-        residual_regularization_weight=1e-4,
-        residual_gate_search=True,
     )
     leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
     leaderboard = {row["model"]: row for row in leaderboard_rows}
 
-    assert leaderboard["torch_residual_mlp"]["prediction_mode"] == "residual"
-    assert "residual_gates" in leaderboard["torch_residual_mlp"]
-    assert _metric(leaderboard["torch_residual_mlp"], "validation_mae") < _metric(
-        leaderboard["heuristic_estimator"],
-        "validation_mae",
-    )
-
-
-def test_disabled_target_groups_zero_residual_artifact_gates(tmp_path) -> None:
-    pytest.importorskip("numpy")
-    pytest.importorskip("torch")
-
-    from validation.scripts.train_upper_body_latents import train_upper_body_latents
-
-    report = train_upper_body_latents(
-        dataset_dir=_write_synthetic_dataset(tmp_path),
-        output_dir=tmp_path / "models",
-        model_names=("torch_residual_linear",),
-        epochs=1,
-        batch_size=16,
-        allow_cpu=True,
-        disabled_target_groups={"torso"},
-    )
-    leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
-    row = next(row for row in leaderboard_rows if row["model"] == "torch_residual_linear")
-    gates = cast(Mapping[str, float], row["residual_gates"])
-
-    for target_name in TARGET_GROUPS["torso"]:
-        assert gates[target_name] == pytest.approx(0.0)
-    assert gates["left_shoulder_elevation"] == pytest.approx(1.0)
-    assert row["disabled_target_groups"] == ["torso"]
-    assert (tmp_path / "models" / "torch_residual_linear.pt").exists()
+    assert leaderboard["torch_mlp"]["prediction_mode"] == "absolute"
+    assert (tmp_path / "models" / "torch_mlp.pt").exists()
 
 
 def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
@@ -127,11 +95,17 @@ def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
         dtype=torch.float32,
     )
     target = torch.zeros((1, len(TARGET_NAMES)), dtype=torch.float32)
-    for name in ("torso_heading_cos", "left_elbow_swivel_cos", "right_elbow_swivel_cos"):
-        target[:, TARGET_NAMES.index(name)] = 1.0
+    target[:, TARGET_NAMES.index("chest_rel_y")] = -0.13
+    target[:, TARGET_NAMES.index("neck_rel_y")] = -0.04
+    target[:, TARGET_NAMES.index("left_shoulder_rel_x")] = 0.111111
+    target[:, TARGET_NAMES.index("left_shoulder_rel_y")] = -0.12
+    target[:, TARGET_NAMES.index("right_shoulder_rel_x")] = -0.111111
+    target[:, TARGET_NAMES.index("right_shoulder_rel_y")] = -0.12
+    target[:, TARGET_NAMES.index("left_elbow_pole_y")] = -1.0
+    target[:, TARGET_NAMES.index("right_elbow_pole_y")] = -1.0
     prediction = target.clone()
     perturbed = target.clone()
-    perturbed[:, TARGET_NAMES.index("left_shoulder_elevation")] = 0.5
+    perturbed[:, TARGET_NAMES.index("left_shoulder_rel_y")] = 0.2
     masks = torch.ones_like(target)
     surrogate_indices = _surrogate_feature_indices(feature_names)
     assert surrogate_indices is not None
@@ -376,6 +350,7 @@ def _write_synthetic_dataset(tmp_path, *, row_count: int = 80):
                 "feature_names": feature_names,
                 "target_names": list(TARGET_NAMES),
                 "mask_names": [f"{name}_mask" for name in TARGET_NAMES],
+                "target_schema": TARGET_SCHEMA,
             },
             indent=2,
             sort_keys=True,
