@@ -87,11 +87,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--decoded-elbow-weight", type=float, default=1.0)
     parser.add_argument("--decoded-arm-direction-weight", type=float, default=0.25)
     parser.add_argument("--decoded-stretch-weight", type=float, default=0.25)
+    parser.add_argument("--decoded-reach-hinge-weight", type=float, default=0.0)
+    parser.add_argument("--reach-ratio-limit", type=float, default=0.97)
     parser.add_argument("--surrogate-position-weight", type=float, default=0.0)
     parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
     parser.add_argument("--temporal-acceleration-weight", type=float, default=0.0)
     parser.add_argument("--temporal-jerk-weight", type=float, default=0.0)
     parser.add_argument("--temporal-excess-jerk-weight", type=float, default=0.0)
+    parser.add_argument("--pole-velocity-weight", type=float, default=0.0)
+    parser.add_argument("--pole-excess-jerk-weight", type=float, default=0.0)
     parser.add_argument(
         "--temporal-excess-ratio",
         type=float,
@@ -136,11 +140,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         decoded_elbow_weight=max(0.0, args.decoded_elbow_weight),
         decoded_arm_direction_weight=max(0.0, args.decoded_arm_direction_weight),
         decoded_stretch_weight=max(0.0, args.decoded_stretch_weight),
+        decoded_reach_hinge_weight=max(0.0, args.decoded_reach_hinge_weight),
+        reach_ratio_limit=max(0.0, args.reach_ratio_limit),
         surrogate_position_weight=max(0.0, args.surrogate_position_weight),
         temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
         temporal_acceleration_weight=max(0.0, args.temporal_acceleration_weight),
         temporal_jerk_weight=max(0.0, args.temporal_jerk_weight),
         temporal_excess_jerk_weight=max(0.0, args.temporal_excess_jerk_weight),
+        pole_velocity_weight=max(0.0, args.pole_velocity_weight),
+        pole_excess_jerk_weight=max(0.0, args.pole_excess_jerk_weight),
         temporal_excess_ratio=max(0.0, args.temporal_excess_ratio),
         temporal_excess_margin=max(0.0, args.temporal_excess_margin),
         disabled_target_groups=set(args.disabled_target_groups),
@@ -174,11 +182,15 @@ def train_upper_body_latents(
     decoded_elbow_weight: float = 1.0,
     decoded_arm_direction_weight: float = 0.25,
     decoded_stretch_weight: float = 0.25,
+    decoded_reach_hinge_weight: float = 0.0,
+    reach_ratio_limit: float = 0.97,
     surrogate_position_weight: float = 0.0,
     temporal_velocity_weight: float = 0.0,
     temporal_acceleration_weight: float = 0.0,
     temporal_jerk_weight: float = 0.0,
     temporal_excess_jerk_weight: float = 0.0,
+    pole_velocity_weight: float = 0.0,
+    pole_excess_jerk_weight: float = 0.0,
     temporal_excess_ratio: float = 1.25,
     temporal_excess_margin: float = 0.0,
     disabled_target_groups: set[str] | None = None,
@@ -212,11 +224,15 @@ def train_upper_body_latents(
         "decoded_elbow_weight": decoded_elbow_weight,
         "decoded_arm_direction_weight": decoded_arm_direction_weight,
         "decoded_stretch_weight": decoded_stretch_weight,
+        "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+        "reach_ratio_limit": reach_ratio_limit,
         "surrogate_position_weight": surrogate_position_weight,
         "temporal_velocity_weight": temporal_velocity_weight,
         "temporal_acceleration_weight": temporal_acceleration_weight,
         "temporal_jerk_weight": temporal_jerk_weight,
         "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+        "pole_velocity_weight": pole_velocity_weight,
+        "pole_excess_jerk_weight": pole_excess_jerk_weight,
         "temporal_excess_ratio": temporal_excess_ratio,
         "temporal_excess_margin": temporal_excess_margin,
         "disabled_target_groups": sorted(disabled_target_groups),
@@ -300,11 +316,15 @@ def train_upper_body_latents(
                 decoded_elbow_weight=decoded_elbow_weight,
                 decoded_arm_direction_weight=decoded_arm_direction_weight,
                 decoded_stretch_weight=decoded_stretch_weight,
+                decoded_reach_hinge_weight=decoded_reach_hinge_weight,
+                reach_ratio_limit=reach_ratio_limit,
                 surrogate_position_weight=surrogate_position_weight,
                 temporal_velocity_weight=temporal_velocity_weight,
                 temporal_acceleration_weight=temporal_acceleration_weight,
                 temporal_jerk_weight=temporal_jerk_weight,
                 temporal_excess_jerk_weight=temporal_excess_jerk_weight,
+                pole_velocity_weight=pole_velocity_weight,
+                pole_excess_jerk_weight=pole_excess_jerk_weight,
                 temporal_excess_ratio=temporal_excess_ratio,
                 temporal_excess_margin=temporal_excess_margin,
                 disabled_target_groups=disabled_target_groups,
@@ -512,11 +532,15 @@ def _train_torch_model(
     decoded_elbow_weight: float,
     decoded_arm_direction_weight: float,
     decoded_stretch_weight: float,
+    decoded_reach_hinge_weight: float,
+    reach_ratio_limit: float,
     surrogate_position_weight: float,
     temporal_velocity_weight: float,
     temporal_acceleration_weight: float,
     temporal_jerk_weight: float,
     temporal_excess_jerk_weight: float,
+    pole_velocity_weight: float,
+    pole_excess_jerk_weight: float,
     temporal_excess_ratio: float,
     temporal_excess_margin: float,
     disabled_target_groups: set[str],
@@ -539,7 +563,7 @@ def _train_torch_model(
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     train_indices = np.flatnonzero(train_mask)
     x_train = torch.as_tensor(features[train_mask], dtype=torch.float32, device=device)
-    raw_x_train = torch.as_tensor(raw_features[train_mask], dtype=torch.float32, device=device)
+    raw_x_train = torch.as_tensor(raw_features[train_mask], dtype=torch.float32)
     y_train = torch.as_tensor(targets[train_mask], dtype=torch.float32, device=device)
     m_train = torch.as_tensor(masks[train_mask], dtype=torch.float32, device=device)
     x_val = torch.as_tensor(features[validation_mask], dtype=torch.float32, device=device)
@@ -719,12 +743,13 @@ def _train_torch_model(
                 )
             effective_decoded_weight = decoded_pose_weight + surrogate_position_weight
             if effective_decoded_weight > 0.0 and surrogate_indices is not None:
+                batch_raw_features = _tensor_rows(raw_x_train, batch_indices, device=device)
                 loss = loss + effective_decoded_weight * _decoded_pose_loss(
                     torch,
                     prediction,
                     y_train[batch_indices],
                     effective_m_train[batch_indices],
-                    raw_x_train[batch_indices],
+                    batch_raw_features,
                     decoded_reference_points=(
                         decoded_points_train[batch_indices]
                         if decoded_points_train is not None
@@ -753,6 +778,8 @@ def _train_torch_model(
                     elbow_weight=decoded_elbow_weight,
                     arm_direction_weight=decoded_arm_direction_weight,
                     stretch_weight=decoded_stretch_weight,
+                    reach_hinge_weight=decoded_reach_hinge_weight,
+                    reach_ratio_limit=reach_ratio_limit,
                 )
             if temporal_velocity_weight > 0.0 and train_pairs.numel() > 0:
                 loss = loss + temporal_velocity_weight * _decoded_temporal_motion_loss(
@@ -777,6 +804,43 @@ def _train_torch_model(
                     feature_names=feature_names,
                     residual_gates=residual_group_gates,
                     max_windows=batch_size,
+                )
+            if pole_velocity_weight > 0.0 and train_pairs.numel() > 0:
+                loss = loss + pole_velocity_weight * _pole_temporal_motion_loss(
+                    torch,
+                    model,
+                    x_train,
+                    targets=y_train,
+                    target_masks=effective_m_train,
+                    heuristics=h_train,
+                    windows=train_pairs,
+                    order=1,
+                    prediction_mode=prediction_mode,
+                    residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
+                    target_names=target_names,
+                    residual_gates=residual_group_gates,
+                    max_windows=batch_size,
+                )
+            if pole_excess_jerk_weight > 0.0 and train_quads.numel() > 0:
+                loss = loss + pole_excess_jerk_weight * _pole_temporal_motion_loss(
+                    torch,
+                    model,
+                    x_train,
+                    targets=y_train,
+                    target_masks=effective_m_train,
+                    heuristics=h_train,
+                    windows=train_quads,
+                    order=3,
+                    prediction_mode=prediction_mode,
+                    residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
+                    target_names=target_names,
+                    residual_gates=residual_group_gates,
+                    max_windows=batch_size,
+                    loss_mode="excess",
+                    excess_ratio=temporal_excess_ratio,
+                    excess_margin=temporal_excess_margin,
                 )
             if temporal_acceleration_weight > 0.0 and train_triples.numel() > 0:
                 loss = loss + temporal_acceleration_weight * _decoded_temporal_motion_loss(
@@ -892,6 +956,8 @@ def _train_torch_model(
                 decoded_elbow_weight=decoded_elbow_weight,
                 decoded_arm_direction_weight=decoded_arm_direction_weight,
                 decoded_stretch_weight=decoded_stretch_weight,
+                decoded_reach_hinge_weight=decoded_reach_hinge_weight,
+                reach_ratio_limit=reach_ratio_limit,
                 base_residual_gates=residual_group_gates,
             )
             if residual_gate_search and prediction_mode == "residual"
@@ -934,6 +1000,8 @@ def _train_torch_model(
         temporal_pairs=validation_pairs,
         temporal_triples=validation_triples,
         temporal_quads=validation_quads,
+        temporal_excess_ratio=temporal_excess_ratio,
+        temporal_excess_margin=temporal_excess_margin,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -947,10 +1015,14 @@ def _train_torch_model(
             "decoded_elbow_weight": decoded_elbow_weight,
             "decoded_arm_direction_weight": decoded_arm_direction_weight,
             "decoded_stretch_weight": decoded_stretch_weight,
+            "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+            "reach_ratio_limit": reach_ratio_limit,
             "temporal_velocity_weight": temporal_velocity_weight,
             "temporal_acceleration_weight": temporal_acceleration_weight,
             "temporal_jerk_weight": temporal_jerk_weight,
             "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+            "pole_velocity_weight": pole_velocity_weight,
+            "pole_excess_jerk_weight": pole_excess_jerk_weight,
             "temporal_excess_ratio": temporal_excess_ratio,
             "temporal_excess_margin": temporal_excess_margin,
             "disabled_target_groups": sorted(active_disabled_target_groups),
@@ -979,8 +1051,12 @@ def _train_torch_model(
         "decoded_elbow_weight": decoded_elbow_weight,
         "decoded_arm_direction_weight": decoded_arm_direction_weight,
         "decoded_stretch_weight": decoded_stretch_weight,
+        "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+        "reach_ratio_limit": reach_ratio_limit,
         "temporal_jerk_weight": temporal_jerk_weight,
         "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+        "pole_velocity_weight": pole_velocity_weight,
+        "pole_excess_jerk_weight": pole_excess_jerk_weight,
         "temporal_excess_ratio": temporal_excess_ratio,
         "temporal_excess_margin": temporal_excess_margin,
         "disabled_target_groups": sorted(active_disabled_target_groups),
@@ -1100,7 +1176,7 @@ def _compose_torch_latents(
     target_names: Sequence[str],
 ) -> Any:
     if prediction_mode == "absolute":
-        return raw_prediction
+        return _normalize_torch_poles(torch, raw_prediction, target_names)
     prediction = heuristic + residual_scale * raw_prediction
     return _normalize_torch_poles(torch, prediction, target_names)
 
@@ -1149,6 +1225,8 @@ def _fit_residual_gates(
     decoded_elbow_weight: float,
     decoded_arm_direction_weight: float,
     decoded_stretch_weight: float,
+    decoded_reach_hinge_weight: float,
+    reach_ratio_limit: float,
     base_residual_gates: Mapping[str, float],
 ) -> dict[str, float]:
     if prediction_mode != "residual":
@@ -1203,6 +1281,8 @@ def _fit_residual_gates(
                     decoded_elbow_weight=decoded_elbow_weight,
                     decoded_arm_direction_weight=decoded_arm_direction_weight,
                     decoded_stretch_weight=decoded_stretch_weight,
+                    decoded_reach_hinge_weight=decoded_reach_hinge_weight,
+                    reach_ratio_limit=reach_ratio_limit,
                 )
                 if loss < best_loss:
                     best_loss = loss
@@ -1234,6 +1314,8 @@ def _residual_gate_loss(
     decoded_elbow_weight: float,
     decoded_arm_direction_weight: float,
     decoded_stretch_weight: float,
+    decoded_reach_hinge_weight: float,
+    reach_ratio_limit: float,
 ) -> float:
     loss = _masked_mse(torch, prediction, target, mask)
     surrogate_indices = _surrogate_feature_indices(feature_names)
@@ -1257,6 +1339,8 @@ def _residual_gate_loss(
             elbow_weight=decoded_elbow_weight,
             arm_direction_weight=decoded_arm_direction_weight,
             stretch_weight=decoded_stretch_weight,
+            reach_hinge_weight=decoded_reach_hinge_weight,
+            reach_ratio_limit=reach_ratio_limit,
         )
     return float(loss.detach().cpu())
 
@@ -1326,6 +1410,8 @@ def _decoded_pose_loss(
     elbow_weight: float,
     arm_direction_weight: float,
     stretch_weight: float,
+    reach_hinge_weight: float,
+    reach_ratio_limit: float,
     runtime_context_points: Any | None = None,
     runtime_context_masks: Any | None = None,
     runtime_decoder_indices: RuntimeDecoderFeatureIndices | None = None,
@@ -1343,6 +1429,7 @@ def _decoded_pose_loss(
         runtime_decoder_indices=runtime_decoder_indices,
         surrogate_indices=surrogate_indices,
         target_names=target_names,
+        reach_ratio_limit=reach_ratio_limit,
     )
     total = torch.zeros((), dtype=prediction.dtype, device=prediction.device)
     total_weight = 0.0
@@ -1352,6 +1439,7 @@ def _decoded_pose_loss(
         ("elbow_mse", elbow_weight),
         ("arm_direction_mse", arm_direction_weight),
         ("stretch_mse", stretch_weight),
+        ("reach_hinge_mse", reach_hinge_weight),
     ):
         if term_weight <= 0.0:
             continue
@@ -1376,6 +1464,7 @@ def _decoded_pose_terms(
     runtime_context_points: Any | None = None,
     runtime_context_masks: Any | None = None,
     runtime_decoder_indices: RuntimeDecoderFeatureIndices | None = None,
+    reach_ratio_limit: float = 0.97,
 ) -> dict[str, Any]:
     prediction_points, prediction_point_masks = _decoded_prediction_points_and_masks(
         torch,
@@ -1519,12 +1608,34 @@ def _decoded_pose_terms(
             ),
         ),
     )
+    reach_hinge_mse = _average_losses(
+        torch,
+        (
+            _decoded_reach_hinge_loss(
+                torch,
+                shoulder=prediction_points[:, 2],
+                hand=left_hand,
+                arm_length=upper_arm + lower_arm,
+                mask=left_elbow_mask,
+                reach_ratio_limit=reach_ratio_limit,
+            ),
+            _decoded_reach_hinge_loss(
+                torch,
+                shoulder=prediction_points[:, 3],
+                hand=right_hand,
+                arm_length=upper_arm + lower_arm,
+                mask=right_elbow_mask,
+                reach_ratio_limit=reach_ratio_limit,
+            ),
+        ),
+    )
     return {
         "torso_mse": torso_mse,
         "shoulder_mse": shoulder_mse,
         "elbow_mse": elbow_mse,
         "arm_direction_mse": arm_direction_mse,
         "stretch_mse": stretch_mse,
+        "reach_hinge_mse": reach_hinge_mse,
         "position_mse": _average_losses(torch, (torso_mse, shoulder_mse, elbow_mse)),
     }
 
@@ -1605,6 +1716,20 @@ def _decoded_stretch_loss(
     return (stretch_error * mask).sum() / mask.sum().clamp_min(1.0)
 
 
+def _decoded_reach_hinge_loss(
+    torch: Any,
+    *,
+    shoulder: Any,
+    hand: Any,
+    arm_length: Any,
+    mask: Any,
+    reach_ratio_limit: float,
+) -> Any:
+    reach_ratio = torch.linalg.vector_norm(hand - shoulder, dim=1) / arm_length.clamp_min(1e-4)
+    excess = torch.relu(reach_ratio - reach_ratio_limit)
+    return (excess * excess * mask).sum() / mask.sum().clamp_min(1.0)
+
+
 def _decoded_anthropometric_loss(
     torch: Any,
     *,
@@ -1626,6 +1751,84 @@ def _decoded_anthropometric_loss(
     shoulder_loss = (width_error * width_error * shoulder_mask).sum()
     shoulder_loss = shoulder_loss / shoulder_mask.sum().clamp_min(1.0)
     return (torso_loss + shoulder_loss) * 0.5
+
+
+def _pole_temporal_motion_loss(
+    torch: Any,
+    model: Any,
+    features: Any,
+    *,
+    targets: Any,
+    target_masks: Any,
+    heuristics: Any,
+    windows: Any,
+    order: Literal[1, 2, 3],
+    prediction_mode: Literal["absolute", "residual"],
+    residual_scale: float,
+    residual_smoothing_alpha: float,
+    target_names: Sequence[str],
+    residual_gates: Mapping[str, float],
+    max_windows: int,
+    loss_mode: Literal["match", "excess"] = "match",
+    excess_ratio: float = 1.25,
+    excess_margin: float = 0.0,
+) -> Any:
+    if windows.shape[1] != order + 1:
+        raise ValueError("Temporal windows must be one frame wider than the derivative order")
+    selected_windows = windows[
+        torch.randint(
+            windows.shape[0],
+            (min(max_windows, windows.shape[0]),),
+            device=features.device,
+        )
+    ]
+    flat_indices = selected_windows.flatten()
+    raw_prediction = _apply_residual_gates(
+        torch,
+        model(features[flat_indices]),
+        residual_gates,
+        target_names,
+    )
+    if prediction_mode == "residual":
+        raw_prediction = _smooth_temporal_residuals(
+            torch,
+            raw_prediction,
+            window_count=selected_windows.shape[0],
+            window_width=selected_windows.shape[1],
+            alpha=residual_smoothing_alpha,
+        )
+    prediction = _compose_torch_latents(
+        torch,
+        raw_prediction,
+        heuristics[flat_indices],
+        prediction_mode=prediction_mode,
+        residual_scale=residual_scale,
+        target_names=target_names,
+    )
+    prediction_poles = _pole_vectors(torch, prediction, target_names)
+    target_poles = _pole_vectors(torch, targets[flat_indices], target_names)
+    pole_masks = _pole_masks(target_masks[flat_indices], target_names)
+    window_count = selected_windows.shape[0]
+    window_width = selected_windows.shape[1]
+    prediction_delta = _temporal_difference(
+        prediction_poles.reshape(window_count, window_width, -1, 3),
+        order=order,
+    )
+    target_delta = _temporal_difference(
+        target_poles.reshape(window_count, window_width, -1, 3),
+        order=order,
+    )
+    temporal_mask = pole_masks.reshape(window_count, window_width, -1).prod(dim=1)
+    if loss_mode == "excess":
+        return _masked_temporal_excess_motion_mse(
+            torch,
+            prediction_delta,
+            target_delta,
+            temporal_mask,
+            excess_ratio=excess_ratio,
+            excess_margin=excess_margin,
+        )
+    return _masked_temporal_point_mse(prediction_delta, target_delta, temporal_mask)
 
 
 def _decoded_temporal_motion_loss(
@@ -1668,6 +1871,7 @@ def _decoded_temporal_motion_loss(
         )
     ]
     flat_indices = selected_windows.flatten()
+    flat_raw_features = _tensor_rows(raw_features, flat_indices, device=features.device)
     raw_prediction = _apply_residual_gates(
         torch,
         model(features[flat_indices]),
@@ -1680,7 +1884,7 @@ def _decoded_temporal_motion_loss(
         targets[flat_indices],
         target_masks[flat_indices],
         heuristics[flat_indices],
-        raw_features[flat_indices],
+        flat_raw_features,
         decoded_reference_points=(
             decoded_reference_points[flat_indices] if decoded_reference_points is not None else None
         ),
@@ -1898,6 +2102,31 @@ def _decoded_point_masks(torch: Any, target_mask: Any, target_names: Sequence[st
     )
 
 
+def _pole_vectors(torch: Any, latents: Any, target_names: Sequence[str]) -> Any:
+    poles = []
+    for side in ("left", "right"):
+        pole = latents[
+            :,
+            [
+                _target_index(target_names, f"{side}_elbow_pole_x"),
+                _target_index(target_names, f"{side}_elbow_pole_y"),
+                _target_index(target_names, f"{side}_elbow_pole_z"),
+            ],
+        ]
+        poles.append(_torch_normalize(torch, pole, fallback=(0.0, -1.0, 0.0)))
+    return torch.stack(poles, dim=1)
+
+
+def _pole_masks(target_mask: Any, target_names: Sequence[str]) -> Any:
+    return target_mask[
+        :,
+        [
+            _target_index(target_names, "left_elbow_pole_x"),
+            _target_index(target_names, "right_elbow_pole_x"),
+        ],
+    ]
+
+
 def _temporal_difference(points: Any, *, order: Literal[1, 2, 3]) -> Any:
     if order == 1:
         return points[:, 1] - points[:, 0]
@@ -1944,6 +2173,8 @@ def _surrogate_validation_metrics(
     temporal_pairs: Any,
     temporal_triples: Any,
     temporal_quads: Any,
+    temporal_excess_ratio: float,
+    temporal_excess_margin: float,
 ) -> dict[str, float]:
     surrogate_indices = _surrogate_feature_indices(feature_names)
     if surrogate_indices is None:
@@ -2011,6 +2242,35 @@ def _surrogate_validation_metrics(
             temporal_quads,
             order=3,
         )
+        prediction_poles = _pole_vectors(torch, prediction, target_names)
+        target_poles = _pole_vectors(torch, target, target_names)
+        pole_masks = _pole_masks(target_mask, target_names)
+        pole_velocity_mse = _decoded_temporal_validation_metric(
+            torch,
+            prediction_poles,
+            target_poles,
+            pole_masks,
+            temporal_pairs,
+            order=1,
+        )
+        pole_jerk_mse = _decoded_temporal_validation_metric(
+            torch,
+            prediction_poles,
+            target_poles,
+            pole_masks,
+            temporal_quads,
+            order=3,
+        )
+        pole_excess_jerk_mse = _temporal_excess_validation_metric(
+            torch,
+            prediction_poles,
+            target_poles,
+            pole_masks,
+            temporal_quads,
+            order=3,
+            excess_ratio=temporal_excess_ratio,
+            excess_margin=temporal_excess_margin,
+        )
     return {
         "validation_surrogate_position_mse": position_mse,
         "validation_surrogate_velocity_mse": velocity_mse,
@@ -2023,6 +2283,10 @@ def _surrogate_validation_metrics(
         "validation_decoded_elbow_mse": float(terms["elbow_mse"].detach().cpu()),
         "validation_decoded_arm_direction_mse": float(terms["arm_direction_mse"].detach().cpu()),
         "validation_decoded_stretch_mse": float(terms["stretch_mse"].detach().cpu()),
+        "validation_decoded_reach_hinge_mse": float(terms["reach_hinge_mse"].detach().cpu()),
+        "validation_pole_velocity_mse": pole_velocity_mse,
+        "validation_pole_jerk_mse": pole_jerk_mse,
+        "validation_pole_excess_jerk_mse": pole_excess_jerk_mse,
     }
 
 
@@ -2043,6 +2307,36 @@ def _decoded_temporal_validation_metric(
     temporal_mask = point_masks[windows].prod(dim=1)
     return float(
         _masked_temporal_point_mse(prediction_delta, target_delta, temporal_mask).detach().cpu()
+    )
+
+
+def _temporal_excess_validation_metric(
+    torch: Any,
+    prediction_points: Any,
+    target_points: Any,
+    point_masks: Any,
+    windows: Any,
+    *,
+    order: Literal[1, 2, 3],
+    excess_ratio: float,
+    excess_margin: float,
+) -> float:
+    if windows.numel() == 0:
+        return 0.0
+    prediction_delta = _temporal_difference(prediction_points[windows], order=order)
+    target_delta = _temporal_difference(target_points[windows], order=order)
+    temporal_mask = point_masks[windows].prod(dim=1)
+    return float(
+        _masked_temporal_excess_motion_mse(
+            torch,
+            prediction_delta,
+            target_delta,
+            temporal_mask,
+            excess_ratio=excess_ratio,
+            excess_margin=excess_margin,
+        )
+        .detach()
+        .cpu()
     )
 
 
@@ -2319,6 +2613,12 @@ def _target_index(target_names: Sequence[str], name: str) -> int:
 def _masked_mse(torch: Any, prediction: Any, target: Any, mask: Any) -> Any:
     del torch
     return (((prediction - target) ** 2) * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def _tensor_rows(values: Any, indices: Any, *, device: Any) -> Any:
+    row_indices = indices if values.device == indices.device else indices.detach().cpu()
+    selected = values[row_indices]
+    return selected if selected.device == device else selected.to(device)
 
 
 def _metric_dict(

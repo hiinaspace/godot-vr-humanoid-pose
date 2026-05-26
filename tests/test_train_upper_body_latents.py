@@ -125,6 +125,8 @@ def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
         elbow_weight=1.0,
         arm_direction_weight=1.0,
         stretch_weight=1.0,
+        reach_hinge_weight=0.0,
+        reach_ratio_limit=0.97,
     )
     perturbed_loss = _decoded_pose_loss(
         torch,
@@ -141,10 +143,71 @@ def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
         elbow_weight=1.0,
         arm_direction_weight=1.0,
         stretch_weight=1.0,
+        reach_hinge_weight=0.0,
+        reach_ratio_limit=0.97,
     )
 
     assert float(matching_loss) == pytest.approx(0.0, abs=1e-6)
     assert float(perturbed_loss) > 0.001
+
+
+def test_decoded_reach_hinge_loss_penalizes_near_full_extension() -> None:
+    torch = pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import _decoded_reach_hinge_loss
+
+    mask = torch.ones((2,), dtype=torch.float32)
+    loss = _decoded_reach_hinge_loss(
+        torch,
+        shoulder=torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=torch.float32),
+        hand=torch.tensor([[0.95, 0.0, 0.0], [1.05, 0.0, 0.0]], dtype=torch.float32),
+        arm_length=torch.ones((2,), dtype=torch.float32),
+        mask=mask,
+        reach_ratio_limit=0.97,
+    )
+
+    assert float(loss) == pytest.approx((0.08 * 0.08) / 2.0, rel=1e-5)
+
+
+def test_pole_temporal_motion_loss_penalizes_extra_pole_velocity() -> None:
+    torch = pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import _pole_temporal_motion_loss
+
+    class SequenceModel(torch.nn.Module):
+        def forward(self, features):
+            output = torch.zeros((features.shape[0], len(TARGET_NAMES)), dtype=features.dtype)
+            output[:, TARGET_NAMES.index("left_elbow_pole_x")] = features[:, 0]
+            output[:, TARGET_NAMES.index("left_elbow_pole_y")] = features[:, 1]
+            output[:, TARGET_NAMES.index("right_elbow_pole_x")] = features[:, 0]
+            output[:, TARGET_NAMES.index("right_elbow_pole_y")] = features[:, 1]
+            return output
+
+    features = torch.tensor([[0.0, -1.0], [1.0, 0.0]], dtype=torch.float32)
+    targets = torch.zeros((2, len(TARGET_NAMES)), dtype=torch.float32)
+    targets[:, TARGET_NAMES.index("left_elbow_pole_y")] = -1.0
+    targets[:, TARGET_NAMES.index("right_elbow_pole_y")] = -1.0
+    masks = torch.ones_like(targets)
+    windows = torch.tensor([[0, 1]], dtype=torch.long)
+
+    loss = _pole_temporal_motion_loss(
+        torch,
+        SequenceModel(),
+        features,
+        targets=targets,
+        target_masks=masks,
+        heuristics=torch.zeros_like(targets),
+        windows=windows,
+        order=1,
+        prediction_mode="absolute",
+        residual_scale=1.0,
+        residual_smoothing_alpha=1.0,
+        target_names=TARGET_NAMES,
+        residual_gates={name: 1.0 for name in TARGET_NAMES},
+        max_windows=1,
+    )
+
+    assert float(loss) > 0.0
 
 
 def test_decoded_temporal_validation_metric_penalizes_jerk() -> None:

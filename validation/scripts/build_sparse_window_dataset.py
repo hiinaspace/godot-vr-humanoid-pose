@@ -21,13 +21,24 @@ DEFAULT_CACHE_DIR = Path(".cache/cmu/parquet/canonical_full")
 DEFAULT_OUTPUT_DIR = Path(".cache/ml/upper_body_windows")
 
 
+def _default_workers(stride: int) -> int:
+    cpu_count = os.cpu_count() or 1
+    if stride <= 1:
+        return max(1, min(cpu_count, 2))
+    return max(1, min(cpu_count, 16))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--window-size", type=int, default=40)
     parser.add_argument("--stride", type=int, default=4)
-    parser.add_argument("--workers", type=int, default=max(1, min(os.cpu_count() or 1, 16)))
+    parser.add_argument(
+        "--workers",
+        type=int,
+        help="Worker processes. Defaults to 2 for stride-1 dense exports, else up to 16.",
+    )
     parser.add_argument(
         "--shard-rows",
         type=int,
@@ -84,7 +95,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         holdout_folds=max(2, args.holdout_folds),
         environment_splits=cast(tuple[EnvironmentSplit, ...], tuple(args.environment_split)),
         activity_classes=cast(tuple[ActivityClass, ...], tuple(args.activity_class)),
-        workers=max(1, args.workers),
+        workers=max(1, args.workers if args.workers is not None else _default_workers(args.stride)),
         shard_rows=max(0, args.shard_rows),
     )
     summary = build_sparse_window_dataset(

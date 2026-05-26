@@ -123,19 +123,23 @@ how much of those gait parameters is explained by sparse VR-style inputs.
 Build causal sparse-window data for upper-body latent ML experiments:
 
 ```powershell
-uv run --group ml python -m validation.scripts.build_sparse_window_dataset --cache-dir .cache/cmu/parquet/canonical_full --output-dir .cache/ml/upper_body_windows
+uv run --group ml python -m validation.scripts.build_sparse_window_dataset --cache-dir .cache/cmu/parquet/canonical_full --output-dir .cache/ml/upper_body_windows_dense --stride 1
 ```
 
 Train the GPU-oriented latent model ladder:
 
 ```powershell
-uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows --output-dir .cache/ml/upper_body_models
+uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models
 ```
 
 The sparse-window exporter writes ignored Parquet artifacts under `.cache/ml/`.
 By default the CLI parallelizes by clip and writes `windows_shards/*.parquet`;
-pass `--workers 1 --shard-rows 0` for the older single-file path. Rows use
-causal HMD/controller windows, static calibration features such as
+pass `--workers 1 --shard-rows 0` for the older single-file path. The default
+worker count is capped at 2 for `--stride 1` dense exports to avoid queuing too
+many large clip row batches in RAM; pass a higher `--workers` value only after
+watching memory usage. Use `--stride 1` for dense temporal training; larger
+strides are useful for quicker representation smoke tests. Rows use causal HMD/controller windows, static
+calibration features such as
 height/shoulder width/arm lengths, and `upper_body_chain_v1` targets: normalized
 head-yaw-relative chest, neck, shoulder anchors, plus elbow pole directions
 masked when the arm is near straight. Rows also include local reference and heuristic chest/neck/shoulder/elbow
@@ -144,7 +148,9 @@ that context is present, Torch training decodes predicted latents through the
 differentiable runtime arm/torso chain instead of the older approximate
 surrogate. Decoded temporal losses penalize velocity, acceleration, and jerk,
 and the optional temporal excess loss penalizes output jerk only when it exceeds
-reference jerk by a configured ratio. Training reports compare the constant
+reference jerk by a configured ratio. Pole temporal losses compare elbow bend
+direction velocity/jerk, and the reach hinge penalizes shoulder-hand distances
+near full extension before the two-bone IK singularity. Training reports compare the constant
 baseline, Torch linear, Torch MLP, and native XGBoost CUDA paths. Torch CUDA is
 required by default; pass `--allow-cpu` only for smoke tests.
 
@@ -152,13 +158,13 @@ For shoulder/elbow experiments, use decoded losses against the exported
 reference points instead of only latent MAE:
 
 ```powershell
-uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp --latent-loss-weight 0.1 --decoded-pose-weight 25 --decoded-torso-weight 1 --decoded-shoulder-weight 2 --decoded-elbow-weight 2 --decoded-arm-direction-weight 0.5 --decoded-stretch-weight 0.25 --temporal-velocity-weight 0.2 --temporal-acceleration-weight 0.1 --temporal-jerk-weight 0.05 --temporal-excess-jerk-weight 0.05
+uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp --latent-loss-weight 0.1 --decoded-pose-weight 25 --decoded-torso-weight 1 --decoded-shoulder-weight 2 --decoded-elbow-weight 2 --decoded-arm-direction-weight 0.5 --decoded-stretch-weight 0.25 --decoded-reach-hinge-weight 0.25 --reach-ratio-limit 0.97 --temporal-velocity-weight 0.2 --temporal-acceleration-weight 0.1 --temporal-jerk-weight 0.05 --temporal-excess-jerk-weight 0.05 --pole-velocity-weight 0.05 --pole-excess-jerk-weight 0.02
 ```
 
 Run learned upper-body latents through the full cached CMU metric stack:
 
 ```powershell
-uv run --group ml python -m validation.scripts.run_learned_upper_body_validation --cache-dir .cache/cmu/parquet/canonical_full --dataset-dir .cache/ml/upper_body_windows --artifact .cache/ml/upper_body_models/torch_mlp.pt --normalization .cache/ml/upper_body_models/normalization.json --compare-baseline
+uv run --group ml python -m validation.scripts.run_learned_upper_body_validation --cache-dir .cache/cmu/parquet/canonical_full --dataset-dir .cache/ml/upper_body_windows_dense --artifact .cache/ml/upper_body_models/torch_mlp.pt --normalization .cache/ml/upper_body_models/normalization.json --compare-baseline
 ```
 
 Analyze whether the decoded training loss matches the runtime latent decoder,
@@ -166,7 +172,7 @@ and whether oracle GT torso/shoulder/elbow groups are independently useful when
 decoded on the heuristic base pose:
 
 ```powershell
-uv run --group ml python -m validation.scripts.analyze_upper_body_decoder --cache-dir .cache/cmu/parquet/canonical_full --dataset-dir .cache/ml/upper_body_windows --report validation/reports/upper_body_decoder_analysis.json --max-clips 30
+uv run --group ml python -m validation.scripts.analyze_upper_body_decoder --cache-dir .cache/cmu/parquet/canonical_full --dataset-dir .cache/ml/upper_body_windows_dense --report validation/reports/upper_body_decoder_analysis.json --max-clips 30
 ```
 
 Check the current sparse-window feature and latent target invariance assumptions:
@@ -179,7 +185,7 @@ Run subject-fold cross-validation, optionally with downstream cached validation
 per fold:
 
 ```powershell
-uv run --group ml python -m validation.scripts.run_upper_body_latent_cross_validation --dataset-dir .cache/ml/upper_body_windows --output-dir .cache/ml/upper_body_models/cross_validation --validate-cache-dir .cache/cmu/parquet/canonical_full
+uv run --group ml python -m validation.scripts.run_upper_body_latent_cross_validation --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models/cross_validation --validate-cache-dir .cache/cmu/parquet/canonical_full --decoded-reach-hinge-weight 0.25 --pole-velocity-weight 0.05 --pole-excess-jerk-weight 0.02
 ```
 
 Build a compact CSV for manual outlier review from a cached validation JSON report:

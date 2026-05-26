@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Iterable, Mapping, Sequence
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from hashlib import sha1
 from math import isfinite, sqrt
@@ -358,7 +358,14 @@ def build_sparse_window_dataset(
     shard_dir = output_dir / "windows_shards"
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    if shard_rows > 0 and shard_dir.exists():
+    for stale_file in (
+        output_dir / "schema.json",
+        output_dir / "manifest.json",
+        output_dir / "windows.parquet",
+    ):
+        if stale_file.exists():
+            stale_file.unlink()
+    if shard_dir.exists():
         shutil.rmtree(shard_dir)
 
     for clip_rows in _iter_clip_window_rows(paths, effective_config, feature_names):
@@ -441,9 +448,30 @@ def _iter_clip_window_rows(
             yield _export_clip_windows(path, config, feature_names)
         return
 
-    jobs = [(path, config, tuple(feature_names)) for path in paths]
+    feature_name_tuple = tuple(feature_names)
+    jobs = [(path, config, feature_name_tuple) for path in paths]
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        yield from executor.map(_export_clip_windows_job, jobs)
+        futures: dict[
+            Future[list[dict[str, object]]], tuple[Path, SparseWindowConfig, tuple[str, ...]]
+        ] = {}
+        job_iter = iter(jobs)
+        for _ in range(workers):
+            try:
+                job = next(job_iter)
+            except StopIteration:
+                break
+            futures[executor.submit(_export_clip_windows_job, job)] = job
+
+        while futures:
+            completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in completed:
+                futures.pop(future)
+                yield future.result()
+                try:
+                    next_job = next(job_iter)
+                except StopIteration:
+                    continue
+                futures[executor.submit(_export_clip_windows_job, next_job)] = next_job
 
 
 def _export_clip_windows_job(

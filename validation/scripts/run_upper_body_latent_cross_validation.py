@@ -59,10 +59,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--decoded-elbow-weight", type=float, default=1.0)
     parser.add_argument("--decoded-arm-direction-weight", type=float, default=0.25)
     parser.add_argument("--decoded-stretch-weight", type=float, default=0.25)
+    parser.add_argument("--decoded-reach-hinge-weight", type=float, default=0.0)
+    parser.add_argument("--reach-ratio-limit", type=float, default=0.97)
     parser.add_argument("--surrogate-position-weight", type=float, default=0.0)
     parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
     parser.add_argument("--temporal-acceleration-weight", type=float, default=0.0)
     parser.add_argument("--temporal-jerk-weight", type=float, default=0.0)
+    parser.add_argument("--temporal-excess-jerk-weight", type=float, default=0.0)
+    parser.add_argument("--pole-velocity-weight", type=float, default=0.0)
+    parser.add_argument("--pole-excess-jerk-weight", type=float, default=0.0)
     parser.add_argument(
         "--disabled-target-groups",
         nargs="*",
@@ -126,10 +131,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         decoded_elbow_weight=max(0.0, args.decoded_elbow_weight),
         decoded_arm_direction_weight=max(0.0, args.decoded_arm_direction_weight),
         decoded_stretch_weight=max(0.0, args.decoded_stretch_weight),
+        decoded_reach_hinge_weight=max(0.0, args.decoded_reach_hinge_weight),
+        reach_ratio_limit=max(0.0, args.reach_ratio_limit),
         surrogate_position_weight=max(0.0, args.surrogate_position_weight),
         temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
         temporal_acceleration_weight=max(0.0, args.temporal_acceleration_weight),
         temporal_jerk_weight=max(0.0, args.temporal_jerk_weight),
+        temporal_excess_jerk_weight=max(0.0, args.temporal_excess_jerk_weight),
+        pole_velocity_weight=max(0.0, args.pole_velocity_weight),
+        pole_excess_jerk_weight=max(0.0, args.pole_excess_jerk_weight),
         disabled_target_groups=set(args.disabled_target_groups),
         validate_cache_dir=args.validate_cache_dir,
         validation_model=args.validation_model,
@@ -166,10 +176,15 @@ def run_upper_body_latent_cross_validation(
     decoded_elbow_weight: float = 1.0,
     decoded_arm_direction_weight: float = 0.25,
     decoded_stretch_weight: float = 0.25,
+    decoded_reach_hinge_weight: float = 0.0,
+    reach_ratio_limit: float = 0.97,
     surrogate_position_weight: float = 0.0,
     temporal_velocity_weight: float = 0.0,
     temporal_acceleration_weight: float = 0.0,
     temporal_jerk_weight: float = 0.0,
+    temporal_excess_jerk_weight: float = 0.0,
+    pole_velocity_weight: float = 0.0,
+    pole_excess_jerk_weight: float = 0.0,
     disabled_target_groups: set[str] | None = None,
     validate_cache_dir: Path | None = None,
     validation_model: str = "torch_mlp",
@@ -211,10 +226,15 @@ def run_upper_body_latent_cross_validation(
             decoded_elbow_weight=decoded_elbow_weight,
             decoded_arm_direction_weight=decoded_arm_direction_weight,
             decoded_stretch_weight=decoded_stretch_weight,
+            decoded_reach_hinge_weight=decoded_reach_hinge_weight,
+            reach_ratio_limit=reach_ratio_limit,
             surrogate_position_weight=surrogate_position_weight,
             temporal_velocity_weight=temporal_velocity_weight,
             temporal_acceleration_weight=temporal_acceleration_weight,
             temporal_jerk_weight=temporal_jerk_weight,
+            temporal_excess_jerk_weight=temporal_excess_jerk_weight,
+            pole_velocity_weight=pole_velocity_weight,
+            pole_excess_jerk_weight=pole_excess_jerk_weight,
             disabled_target_groups=disabled_target_groups,
             validation_subjects=set(validation_subjects),
         )

@@ -108,6 +108,15 @@ def test_sparse_window_export_writes_loadable_shards(tmp_path) -> None:
     assert dataset.runtime_context_points.shape == (4, len(RUNTIME_DECODER_CONTEXT_JOINTS), 3)
 
 
+def test_sparse_window_cli_caps_dense_default_workers(monkeypatch) -> None:
+    from validation.scripts import build_sparse_window_dataset as script
+
+    monkeypatch.setattr(script.os, "cpu_count", lambda: 64)
+
+    assert script._default_workers(stride=1) == 2
+    assert script._default_workers(stride=4) == 16
+
+
 def test_rotation6d_is_independent_of_quaternion_sign() -> None:
     rotation = look_rotation((0.0, 0.0, 1.0))
     negated = cast(tuple[float, float, float, float], tuple(-value for value in rotation))
