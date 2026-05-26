@@ -98,6 +98,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
     parser.add_argument("--temporal-acceleration-weight", type=float, default=0.0)
     parser.add_argument("--temporal-jerk-weight", type=float, default=0.0)
+    parser.add_argument("--temporal-excess-jerk-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--temporal-excess-ratio",
+        type=float,
+        default=1.25,
+        help=(
+            "Allow predicted temporal magnitude up to this multiple of reference "
+            "before excess loss."
+        ),
+    )
+    parser.add_argument("--temporal-excess-margin", type=float, default=0.0)
     parser.add_argument(
         "--disabled-target-groups",
         nargs="*",
@@ -140,6 +151,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
         temporal_acceleration_weight=max(0.0, args.temporal_acceleration_weight),
         temporal_jerk_weight=max(0.0, args.temporal_jerk_weight),
+        temporal_excess_jerk_weight=max(0.0, args.temporal_excess_jerk_weight),
+        temporal_excess_ratio=max(0.0, args.temporal_excess_ratio),
+        temporal_excess_margin=max(0.0, args.temporal_excess_margin),
         disabled_target_groups=set(args.disabled_target_groups),
     )
     print(json.dumps(report["leaderboard"], indent=2, sort_keys=True))
@@ -175,6 +189,9 @@ def train_upper_body_latents(
     temporal_velocity_weight: float = 0.0,
     temporal_acceleration_weight: float = 0.0,
     temporal_jerk_weight: float = 0.0,
+    temporal_excess_jerk_weight: float = 0.0,
+    temporal_excess_ratio: float = 1.25,
+    temporal_excess_margin: float = 0.0,
     disabled_target_groups: set[str] | None = None,
 ) -> dict[str, object]:
     dataset = load_dataset(dataset_dir)
@@ -214,6 +231,9 @@ def train_upper_body_latents(
         "temporal_velocity_weight": temporal_velocity_weight,
         "temporal_acceleration_weight": temporal_acceleration_weight,
         "temporal_jerk_weight": temporal_jerk_weight,
+        "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+        "temporal_excess_ratio": temporal_excess_ratio,
+        "temporal_excess_margin": temporal_excess_margin,
         "disabled_target_groups": sorted(disabled_target_groups),
         "leaderboard": [],
     }
@@ -299,6 +319,9 @@ def train_upper_body_latents(
                 temporal_velocity_weight=temporal_velocity_weight,
                 temporal_acceleration_weight=temporal_acceleration_weight,
                 temporal_jerk_weight=temporal_jerk_weight,
+                temporal_excess_jerk_weight=temporal_excess_jerk_weight,
+                temporal_excess_ratio=temporal_excess_ratio,
+                temporal_excess_margin=temporal_excess_margin,
                 disabled_target_groups=disabled_target_groups,
             )
         cast(list[dict[str, object]], report["leaderboard"]).append(result)
@@ -502,6 +525,9 @@ def _train_torch_model(
     temporal_velocity_weight: float,
     temporal_acceleration_weight: float,
     temporal_jerk_weight: float,
+    temporal_excess_jerk_weight: float,
+    temporal_excess_ratio: float,
+    temporal_excess_margin: float,
     disabled_target_groups: set[str],
 ) -> dict[str, object]:
     torch.manual_seed(seed)
@@ -755,6 +781,7 @@ def _train_torch_model(
                     order=1,
                     prediction_mode=prediction_mode,
                     residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
                     target_names=target_names,
                     feature_names=feature_names,
                     residual_gates=residual_group_gates,
@@ -778,6 +805,7 @@ def _train_torch_model(
                     order=2,
                     prediction_mode=prediction_mode,
                     residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
                     target_names=target_names,
                     feature_names=feature_names,
                     residual_gates=residual_group_gates,
@@ -801,10 +829,38 @@ def _train_torch_model(
                     order=3,
                     prediction_mode=prediction_mode,
                     residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
                     target_names=target_names,
                     feature_names=feature_names,
                     residual_gates=residual_group_gates,
                     max_windows=batch_size,
+                )
+            if temporal_excess_jerk_weight > 0.0 and train_quads.numel() > 0:
+                loss = loss + temporal_excess_jerk_weight * _decoded_temporal_motion_loss(
+                    torch,
+                    model,
+                    x_train,
+                    raw_x_train,
+                    y_train,
+                    effective_m_train,
+                    h_train,
+                    train_quads,
+                    decoded_reference_points=decoded_points_train,
+                    decoded_reference_masks=decoded_masks_train,
+                    runtime_context_points=runtime_context_points_train,
+                    runtime_context_masks=runtime_context_masks_train,
+                    runtime_decoder_indices=runtime_decoder_indices,
+                    order=3,
+                    prediction_mode=prediction_mode,
+                    residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
+                    target_names=target_names,
+                    feature_names=feature_names,
+                    residual_gates=residual_group_gates,
+                    max_windows=batch_size,
+                    loss_mode="excess",
+                    excess_ratio=temporal_excess_ratio,
+                    excess_margin=temporal_excess_margin,
                 )
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -906,6 +962,9 @@ def _train_torch_model(
             "temporal_velocity_weight": temporal_velocity_weight,
             "temporal_acceleration_weight": temporal_acceleration_weight,
             "temporal_jerk_weight": temporal_jerk_weight,
+            "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+            "temporal_excess_ratio": temporal_excess_ratio,
+            "temporal_excess_margin": temporal_excess_margin,
             "disabled_target_groups": sorted(active_disabled_target_groups),
             "decoded_decoder": decoded_decoder,
             "model_state_dict": model.state_dict(),
@@ -936,6 +995,9 @@ def _train_torch_model(
         "decoded_arm_direction_weight": decoded_arm_direction_weight,
         "decoded_stretch_weight": decoded_stretch_weight,
         "temporal_jerk_weight": temporal_jerk_weight,
+        "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+        "temporal_excess_ratio": temporal_excess_ratio,
+        "temporal_excess_margin": temporal_excess_margin,
         "disabled_target_groups": sorted(active_disabled_target_groups),
         "decoded_decoder": decoded_decoder,
         **extra_metrics,
@@ -1535,10 +1597,14 @@ def _decoded_temporal_motion_loss(
     order: Literal[1, 2, 3],
     prediction_mode: Literal["absolute", "residual"],
     residual_scale: float,
+    residual_smoothing_alpha: float,
     target_names: Sequence[str],
     feature_names: Sequence[str],
     residual_gates: Mapping[str, float],
     max_windows: int,
+    loss_mode: Literal["match", "excess"] = "match",
+    excess_ratio: float = 1.25,
+    excess_margin: float = 0.0,
 ) -> Any:
     surrogate_indices = _surrogate_feature_indices(feature_names)
     if surrogate_indices is None:
@@ -1582,6 +1648,7 @@ def _decoded_temporal_motion_loss(
         window_width=selected_windows.shape[1],
         prediction_mode=prediction_mode,
         residual_scale=residual_scale,
+        residual_smoothing_alpha=residual_smoothing_alpha,
         runtime_decoder_indices=runtime_decoder_indices,
         surrogate_indices=surrogate_indices,
         target_names=target_names,
@@ -1589,6 +1656,15 @@ def _decoded_temporal_motion_loss(
     prediction_delta = _temporal_difference(prediction_points, order=order)
     target_delta = _temporal_difference(target_points, order=order)
     temporal_mask = point_masks.prod(dim=1)
+    if loss_mode == "excess":
+        return _masked_temporal_excess_motion_mse(
+            torch,
+            prediction_delta,
+            target_delta,
+            temporal_mask,
+            excess_ratio=excess_ratio,
+            excess_margin=excess_margin,
+        )
     return _masked_temporal_point_mse(prediction_delta, target_delta, temporal_mask)
 
 
@@ -1608,10 +1684,19 @@ def _decoded_temporal_points(
     window_width: int,
     prediction_mode: Literal["absolute", "residual"],
     residual_scale: float,
+    residual_smoothing_alpha: float,
     runtime_decoder_indices: RuntimeDecoderFeatureIndices | None,
     surrogate_indices: SurrogateFeatureIndices,
     target_names: Sequence[str],
 ) -> tuple[Any, Any, Any]:
+    if prediction_mode == "residual":
+        raw_prediction = _smooth_temporal_residuals(
+            torch,
+            raw_prediction,
+            window_count=window_count,
+            window_width=window_width,
+            alpha=residual_smoothing_alpha,
+        )
     prediction = _compose_torch_latents(
         torch,
         raw_prediction,
@@ -1646,6 +1731,26 @@ def _decoded_temporal_points(
         target_points.reshape(window_count, window_width, -1, 3),
         point_masks.reshape(window_count, window_width, -1),
     )
+
+
+def _smooth_temporal_residuals(
+    torch: Any,
+    raw_prediction: Any,
+    *,
+    window_count: int,
+    window_width: int,
+    alpha: float,
+) -> Any:
+    if window_width <= 1 or alpha >= 1.0:
+        return raw_prediction
+    clamped_alpha = max(0.0, alpha)
+    windowed = raw_prediction.reshape(window_count, window_width, -1)
+    previous = windowed[:, 0]
+    smoothed = [previous]
+    for frame_index in range(1, window_width):
+        previous = previous + clamped_alpha * (windowed[:, frame_index] - previous)
+        smoothed.append(previous)
+    return torch.stack(smoothed, dim=1).reshape_as(raw_prediction)
 
 
 def _decoded_prediction_points_and_masks(
@@ -1752,6 +1857,22 @@ def _temporal_difference(points: Any, *, order: Literal[1, 2, 3]) -> Any:
 def _masked_temporal_point_mse(prediction: Any, target: Any, mask: Any) -> Any:
     distance_squared = ((prediction - target) ** 2).sum(dim=2)
     return (distance_squared * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def _masked_temporal_excess_motion_mse(
+    torch: Any,
+    prediction: Any,
+    target: Any,
+    mask: Any,
+    *,
+    excess_ratio: float,
+    excess_margin: float,
+) -> Any:
+    prediction_magnitude = torch.linalg.vector_norm(prediction, dim=2)
+    target_magnitude = torch.linalg.vector_norm(target, dim=2)
+    allowed_magnitude = target_magnitude * excess_ratio + excess_margin
+    excess = torch.relu(prediction_magnitude - allowed_magnitude)
+    return (excess * excess * mask).sum() / mask.sum().clamp_min(1.0)
 
 
 def _surrogate_validation_metrics(

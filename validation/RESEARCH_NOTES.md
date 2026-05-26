@@ -134,6 +134,10 @@ Implementation implication:
   this MANIKIN-lite shape: torso heading/lean, shoulder base offsets, and elbow
   swivel are decoded against the heuristic base pose before applying decoded
   point, direction, stretch, and temporal losses.
+- Temporal decoded losses should match runtime state policy. Residual artifacts
+  use causal EMA smoothing at inference, so training now evaluates decoded
+  temporal losses after the same local EMA and can add an output-side excess jerk
+  loss instead of only matching reference jerk direction and magnitude.
 - Metrics should include hand target error, elbow position error, elbow swivel
   error, elbow side-flip rate, and upper-body MPJPE.
 

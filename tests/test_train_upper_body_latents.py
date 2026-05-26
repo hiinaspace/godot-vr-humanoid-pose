@@ -205,6 +205,72 @@ def test_decoded_temporal_validation_metric_penalizes_jerk() -> None:
     assert perturbed > 0.0
 
 
+def test_temporal_residual_smoothing_matches_runtime_ema() -> None:
+    torch = pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import _smooth_temporal_residuals
+
+    raw = torch.tensor(
+        [
+            [0.0, 0.0],
+            [10.0, -10.0],
+            [0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    smoothed = _smooth_temporal_residuals(
+        torch,
+        raw,
+        window_count=1,
+        window_width=3,
+        alpha=0.5,
+    )
+
+    assert torch.allclose(
+        smoothed,
+        torch.tensor(
+            [
+                [0.0, 0.0],
+                [5.0, -5.0],
+                [2.5, -2.5],
+            ],
+            dtype=torch.float32,
+        ),
+    )
+
+
+def test_temporal_excess_motion_loss_only_penalizes_excess_magnitude() -> None:
+    torch = pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import _masked_temporal_excess_motion_mse
+
+    target = torch.tensor([[[1.0, 0.0, 0.0]]], dtype=torch.float32)
+    matching_prediction = torch.tensor([[[1.2, 0.0, 0.0]]], dtype=torch.float32)
+    excess_prediction = torch.tensor([[[2.0, 0.0, 0.0]]], dtype=torch.float32)
+    mask = torch.ones((1, 1), dtype=torch.float32)
+
+    matching = _masked_temporal_excess_motion_mse(
+        torch,
+        matching_prediction,
+        target,
+        mask,
+        excess_ratio=1.25,
+        excess_margin=0.0,
+    )
+    excess = _masked_temporal_excess_motion_mse(
+        torch,
+        excess_prediction,
+        target,
+        mask,
+        excess_ratio=1.25,
+        excess_margin=0.0,
+    )
+
+    assert float(matching) == pytest.approx(0.0)
+    assert float(excess) == pytest.approx(0.75 * 0.75)
+
+
 def test_xgboost_cuda_smoke_when_available(tmp_path) -> None:
     if importlib.util.find_spec("xgboost") is None:
         pytest.skip("xgboost is not installed")
