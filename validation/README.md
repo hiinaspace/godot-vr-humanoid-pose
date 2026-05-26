@@ -161,6 +161,13 @@ reference points instead of only latent MAE:
 uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp --latent-loss-weight 0.1 --decoded-pose-weight 25 --decoded-torso-weight 1 --decoded-shoulder-weight 2 --decoded-elbow-weight 2 --decoded-arm-direction-weight 0.5 --decoded-stretch-weight 0.25 --decoded-reach-hinge-weight 0.25 --reach-ratio-limit 0.97 --temporal-velocity-weight 0.2 --temporal-acceleration-weight 0.1 --temporal-jerk-weight 0.05 --temporal-excess-jerk-weight 0.05 --pole-velocity-weight 0.05 --pole-excess-jerk-weight 0.02
 ```
 
+Torch training writes one JSONL history file next to each `.pt` artifact, with
+an initial row plus one row per epoch. Render a quick local dashboard:
+
+```powershell
+uv run python -m validation.scripts.plot_training_history .cache/ml/upper_body_models_decoded/torch_mlp_history.jsonl
+```
+
 Run learned upper-body latents through the full cached CMU metric stack:
 
 ```powershell

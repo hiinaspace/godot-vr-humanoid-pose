@@ -66,6 +66,10 @@ def test_torch_mlp_saves_absolute_chain_artifact(tmp_path) -> None:
 
     assert leaderboard["torch_mlp"]["prediction_mode"] == "absolute"
     assert (tmp_path / "models" / "torch_mlp.pt").exists()
+    history_path = tmp_path / "models" / "torch_mlp_history.jsonl"
+    assert leaderboard["torch_mlp"]["history_path"] == history_path.as_posix()
+    assert history_path.exists()
+    assert len(history_path.read_text(encoding="utf-8").splitlines()) == 3
 
 
 def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:

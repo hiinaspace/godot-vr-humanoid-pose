@@ -690,29 +690,96 @@ def _train_torch_model(
         dtype=torch.long,
         device=device,
     )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path = output_path.with_name(f"{output_path.stem}_history.jsonl")
+    if history_path.exists():
+        history_path.unlink()
 
     start = time.perf_counter()
-    initial_raw = _apply_residual_gates(
-        torch,
-        model(x_val),
-        residual_group_gates,
-        target_names,
+
+    def history_row(
+        *,
+        epoch: int,
+        train_loss: float | None,
+        train_latent_mse: float | None,
+        epoch_seconds: float | None,
+    ) -> tuple[Any, dict[str, object]]:
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        with torch.no_grad():
+            validation_raw = _apply_residual_gates(
+                torch,
+                model(x_val),
+                residual_group_gates,
+                target_names,
+            )
+            validation_prediction = _compose_torch_latents(
+                torch,
+                validation_raw,
+                h_val,
+                prediction_mode=prediction_mode,
+                residual_scale=residual_scale,
+                target_names=target_names,
+            )
+            validation_mse = float(
+                _masked_mse(torch, validation_prediction, y_val, effective_m_val).detach().cpu()
+            )
+            row: dict[str, object] = {
+                "epoch": epoch,
+                "elapsed_seconds": time.perf_counter() - start,
+                "epoch_seconds": epoch_seconds,
+                "train_loss": train_loss,
+                "train_latent_mse": train_latent_mse,
+                "validation_mse": validation_mse,
+                "learning_rate": float(optimizer.param_groups[0]["lr"]),
+            }
+            row.update(
+                _surrogate_validation_metrics(
+                    torch,
+                    validation_prediction,
+                    y_val,
+                    effective_m_val,
+                    raw_x_val,
+                    decoded_reference_points=decoded_points_val,
+                    decoded_reference_masks=decoded_masks_val,
+                    runtime_context_points=runtime_context_points_val,
+                    runtime_context_masks=runtime_context_masks_val,
+                    runtime_decoder_indices=runtime_decoder_indices,
+                    feature_names=feature_names,
+                    target_names=target_names,
+                    temporal_pairs=validation_pairs,
+                    temporal_triples=validation_triples,
+                    temporal_quads=validation_quads,
+                    temporal_excess_ratio=temporal_excess_ratio,
+                    temporal_excess_margin=temporal_excess_margin,
+                    reach_ratio_limit=reach_ratio_limit,
+                )
+            )
+            row.update(_cuda_memory_metrics(torch, device))
+        return validation_prediction, row
+
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    _initial_prediction, initial_history_row = history_row(
+        epoch=0,
+        train_loss=None,
+        train_latent_mse=None,
+        epoch_seconds=None,
     )
-    initial_prediction = _compose_torch_latents(
-        torch,
-        initial_raw,
-        h_val,
-        prediction_mode=prediction_mode,
-        residual_scale=residual_scale,
-        target_names=target_names,
-    )
-    initial_loss = float(
-        _masked_mse(torch, initial_prediction, y_val, effective_m_val).detach().cpu()
-    )
-    for _epoch in range(epochs):
+    _write_jsonl_row(history_path, initial_history_row)
+    initial_loss_value = initial_history_row["validation_mse"]
+    if not isinstance(initial_loss_value, int | float):
+        raise TypeError("Expected validation_mse in initial training history")
+    initial_loss = float(initial_loss_value)
+    for epoch_index in range(epochs):
+        epoch_start = time.perf_counter()
+        train_loss_sum = 0.0
+        train_latent_sum = 0.0
+        train_row_count = 0
         permutation = torch.randperm(len(train_indices), device=device)
         for start_index in range(0, len(train_indices), batch_size):
             batch_indices = permutation[start_index : start_index + batch_size]
+            current_batch_size = int(batch_indices.numel())
             raw_prediction = _apply_residual_gates(
                 torch,
                 model(x_train[batch_indices]),
@@ -917,9 +984,21 @@ def _train_torch_model(
                     excess_ratio=temporal_excess_ratio,
                     excess_margin=temporal_excess_margin,
                 )
+            train_loss_sum += float(loss.detach().cpu()) * current_batch_size
+            train_latent_sum += float(latent_loss.detach().cpu()) * current_batch_size
+            train_row_count += current_batch_size
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        _epoch_prediction, epoch_history_row = history_row(
+            epoch=epoch_index + 1,
+            train_loss=train_loss_sum / max(1, train_row_count),
+            train_latent_mse=train_latent_sum / max(1, train_row_count),
+            epoch_seconds=time.perf_counter() - epoch_start,
+        )
+        _write_jsonl_row(history_path, epoch_history_row)
     if device.type == "cuda":
         torch.cuda.synchronize()
     train_seconds = time.perf_counter() - start
@@ -1002,8 +1081,8 @@ def _train_torch_model(
         temporal_quads=validation_quads,
         temporal_excess_ratio=temporal_excess_ratio,
         temporal_excess_margin=temporal_excess_margin,
+        reach_ratio_limit=reach_ratio_limit,
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "model_name": model_name,
@@ -1027,6 +1106,7 @@ def _train_torch_model(
             "temporal_excess_margin": temporal_excess_margin,
             "disabled_target_groups": sorted(active_disabled_target_groups),
             "decoded_decoder": decoded_decoder,
+            "history_path": history_path.as_posix(),
             "model_state_dict": model.state_dict(),
             "feature_names": list(feature_names),
             "target_names": list(target_names),
@@ -1043,6 +1123,7 @@ def _train_torch_model(
         "final_validation_mse": final_loss,
         "inference_seconds_per_sample": inference_seconds / max(1, int(validation_mask.sum())),
         "artifact": output_path.as_posix(),
+        "history_path": history_path.as_posix(),
         "prediction_mode": prediction_mode,
         "latent_loss_weight": latent_loss_weight,
         "decoded_pose_weight": decoded_pose_weight,
@@ -2175,6 +2256,7 @@ def _surrogate_validation_metrics(
     temporal_quads: Any,
     temporal_excess_ratio: float,
     temporal_excess_margin: float,
+    reach_ratio_limit: float,
 ) -> dict[str, float]:
     surrogate_indices = _surrogate_feature_indices(feature_names)
     if surrogate_indices is None:
@@ -2214,6 +2296,7 @@ def _surrogate_validation_metrics(
             runtime_decoder_indices=runtime_decoder_indices,
             surrogate_indices=surrogate_indices,
             target_names=target_names,
+            reach_ratio_limit=reach_ratio_limit,
         )
         position_mse = float(
             _masked_temporal_point_mse(prediction_points, target_points, point_masks).detach().cpu()
@@ -2619,6 +2702,25 @@ def _tensor_rows(values: Any, indices: Any, *, device: Any) -> Any:
     row_indices = indices if values.device == indices.device else indices.detach().cpu()
     selected = values[row_indices]
     return selected if selected.device == device else selected.to(device)
+
+
+def _write_jsonl_row(path: Path, row: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def _cuda_memory_metrics(torch: Any, device: Any) -> dict[str, float]:
+    if getattr(device, "type", None) != "cuda":
+        return {}
+    bytes_per_mib = 1024.0 * 1024.0
+    return {
+        "cuda_memory_allocated_mib": float(torch.cuda.memory_allocated(device) / bytes_per_mib),
+        "cuda_memory_reserved_mib": float(torch.cuda.memory_reserved(device) / bytes_per_mib),
+        "cuda_max_memory_allocated_mib": float(
+            torch.cuda.max_memory_allocated(device) / bytes_per_mib
+        ),
+    }
 
 
 def _metric_dict(
