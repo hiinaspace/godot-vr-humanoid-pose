@@ -40,6 +40,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "constant",
             "torch_linear",
             "torch_mlp",
+            "torch_tcn",
             "xgboost",
         ),
         default=("constant", "torch_linear", "torch_mlp", "xgboost"),
@@ -68,6 +69,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--temporal-excess-jerk-weight", type=float, default=0.0)
     parser.add_argument("--pole-velocity-weight", type=float, default=0.0)
     parser.add_argument("--pole-excess-jerk-weight", type=float, default=0.0)
+    parser.add_argument("--temporal-loss-windows", type=int, default=0)
     parser.add_argument(
         "--disabled-target-groups",
         nargs="*",
@@ -82,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--validation-model",
-        choices=("torch_linear", "torch_mlp"),
+        choices=("torch_linear", "torch_mlp", "torch_tcn"),
         default="torch_mlp",
         help="Torch artifact to use for optional downstream cached validation.",
     )
@@ -140,6 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         temporal_excess_jerk_weight=max(0.0, args.temporal_excess_jerk_weight),
         pole_velocity_weight=max(0.0, args.pole_velocity_weight),
         pole_excess_jerk_weight=max(0.0, args.pole_excess_jerk_weight),
+        temporal_loss_windows=max(0, args.temporal_loss_windows),
         disabled_target_groups=set(args.disabled_target_groups),
         validate_cache_dir=args.validate_cache_dir,
         validation_model=args.validation_model,
@@ -185,6 +188,7 @@ def run_upper_body_latent_cross_validation(
     temporal_excess_jerk_weight: float = 0.0,
     pole_velocity_weight: float = 0.0,
     pole_excess_jerk_weight: float = 0.0,
+    temporal_loss_windows: int = 0,
     disabled_target_groups: set[str] | None = None,
     validate_cache_dir: Path | None = None,
     validation_model: str = "torch_mlp",
@@ -235,6 +239,7 @@ def run_upper_body_latent_cross_validation(
             temporal_excess_jerk_weight=temporal_excess_jerk_weight,
             pole_velocity_weight=pole_velocity_weight,
             pole_excess_jerk_weight=pole_excess_jerk_weight,
+            temporal_loss_windows=temporal_loss_windows,
             disabled_target_groups=disabled_target_groups,
             validation_subjects=set(validation_subjects),
         )

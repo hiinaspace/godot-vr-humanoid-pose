@@ -18,6 +18,7 @@ from validation.vr_pose_validation.torch_upper_body_decoder import (
     decode_upper_body_runtime_points,
     runtime_decoder_feature_indices,
 )
+from validation.vr_pose_validation.torch_upper_body_models import make_torch_upper_body_model
 from validation.vr_pose_validation.upper_body_ml import (
     DECODED_REFERENCE_JOINTS,
     RUNTIME_DECODER_CONTEXT_JOINTS,
@@ -33,6 +34,7 @@ TorchModelName = Literal[
     "constant",
     "torch_linear",
     "torch_mlp",
+    "torch_tcn",
     "xgboost",
 ]
 
@@ -68,6 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "constant",
             "torch_linear",
             "torch_mlp",
+            "torch_tcn",
             "xgboost",
         ),
         default=("constant", "torch_linear", "torch_mlp", "xgboost"),
@@ -96,6 +99,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--temporal-excess-jerk-weight", type=float, default=0.0)
     parser.add_argument("--pole-velocity-weight", type=float, default=0.0)
     parser.add_argument("--pole-excess-jerk-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--temporal-loss-windows",
+        type=int,
+        default=0,
+        help="Temporal windows sampled per batch for each temporal loss; defaults to batch size.",
+    )
     parser.add_argument(
         "--temporal-excess-ratio",
         type=float,
@@ -149,6 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         temporal_excess_jerk_weight=max(0.0, args.temporal_excess_jerk_weight),
         pole_velocity_weight=max(0.0, args.pole_velocity_weight),
         pole_excess_jerk_weight=max(0.0, args.pole_excess_jerk_weight),
+        temporal_loss_windows=max(0, args.temporal_loss_windows),
         temporal_excess_ratio=max(0.0, args.temporal_excess_ratio),
         temporal_excess_margin=max(0.0, args.temporal_excess_margin),
         disabled_target_groups=set(args.disabled_target_groups),
@@ -191,6 +201,7 @@ def train_upper_body_latents(
     temporal_excess_jerk_weight: float = 0.0,
     pole_velocity_weight: float = 0.0,
     pole_excess_jerk_weight: float = 0.0,
+    temporal_loss_windows: int = 0,
     temporal_excess_ratio: float = 1.25,
     temporal_excess_margin: float = 0.0,
     disabled_target_groups: set[str] | None = None,
@@ -233,6 +244,7 @@ def train_upper_body_latents(
         "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
         "pole_velocity_weight": pole_velocity_weight,
         "pole_excess_jerk_weight": pole_excess_jerk_weight,
+        "temporal_loss_windows": temporal_loss_windows,
         "temporal_excess_ratio": temporal_excess_ratio,
         "temporal_excess_margin": temporal_excess_margin,
         "disabled_target_groups": sorted(disabled_target_groups),
@@ -325,6 +337,7 @@ def train_upper_body_latents(
                 temporal_excess_jerk_weight=temporal_excess_jerk_weight,
                 pole_velocity_weight=pole_velocity_weight,
                 pole_excess_jerk_weight=pole_excess_jerk_weight,
+                temporal_loss_windows=temporal_loss_windows,
                 temporal_excess_ratio=temporal_excess_ratio,
                 temporal_excess_margin=temporal_excess_margin,
                 disabled_target_groups=disabled_target_groups,
@@ -541,6 +554,7 @@ def _train_torch_model(
     temporal_excess_jerk_weight: float,
     pole_velocity_weight: float,
     pole_excess_jerk_weight: float,
+    temporal_loss_windows: int,
     temporal_excess_ratio: float,
     temporal_excess_margin: float,
     disabled_target_groups: set[str],
@@ -559,6 +573,7 @@ def _train_torch_model(
         input_dim=features.shape[1],
         output_dim=targets.shape[1],
         hidden_dim=hidden_dim,
+        feature_names=feature_names,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     train_indices = np.flatnonzero(train_mask)
@@ -689,6 +704,9 @@ def _train_torch_model(
         _temporal_quads(dataset, validation_mask),
         dtype=torch.long,
         device=device,
+    )
+    effective_temporal_loss_windows = (
+        temporal_loss_windows if temporal_loss_windows > 0 else batch_size
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     history_path = output_path.with_name(f"{output_path.stem}_history.jsonl")
@@ -870,7 +888,7 @@ def _train_torch_model(
                     target_names=target_names,
                     feature_names=feature_names,
                     residual_gates=residual_group_gates,
-                    max_windows=batch_size,
+                    max_windows=effective_temporal_loss_windows,
                 )
             if pole_velocity_weight > 0.0 and train_pairs.numel() > 0:
                 loss = loss + pole_velocity_weight * _pole_temporal_motion_loss(
@@ -887,7 +905,7 @@ def _train_torch_model(
                     residual_smoothing_alpha=residual_smoothing_alpha,
                     target_names=target_names,
                     residual_gates=residual_group_gates,
-                    max_windows=batch_size,
+                    max_windows=effective_temporal_loss_windows,
                 )
             if pole_excess_jerk_weight > 0.0 and train_quads.numel() > 0:
                 loss = loss + pole_excess_jerk_weight * _pole_temporal_motion_loss(
@@ -904,7 +922,7 @@ def _train_torch_model(
                     residual_smoothing_alpha=residual_smoothing_alpha,
                     target_names=target_names,
                     residual_gates=residual_group_gates,
-                    max_windows=batch_size,
+                    max_windows=effective_temporal_loss_windows,
                     loss_mode="excess",
                     excess_ratio=temporal_excess_ratio,
                     excess_margin=temporal_excess_margin,
@@ -931,7 +949,7 @@ def _train_torch_model(
                     target_names=target_names,
                     feature_names=feature_names,
                     residual_gates=residual_group_gates,
-                    max_windows=batch_size,
+                    max_windows=effective_temporal_loss_windows,
                 )
             if temporal_jerk_weight > 0.0 and train_quads.numel() > 0:
                 loss = loss + temporal_jerk_weight * _decoded_temporal_motion_loss(
@@ -955,7 +973,7 @@ def _train_torch_model(
                     target_names=target_names,
                     feature_names=feature_names,
                     residual_gates=residual_group_gates,
-                    max_windows=batch_size,
+                    max_windows=effective_temporal_loss_windows,
                 )
             if temporal_excess_jerk_weight > 0.0 and train_quads.numel() > 0:
                 loss = loss + temporal_excess_jerk_weight * _decoded_temporal_motion_loss(
@@ -979,7 +997,7 @@ def _train_torch_model(
                     target_names=target_names,
                     feature_names=feature_names,
                     residual_gates=residual_group_gates,
-                    max_windows=batch_size,
+                    max_windows=effective_temporal_loss_windows,
                     loss_mode="excess",
                     excess_ratio=temporal_excess_ratio,
                     excess_margin=temporal_excess_margin,
@@ -1102,6 +1120,7 @@ def _train_torch_model(
             "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
             "pole_velocity_weight": pole_velocity_weight,
             "pole_excess_jerk_weight": pole_excess_jerk_weight,
+            "temporal_loss_windows": effective_temporal_loss_windows,
             "temporal_excess_ratio": temporal_excess_ratio,
             "temporal_excess_margin": temporal_excess_margin,
             "disabled_target_groups": sorted(active_disabled_target_groups),
@@ -1138,6 +1157,7 @@ def _train_torch_model(
         "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
         "pole_velocity_weight": pole_velocity_weight,
         "pole_excess_jerk_weight": pole_excess_jerk_weight,
+        "temporal_loss_windows": effective_temporal_loss_windows,
         "temporal_excess_ratio": temporal_excess_ratio,
         "temporal_excess_margin": temporal_excess_margin,
         "disabled_target_groups": sorted(active_disabled_target_groups),
@@ -1216,18 +1236,16 @@ def _make_torch_model(
     input_dim: int,
     output_dim: int,
     hidden_dim: int,
+    feature_names: Sequence[str],
 ) -> Any:
-    if model_name == "torch_linear":
-        return torch.nn.Linear(input_dim, output_dim)
-    if model_name == "torch_mlp":
-        return torch.nn.Sequential(
-            torch.nn.Linear(input_dim, hidden_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(hidden_dim, hidden_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(hidden_dim, output_dim),
-        )
-    raise ValueError(f"Unsupported Torch model: {model_name}")
+    return make_torch_upper_body_model(
+        torch,
+        model_name=model_name,
+        input_dim=input_dim,
+        output_dim=output_dim,
+        hidden_dim=hidden_dim,
+        feature_names=feature_names,
+    )
 
 
 @dataclass(frozen=True, slots=True)

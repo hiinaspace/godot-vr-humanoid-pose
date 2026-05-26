@@ -47,6 +47,7 @@ from validation.vr_pose_validation.synthetic_trackers import (
     SyntheticTrackerConfig,
     head_tracker_rotation_from_pose_frame,
 )
+from validation.vr_pose_validation.torch_upper_body_models import make_torch_upper_body_model
 from validation.vr_pose_validation.types import (
     AvatarCalibration,
     GroundingContext,
@@ -250,6 +251,7 @@ class TorchUpperBodyLatentProvider:
             input_dim=len(artifact["feature_names"]),
             output_dim=len(self._target_names),
             hidden_dim=int(artifact.get("hidden_dim", 256)),
+            feature_names=[str(name) for name in artifact["feature_names"]],
         ).to(self._device)
         self._model.load_state_dict(artifact["model_state_dict"])
         self._model.eval()
@@ -1268,15 +1270,13 @@ def _make_torch_provider_model(
     input_dim: int,
     output_dim: int,
     hidden_dim: int,
+    feature_names: Sequence[str],
 ) -> Any:
-    if model_name == "torch_linear":
-        return torch.nn.Linear(input_dim, output_dim)
-    if model_name == "torch_mlp":
-        return torch.nn.Sequential(
-            torch.nn.Linear(input_dim, hidden_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(hidden_dim, hidden_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(hidden_dim, output_dim),
-        )
-    raise ValueError(f"Unsupported Torch model artifact: {model_name}")
+    return make_torch_upper_body_model(
+        torch,
+        model_name=model_name,
+        input_dim=input_dim,
+        output_dim=output_dim,
+        hidden_dim=hidden_dim,
+        feature_names=feature_names,
+    )

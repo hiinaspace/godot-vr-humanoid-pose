@@ -151,21 +151,21 @@ and the optional temporal excess loss penalizes output jerk only when it exceeds
 reference jerk by a configured ratio. Pole temporal losses compare elbow bend
 direction velocity/jerk, and the reach hinge penalizes shoulder-hand distances
 near full extension before the two-bone IK singularity. Training reports compare the constant
-baseline, Torch linear, Torch MLP, and native XGBoost CUDA paths. Torch CUDA is
-required by default; pass `--allow-cpu` only for smoke tests.
+baseline, Torch linear, Torch MLP, Torch TCN, and native XGBoost CUDA paths.
+Torch CUDA is required by default; pass `--allow-cpu` only for smoke tests.
 
 For shoulder/elbow experiments, use decoded losses against the exported
 reference points instead of only latent MAE:
 
 ```powershell
-uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp --latent-loss-weight 0.1 --decoded-pose-weight 25 --decoded-torso-weight 1 --decoded-shoulder-weight 2 --decoded-elbow-weight 2 --decoded-arm-direction-weight 0.5 --decoded-stretch-weight 0.25 --decoded-reach-hinge-weight 0.25 --reach-ratio-limit 0.97 --temporal-velocity-weight 0.2 --temporal-acceleration-weight 0.1 --temporal-jerk-weight 0.05 --temporal-excess-jerk-weight 0.05 --pole-velocity-weight 0.05 --pole-excess-jerk-weight 0.02
+uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp torch_tcn --latent-loss-weight 0.1 --decoded-pose-weight 25 --decoded-torso-weight 1 --decoded-shoulder-weight 2 --decoded-elbow-weight 2 --decoded-arm-direction-weight 0.5 --decoded-stretch-weight 0.25 --decoded-reach-hinge-weight 0.25 --reach-ratio-limit 0.97 --temporal-velocity-weight 0.2 --temporal-acceleration-weight 0.1 --temporal-jerk-weight 0.05 --temporal-excess-jerk-weight 0.05 --pole-velocity-weight 0.05 --pole-excess-jerk-weight 0.02 --temporal-loss-windows 512
 ```
 
 Torch training writes one JSONL history file next to each `.pt` artifact, with
 an initial row plus one row per epoch. Render a quick local dashboard:
 
 ```powershell
-uv run python -m validation.scripts.plot_training_history .cache/ml/upper_body_models_decoded/torch_mlp_history.jsonl
+uv run python -m validation.scripts.plot_training_history .cache/ml/upper_body_models_decoded/torch_mlp_history.jsonl .cache/ml/upper_body_models_decoded/torch_tcn_history.jsonl
 ```
 
 Run learned upper-body latents through the full cached CMU metric stack:

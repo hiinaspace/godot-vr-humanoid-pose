@@ -7,7 +7,18 @@ from typing import cast
 import polars as pl
 import pytest
 
-from validation.vr_pose_validation.upper_body_ml import TARGET_NAMES, TARGET_SCHEMA
+from validation.vr_pose_validation.upper_body_ml import TARGET_NAMES, TARGET_SCHEMA, feature_schema
+
+
+def test_sparse_window_layout_infers_tcn_shape() -> None:
+    from validation.vr_pose_validation.torch_upper_body_models import infer_sparse_window_layout
+
+    names = feature_schema(3)
+    layout = infer_sparse_window_layout(names, input_dim=len(names))
+
+    assert layout.window_size == 3
+    assert layout.per_frame_dim == 57
+    assert layout.static_dim == 7
 
 
 def test_torch_linear_smoke_reduces_synthetic_validation_loss(tmp_path) -> None:
@@ -70,6 +81,37 @@ def test_torch_mlp_saves_absolute_chain_artifact(tmp_path) -> None:
     assert leaderboard["torch_mlp"]["history_path"] == history_path.as_posix()
     assert history_path.exists()
     assert len(history_path.read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_torch_tcn_saves_absolute_chain_artifact(tmp_path) -> None:
+    pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import train_upper_body_latents
+
+    dataset_dir = _write_synthetic_dataset(
+        tmp_path,
+        feature_names=feature_schema(3),
+        row_count=32,
+    )
+    report = train_upper_body_latents(
+        dataset_dir=dataset_dir,
+        output_dir=tmp_path / "models",
+        model_names=("torch_tcn",),
+        epochs=2,
+        batch_size=16,
+        learning_rate=1e-2,
+        weight_decay=0.0,
+        hidden_dim=16,
+        allow_cpu=True,
+        seed=2,
+    )
+    leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
+    leaderboard = {row["model"]: row for row in leaderboard_rows}
+
+    assert leaderboard["torch_tcn"]["prediction_mode"] == "absolute"
+    assert (tmp_path / "models" / "torch_tcn.pt").exists()
+    assert (tmp_path / "models" / "torch_tcn_history.jsonl").exists()
 
 
 def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
@@ -380,16 +422,19 @@ def test_cross_validation_runner_writes_subject_folds(tmp_path) -> None:
     assert sorted(fold_subjects) == [f"{index:02d}" for index in range(8)]
 
 
-def _write_synthetic_dataset(tmp_path, *, row_count: int = 80):
+def _write_synthetic_dataset(
+    tmp_path,
+    *,
+    row_count: int = 80,
+    feature_names: list[str] | None = None,
+):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
-    feature_names = ["f0", "f1", "f2", "f3"]
+    feature_names = feature_names or ["f0", "f1", "f2", "f3"]
     rows = []
     for index in range(row_count):
-        x0 = (index % 11) / 10.0
-        x1 = ((index * 3) % 13) / 10.0
-        x2 = ((index * 5) % 17) / 10.0
-        x3 = 1.0 if index % 2 == 0 else -1.0
+        features = _synthetic_features(feature_names, index)
+        x0, x1, x2, x3 = features[:4]
         base = 0.4 * x0 - 0.2 * x1 + 0.1 * x2 + 0.05 * x3
         row = {
             "subject": f"{index % 8:02d}",
@@ -398,7 +443,7 @@ def _write_synthetic_dataset(tmp_path, *, row_count: int = 80):
             "timestamp_s": index / 120.0,
             "center_row_index": index,
             "split": "validation" if index % 5 == 0 else "train",
-            "features": [x0, x1, x2, x3],
+            "features": features,
             "environment_split": "flat",
             "activity_class": "stationary_upper_body",
             "motion_description": "synthetic",
@@ -432,6 +477,47 @@ def _metric(row: dict[str, object], name: str) -> float:
     value = row[name]
     assert isinstance(value, int | float)
     return float(value)
+
+
+def _synthetic_features(feature_names: list[str], index: int) -> list[float]:
+    if feature_names == ["f0", "f1", "f2", "f3"]:
+        return [
+            (index % 11) / 10.0,
+            ((index * 3) % 13) / 10.0,
+            ((index * 5) % 17) / 10.0,
+            1.0 if index % 2 == 0 else -1.0,
+        ]
+    values: list[float] = []
+    for feature_index, name in enumerate(feature_names):
+        if name.endswith("_valid"):
+            values.append(1.0)
+        elif name.endswith("_head_position_y"):
+            values.append(1.6 + 0.01 * (index % 3))
+        elif name.endswith("_left_hand_position_x"):
+            values.append(0.35 + 0.01 * (index % 5))
+        elif name.endswith("_right_hand_position_x"):
+            values.append(-0.35 - 0.01 * (index % 5))
+        elif name.endswith("_left_hand_position_y") or name.endswith("_right_hand_position_y"):
+            values.append(1.2 + 0.01 * (index % 7))
+        elif name.endswith("_left_hand_position_z") or name.endswith("_right_hand_position_z"):
+            values.append(0.15 + 0.01 * (index % 4))
+        elif name == "calibration_human_height_m":
+            values.append(1.8)
+        elif name == "calibration_shoulder_width_m":
+            values.append(0.4)
+        elif name == "calibration_upper_arm_m":
+            values.append(0.31)
+        elif name == "calibration_lower_arm_m":
+            values.append(0.27)
+        elif name == "calibration_arm_length_m":
+            values.append(0.58)
+        elif name == "calibration_shoulder_width_to_height":
+            values.append(0.4 / 1.8)
+        elif name == "calibration_arm_length_to_height":
+            values.append(0.58 / 1.8)
+        else:
+            values.append((((index + 1) * (feature_index + 3)) % 17) / 20.0)
+    return values
 
 
 def _synthetic_target_value(target_name: str, base: float, target_index: int) -> float:
