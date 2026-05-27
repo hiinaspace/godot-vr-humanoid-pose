@@ -25,6 +25,7 @@ from validation.vr_pose_validation.parquet_cache import (
 )
 from validation.vr_pose_validation.upper_body_ml import (
     DEFAULT_CLEAN_ACTIVITY_CLASSES,
+    EmaUpperBodyLatentProvider,
     LearnedUpperBodyEstimator,
     TorchUpperBodyLatentProvider,
 )
@@ -65,6 +66,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-clips", type=int)
     parser.add_argument("--subjects", nargs="*")
     parser.add_argument("--allow-cpu", action="store_true")
+    parser.add_argument(
+        "--latent-ema-alpha",
+        type=float,
+        default=1.0,
+        help="Apply EMA smoothing to learned latents; 1.0 keeps raw model output.",
+    )
     parser.add_argument(
         "--base-estimator",
         default="basis_research",
@@ -129,6 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_clips=args.max_clips,
         subjects=set(args.subjects or []),
         allow_cpu=args.allow_cpu,
+        latent_ema_alpha=args.latent_ema_alpha,
         base_estimator_name=args.base_estimator,
         compare_baseline=args.compare_baseline,
         top_clip_count=max(0, args.top_clips),
@@ -152,6 +160,7 @@ def run_learned_upper_body_validation(
     max_clips: int | None = None,
     subjects: set[str] | None = None,
     allow_cpu: bool = False,
+    latent_ema_alpha: float = 1.0,
     base_estimator_name: EstimatorName = "basis_research",
     compare_baseline: bool = False,
     top_clip_count: int = 10,
@@ -177,11 +186,16 @@ def run_learned_upper_body_validation(
         window_size=window_size,
         allow_cpu=allow_cpu,
     )
+    latent_provider = (
+        EmaUpperBodyLatentProvider(provider=provider, alpha=latent_ema_alpha)
+        if latent_ema_alpha < 1.0
+        else provider
+    )
     learned_results: list[ClipResult] = []
     for path in paths:
-        provider.reset()
+        latent_provider.reset()
         estimator = LearnedUpperBodyEstimator(
-            latent_provider=provider,
+            latent_provider=latent_provider,
             base_estimator=create_estimator(base_estimator_name),
         )
         learned_results.append(evaluate_cached_clip_path(path, estimator))
@@ -201,6 +215,7 @@ def run_learned_upper_body_validation(
         artifact_path=artifact_path,
         normalization_path=normalization_path,
         window_size=window_size,
+        latent_ema_alpha=latent_ema_alpha,
         base_estimator_name=base_estimator_name,
         environment_splits=environment_splits or set(),
         activity_classes=activity_classes or set(),
@@ -283,6 +298,7 @@ def _summary(
     artifact_path: Path,
     normalization_path: Path,
     window_size: int,
+    latent_ema_alpha: float,
     base_estimator_name: str,
     environment_splits: set[EnvironmentSplit],
     activity_classes: set[ActivityClass],
@@ -297,6 +313,7 @@ def _summary(
         "artifact": artifact_path.as_posix(),
         "normalization": normalization_path.as_posix(),
         "window_size": window_size,
+        "latent_ema_alpha": latent_ema_alpha,
         "base_estimator": base_estimator_name,
         "validation_split_only": validation_split_only,
         "environment_splits": sorted(environment_splits),

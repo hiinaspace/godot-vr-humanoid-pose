@@ -24,6 +24,7 @@ from validation.vr_pose_validation.upper_body_ml import (
     FK_TARGET_SCHEMA,
     RUNTIME_DECODER_CONTEXT_JOINTS,
     TARGET_SCHEMA,
+    EmaUpperBodyLatentProvider,
     SparseWindowConfig,
     StaticUpperBodyLatentProvider,
     UpperBodyLatentPrediction,
@@ -314,6 +315,29 @@ def test_fk_latents_with_zero_masks_leave_runtime_pose_unchanged() -> None:
     assert adjusted.joints == base_pose.joints
 
 
+def test_ema_latent_provider_smooths_valid_values_and_resets() -> None:
+    provider = _SequenceLatentProvider(
+        [
+            UpperBodyLatentPrediction(values={"x": 0.0}, masks={"x": 1.0}),
+            UpperBodyLatentPrediction(values={"x": 10.0}, masks={"x": 1.0}),
+            UpperBodyLatentPrediction(values={"x": 10.0}, masks={"x": 0.0}),
+        ]
+    )
+    ema = EmaUpperBodyLatentProvider(provider=provider, alpha=0.25)
+    sample = generate_three_point_samples([_pose_frame(0.0)])[0]
+
+    first = ema.predict(sample, AvatarCalibration(), GroundingContext())
+    second = ema.predict(sample, AvatarCalibration(), GroundingContext())
+    masked = ema.predict(sample, AvatarCalibration(), GroundingContext())
+
+    assert first.values["x"] == 0.0
+    assert second.values["x"] == approx(2.5)
+    assert masked.values["x"] == 10.0
+
+    ema.reset()
+    assert provider.index == 0
+
+
 def _write_clip(
     path,
     *,
@@ -336,6 +360,26 @@ def _write_clip(
             motion_description="upper body test",
         )
     write_clip_cache(path, columns)
+
+
+class _SequenceLatentProvider:
+    def __init__(self, predictions: list[UpperBodyLatentPrediction]) -> None:
+        self.predictions = predictions
+        self.index = 0
+
+    def predict(
+        self,
+        sample,
+        calibration,
+        grounding,
+    ) -> UpperBodyLatentPrediction:
+        del sample, calibration, grounding
+        prediction = self.predictions[self.index]
+        self.index += 1
+        return prediction
+
+    def reset(self) -> None:
+        self.index = 0
 
 
 def _pose_frame(offset_z: float) -> dict[str, Transform]:

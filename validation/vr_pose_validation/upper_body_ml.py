@@ -260,6 +260,11 @@ class LatentUpperBodyProvider(Protocol):
         """Predict upper-body control latents for the current sparse tracker sample."""
 
 
+class ResettableLatentUpperBodyProvider(LatentUpperBodyProvider, Protocol):
+    def reset(self) -> None:
+        """Clear any clip-local provider state."""
+
+
 @dataclass(frozen=True, slots=True)
 class StaticUpperBodyLatentProvider:
     values: Mapping[str, float]
@@ -359,6 +364,51 @@ class TorchUpperBodyLatentProvider:
     @property
     def prediction_mode(self) -> str:
         return self._prediction_mode
+
+
+@dataclass(slots=True)
+class EmaUpperBodyLatentProvider:
+    """Exponential smoothing wrapper for runtime latent predictions."""
+
+    provider: LatentUpperBodyProvider
+    alpha: float = 1.0
+    min_mask: float = 0.5
+    _previous_values: dict[str, float] = field(default_factory=dict, init=False)
+
+    def predict(
+        self,
+        sample: TrackedPoseSample,
+        calibration: AvatarCalibration,
+        grounding: GroundingContext,
+    ) -> UpperBodyLatentPrediction:
+        prediction = self.provider.predict(sample, calibration, grounding)
+        alpha = min(1.0, max(0.0, self.alpha))
+        if alpha >= 1.0:
+            self._remember(prediction)
+            return prediction
+        values: dict[str, float] = {}
+        for name, value in prediction.values.items():
+            mask = float(prediction.masks.get(name, 1.0))
+            previous = self._previous_values.get(name)
+            if mask < self.min_mask or previous is None:
+                smoothed = float(value)
+            else:
+                smoothed = previous + alpha * (float(value) - previous)
+            values[name] = smoothed
+            if mask >= self.min_mask:
+                self._previous_values[name] = smoothed
+        return UpperBodyLatentPrediction(values=values, masks=prediction.masks)
+
+    def reset(self) -> None:
+        self._previous_values.clear()
+        reset = getattr(self.provider, "reset", None)
+        if callable(reset):
+            reset()
+
+    def _remember(self, prediction: UpperBodyLatentPrediction) -> None:
+        for name, value in prediction.values.items():
+            if float(prediction.masks.get(name, 1.0)) >= self.min_mask:
+                self._previous_values[name] = float(value)
 
 
 @dataclass(slots=True)

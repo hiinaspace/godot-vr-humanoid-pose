@@ -200,6 +200,14 @@ Run learned upper-body latents through the full cached CMU metric stack:
 uv run --group ml python -m validation.scripts.run_learned_upper_body_validation --cache-dir .cache/cmu/parquet/canonical_full --dataset-dir .cache/ml/upper_body_windows_dense --artifact .cache/ml/upper_body_models/torch_mlp.pt --normalization .cache/ml/upper_body_models/normalization.json --compare-baseline
 ```
 
+Compare Basis and learned upper-body output in the frequency domain before
+adding runtime smoothing. Pass `--latent-ema-alpha 0.25` to measure a simple
+low-pass ablation against the same frequency bands:
+
+```powershell
+uv run --group ml python -m validation.scripts.analyze_estimator_frequency --cache-dir .cache/cmu/parquet/canonical_full --dataset-dir .cache/ml/upper_body_windows_dense --artifact .cache/ml/upper_body_models/torch_mlp.pt --normalization .cache/ml/upper_body_models/normalization.json --report validation/reports/estimator_frequency.json --plot validation/reports/estimator_frequency.png
+```
+
 Analyze whether the decoded training loss matches the runtime latent decoder,
 and whether oracle GT torso/shoulder/elbow groups are independently useful when
 decoded on the heuristic base pose:
