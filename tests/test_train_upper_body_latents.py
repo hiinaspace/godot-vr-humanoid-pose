@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 from collections.abc import Mapping
-from pathlib import Path
 from typing import cast
 
 import polars as pl
@@ -47,6 +46,7 @@ def test_torch_linear_smoke_reduces_synthetic_validation_loss(tmp_path) -> None:
         hidden_dim=16,
         allow_cpu=True,
         seed=0,
+        tracking_backend="jsonl",
     )
     leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
     leaderboard = {row["model"]: row for row in leaderboard_rows}
@@ -79,6 +79,7 @@ def test_torch_mlp_saves_absolute_chain_artifact(tmp_path) -> None:
         hidden_dim=16,
         allow_cpu=True,
         seed=1,
+        tracking_backend="jsonl",
     )
     leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
     leaderboard = {row["model"]: row for row in leaderboard_rows}
@@ -114,6 +115,7 @@ def test_torch_tcn_saves_absolute_chain_artifact(tmp_path) -> None:
         hidden_dim=16,
         allow_cpu=True,
         seed=2,
+        tracking_backend="jsonl",
     )
     leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
     leaderboard = {row["model"]: row for row in leaderboard_rows}
@@ -149,6 +151,7 @@ def test_torch_fk_mode_trains_against_fk_targets(tmp_path) -> None:
         fk_decoded_pose_weight=0.1,
         temporal_velocity_weight=0.01,
         temporal_loss_windows=8,
+        tracking_backend="jsonl",
     )
     leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
     leaderboard = {row["model"]: row for row in leaderboard_rows}
@@ -161,27 +164,50 @@ def test_torch_fk_mode_trains_against_fk_targets(tmp_path) -> None:
     assert (tmp_path / "models" / "torch_mlp.pt").exists()
 
 
-def test_aim_tracking_backend_requires_importable_aim(tmp_path, monkeypatch) -> None:
+def test_mlflow_tracking_backend_requires_importable_mlflow(tmp_path, monkeypatch) -> None:
     from validation.scripts import train_upper_body_latents
 
     original_find_spec = importlib.util.find_spec
 
     def fake_find_spec(name: str, package: str | None = None) -> object | None:
-        if name == "aim":
+        if name == "mlflow":
             return None
         return original_find_spec(name, package)
 
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
 
-    with pytest.raises(RuntimeError, match="Aim tracking was requested"):
+    with pytest.raises(RuntimeError, match="MLflow tracking was requested"):
         train_upper_body_latents._create_training_tracker(
-            "aim",
+            "mlflow",
             history_path=tmp_path / "unused.jsonl",
-            aim_repo=Path(".cache/ml/aim"),
-            aim_experiment="test",
+            mlflow_tracking_uri=f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}",
+            mlflow_artifact_root=tmp_path / "mlflow_artifacts",
+            mlflow_experiment="test",
             run_name="test-run",
             params={"model_name": "torch_mlp"},
         )
+
+
+def test_mlflow_tracking_backend_logs_params_and_metrics(tmp_path) -> None:
+    pytest.importorskip("mlflow")
+
+    from validation.scripts import train_upper_body_latents
+
+    tracker = train_upper_body_latents._create_training_tracker(
+        "mlflow",
+        history_path=tmp_path / "unused.jsonl",
+        mlflow_tracking_uri=f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}",
+        mlflow_artifact_root=tmp_path / "mlflow_artifacts",
+        mlflow_experiment="test",
+        run_name="test-run",
+        params={"model_name": "torch_mlp", "disabled_target_groups": ["elbow"]},
+    )
+    tracker.log({"epoch": 1, "validation_mse": 0.25, "note": "ignored"})
+    metadata = tracker.metadata()
+    tracker.close()
+
+    assert metadata["tracking_backend"] == "mlflow"
+    assert isinstance(metadata["mlflow_run_id"], str)
 
 
 def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
@@ -440,6 +466,7 @@ def test_xgboost_cuda_smoke_when_available(tmp_path) -> None:
         model_names=("xgboost",),
         xgboost_estimators=4,
         allow_cpu=False,
+        tracking_backend="jsonl",
     )
     leaderboard = cast(list[dict[str, object]], report["leaderboard"])
     row = next(row for row in leaderboard if row["model"] == "xgboost")

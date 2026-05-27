@@ -13,9 +13,10 @@ from validation.scripts.run_learned_upper_body_validation import (
     run_learned_upper_body_validation,
 )
 from validation.scripts.train_upper_body_latents import (
-    DEFAULT_AIM_EXPERIMENT,
-    DEFAULT_AIM_REPO,
     DEFAULT_DATASET_DIR,
+    DEFAULT_MLFLOW_ARTIFACT_ROOT,
+    DEFAULT_MLFLOW_EXPERIMENT,
+    DEFAULT_MLFLOW_TRACKING_URI,
     DEFAULT_OUTPUT_DIR,
     TargetMode,
     TorchModelName,
@@ -64,12 +65,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-cpu", action="store_true")
     parser.add_argument(
         "--tracking-backend",
-        choices=("jsonl", "aim", "none"),
-        default="jsonl",
+        choices=("jsonl", "mlflow", "none"),
+        default="mlflow",
         help="Per-epoch tracking backend for Torch models trained in each fold.",
     )
-    parser.add_argument("--aim-repo", type=Path, default=DEFAULT_AIM_REPO)
-    parser.add_argument("--aim-experiment", default=DEFAULT_AIM_EXPERIMENT)
+    parser.add_argument("--mlflow-tracking-uri", default=DEFAULT_MLFLOW_TRACKING_URI)
+    parser.add_argument("--mlflow-artifact-root", type=Path, default=DEFAULT_MLFLOW_ARTIFACT_ROOT)
+    parser.add_argument("--mlflow-experiment", default=DEFAULT_MLFLOW_EXPERIMENT)
     parser.add_argument("--run-name", help="Optional run name prefix for tracked fold models.")
     parser.add_argument("--xgboost-estimators", type=int, default=256)
     parser.add_argument("--latent-loss-weight", type=float, default=1.0)
@@ -147,8 +149,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         target_mode=cast(TargetMode, args.target_mode),
         allow_cpu=args.allow_cpu,
         tracking_backend=cast(TrackingBackend, args.tracking_backend),
-        aim_repo=args.aim_repo,
-        aim_experiment=args.aim_experiment,
+        mlflow_tracking_uri=args.mlflow_tracking_uri,
+        mlflow_artifact_root=args.mlflow_artifact_root,
+        mlflow_experiment=args.mlflow_experiment,
         run_name=args.run_name,
         xgboost_estimators=max(1, args.xgboost_estimators),
         latent_loss_weight=max(0.0, args.latent_loss_weight),
@@ -194,9 +197,10 @@ def run_upper_body_latent_cross_validation(
     seed: int = 0,
     target_mode: TargetMode = "chain",
     allow_cpu: bool = False,
-    tracking_backend: TrackingBackend = "jsonl",
-    aim_repo: Path = DEFAULT_AIM_REPO,
-    aim_experiment: str = DEFAULT_AIM_EXPERIMENT,
+    tracking_backend: TrackingBackend = "mlflow",
+    mlflow_tracking_uri: str = DEFAULT_MLFLOW_TRACKING_URI,
+    mlflow_artifact_root: Path = DEFAULT_MLFLOW_ARTIFACT_ROOT,
+    mlflow_experiment: str = DEFAULT_MLFLOW_EXPERIMENT,
     run_name: str | None = None,
     xgboost_estimators: int = 256,
     residual_regularization_weight: float = 1e-3,
@@ -252,8 +256,9 @@ def run_upper_body_latent_cross_validation(
             target_mode=target_mode,
             allow_cpu=allow_cpu,
             tracking_backend=tracking_backend,
-            aim_repo=aim_repo,
-            aim_experiment=aim_experiment,
+            mlflow_tracking_uri=mlflow_tracking_uri,
+            mlflow_artifact_root=mlflow_artifact_root,
+            mlflow_experiment=mlflow_experiment,
             run_name=f"{run_name or output_dir.name}:fold_{fold_index:02d}",
             xgboost_estimators=xgboost_estimators,
             residual_regularization_weight=residual_regularization_weight,
@@ -311,8 +316,9 @@ def run_upper_body_latent_cross_validation(
             "total_seconds": time.perf_counter() - start,
             "target_mode": target_mode,
             "tracking_backend": tracking_backend,
-            "aim_repo": aim_repo.as_posix(),
-            "aim_experiment": aim_experiment,
+            "mlflow_tracking_uri": mlflow_tracking_uri,
+            "mlflow_artifact_root": mlflow_artifact_root.as_posix(),
+            "mlflow_experiment": mlflow_experiment,
             "run_name": run_name,
             "latent_leaderboard": _aggregate_latent_leaderboard(fold_reports),
             "downstream": _aggregate_downstream(fold_reports),

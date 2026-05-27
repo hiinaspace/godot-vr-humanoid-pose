@@ -174,21 +174,19 @@ reference points instead of only latent MAE:
 uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp torch_tcn --latent-loss-weight 0.1 --decoded-pose-weight 25 --decoded-torso-weight 1 --decoded-shoulder-weight 2 --decoded-elbow-weight 2 --decoded-arm-direction-weight 0.5 --decoded-stretch-weight 0.25 --decoded-reach-hinge-weight 0.25 --reach-ratio-limit 0.97 --temporal-velocity-weight 0.2 --temporal-acceleration-weight 0.1 --temporal-jerk-weight 0.05 --temporal-excess-jerk-weight 0.05 --pole-velocity-weight 0.05 --pole-excess-jerk-weight 0.02 --temporal-loss-windows 512
 ```
 
-Torch training supports `--tracking-backend aim`, `jsonl`, or `none`. Aim is
-the preferred backend for experiment comparisons because it stores parameters
-and epoch metrics in a queryable local repo with a UI:
+Torch training supports `--tracking-backend mlflow`, `jsonl`, or `none`.
+MLflow is the preferred backend for experiment comparisons because it stores
+parameters and epoch metrics in a queryable local run store with an actively
+maintained UI:
 
 ```powershell
-uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp torch_tcn --tracking-backend aim --aim-repo .cache/ml/aim --aim-experiment upper_body_dense
-aim up --repo .cache/ml/aim
+uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp torch_tcn --tracking-backend mlflow --mlflow-tracking-uri sqlite:///.cache/ml/mlflow.db --mlflow-artifact-root .cache/ml/mlflow_artifacts --mlflow-experiment upper_body_dense
+uv run --group ml mlflow ui --backend-store-uri sqlite:///.cache/ml/mlflow.db
 ```
 
-Native Windows training defaults to `--tracking-backend jsonl` because Aim's
-`aimrocks` storage dependency does not currently publish Windows wheels; the
-`ml` dependency group installs Aim only on non-Windows platforms. JSONL remains
-available as a local fallback and writes one history file next to each `.pt`
-artifact, with an initial row plus one row per epoch. Render a quick local
-dashboard:
+JSONL remains available as a local fallback and writes one history file next to
+each `.pt` artifact, with an initial row plus one row per epoch. Render a quick
+local dashboard:
 
 ```powershell
 uv run python -m validation.scripts.plot_training_history .cache/ml/upper_body_models_decoded/torch_mlp_history.jsonl .cache/ml/upper_body_models_decoded/torch_tcn_history.jsonl

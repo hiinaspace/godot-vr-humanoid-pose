@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
+from urllib.parse import urlparse
 
 import numpy as np
 import polars as pl
@@ -41,8 +42,9 @@ from validation.vr_pose_validation.upper_body_ml import (
 
 DEFAULT_DATASET_DIR = Path(".cache/ml/upper_body_windows")
 DEFAULT_OUTPUT_DIR = Path(".cache/ml/upper_body_models")
-DEFAULT_AIM_REPO = Path(".cache/ml/aim")
-DEFAULT_AIM_EXPERIMENT = "upper_body_latents"
+DEFAULT_MLFLOW_TRACKING_URI = "sqlite:///.cache/ml/mlflow.db"
+DEFAULT_MLFLOW_ARTIFACT_ROOT = Path(".cache/ml/mlflow_artifacts")
+DEFAULT_MLFLOW_EXPERIMENT = "upper_body_latents"
 TorchModelName = Literal[
     "constant",
     "torch_linear",
@@ -50,7 +52,7 @@ TorchModelName = Literal[
     "torch_tcn",
     "xgboost",
 ]
-TrackingBackend = Literal["jsonl", "aim", "none"]
+TrackingBackend = Literal["jsonl", "mlflow", "none"]
 TargetMode = Literal["chain", "fk"]
 
 
@@ -106,60 +108,65 @@ class JsonlTrainingTracker(TrainingTracker):
         }
 
 
-class AimTrainingTracker(TrainingTracker):
+class MlflowTrainingTracker(TrainingTracker):
     def __init__(
         self,
         *,
-        repo: Path,
+        tracking_uri: str,
+        artifact_root: Path,
         experiment: str,
         run_name: str,
         params: Mapping[str, object],
     ) -> None:
-        if importlib.util.find_spec("aim") is None:
+        if importlib.util.find_spec("mlflow") is None:
             raise RuntimeError(
-                "Aim tracking was requested, but the 'aim' package is not importable. "
-                "Install Aim in this Python environment, or use WSL/Linux for Aim-backed "
-                "training. Native Windows installs currently fail in uv because Aim's "
-                "aimrocks storage dependency does not publish win_amd64 wheels."
+                "MLflow tracking was requested, but the 'mlflow' package is not importable. "
+                "Install the ml dependency group or use --tracking-backend jsonl."
             )
-        aim = importlib.import_module("aim")
-        self._run = aim.Run(repo=repo.as_posix(), experiment=experiment)
-        self._repo = repo
+        mlflow = importlib.import_module("mlflow")
+        self._mlflow = mlflow
+        self._tracking_uri = _normalize_mlflow_tracking_uri(tracking_uri)
         self._experiment = experiment
         self._run_name = run_name
-        self._run_hash = str(getattr(self._run, "hash", ""))
-        if run_name:
-            try:
-                self._run.name = run_name
-            except (AttributeError, TypeError, ValueError):
-                self._run["run_name"] = run_name
-        self._run["hparams"] = _jsonable(params)
+        mlflow.set_tracking_uri(self._tracking_uri)
+        _ensure_mlflow_experiment(
+            mlflow,
+            experiment=experiment,
+            artifact_root=artifact_root,
+        )
+        mlflow.set_experiment(experiment)
+        active_run = mlflow.start_run(run_name=run_name)
+        self._run_id = str(active_run.info.run_id)
+        self._artifact_uri = str(active_run.info.artifact_uri)
+        mlflow.log_params(_mlflow_params(params))
 
     def log(self, row: Mapping[str, object]) -> None:
         step_value = row.get("epoch", 0)
         step = int(step_value) if isinstance(step_value, int | float) else 0
+        metrics: dict[str, float] = {}
         for name, value in row.items():
             if name == "epoch" or isinstance(value, bool) or not isinstance(value, int | float):
                 continue
             metric_value = float(value)
             if math.isfinite(metric_value):
-                self._run.track(metric_value, name=name, step=step)
+                metrics[name] = metric_value
+        if metrics:
+            self._mlflow.log_metrics(metrics, step=step)
 
     def metadata(self) -> dict[str, object]:
-        metadata: dict[str, object] = {
-            "tracking_backend": "aim",
-            "aim_repo": self._repo.as_posix(),
-            "aim_experiment": self._experiment,
-            "aim_run_name": self._run_name,
+        return {
+            "tracking_backend": "mlflow",
+            "mlflow_tracking_uri": self._tracking_uri,
+            "mlflow_experiment": self._experiment,
+            "mlflow_run_name": self._run_name,
+            "mlflow_run_id": self._run_id,
+            "mlflow_artifact_uri": self._artifact_uri,
         }
-        if self._run_hash:
-            metadata["aim_run_hash"] = self._run_hash
-        return metadata
 
     def close(self) -> None:
-        close = getattr(self._run, "close", None)
-        if callable(close):
-            close()
+        active_run = self._mlflow.active_run()
+        if active_run is not None and str(active_run.info.run_id) == self._run_id:
+            self._mlflow.end_run()
 
 
 class NullTrainingTracker(TrainingTracker):
@@ -211,15 +218,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-cpu", action="store_true")
     parser.add_argument(
         "--tracking-backend",
-        choices=("jsonl", "aim", "none"),
-        default="jsonl",
+        choices=("jsonl", "mlflow", "none"),
+        default="mlflow",
         help=(
-            "Per-epoch tracking backend. Use 'aim' in an environment where the aim package "
-            "is installed; native Windows currently keeps JSONL as the default."
+            "Per-epoch tracking backend. MLflow is the preferred local experiment tracker; "
+            "JSONL remains available as a lightweight fallback."
         ),
     )
-    parser.add_argument("--aim-repo", type=Path, default=DEFAULT_AIM_REPO)
-    parser.add_argument("--aim-experiment", default=DEFAULT_AIM_EXPERIMENT)
+    parser.add_argument("--mlflow-tracking-uri", default=DEFAULT_MLFLOW_TRACKING_URI)
+    parser.add_argument("--mlflow-artifact-root", type=Path, default=DEFAULT_MLFLOW_ARTIFACT_ROOT)
+    parser.add_argument("--mlflow-experiment", default=DEFAULT_MLFLOW_EXPERIMENT)
     parser.add_argument("--run-name", help="Optional run name prefix for tracked Torch models.")
     parser.add_argument("--xgboost-estimators", type=int, default=256)
     parser.add_argument("--latent-loss-weight", type=float, default=1.0)
@@ -289,8 +297,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         target_mode=cast(TargetMode, args.target_mode),
         allow_cpu=args.allow_cpu,
         tracking_backend=cast(TrackingBackend, args.tracking_backend),
-        aim_repo=args.aim_repo,
-        aim_experiment=args.aim_experiment,
+        mlflow_tracking_uri=args.mlflow_tracking_uri,
+        mlflow_artifact_root=args.mlflow_artifact_root,
+        mlflow_experiment=args.mlflow_experiment,
         run_name=args.run_name,
         xgboost_estimators=max(1, args.xgboost_estimators),
         validation_subjects=set(args.validation_subjects or []),
@@ -335,9 +344,10 @@ def train_upper_body_latents(
     max_rows: int | None = None,
     target_mode: TargetMode = "chain",
     allow_cpu: bool = False,
-    tracking_backend: TrackingBackend = "jsonl",
-    aim_repo: Path = DEFAULT_AIM_REPO,
-    aim_experiment: str = DEFAULT_AIM_EXPERIMENT,
+    tracking_backend: TrackingBackend = "mlflow",
+    mlflow_tracking_uri: str = DEFAULT_MLFLOW_TRACKING_URI,
+    mlflow_artifact_root: Path = DEFAULT_MLFLOW_ARTIFACT_ROOT,
+    mlflow_experiment: str = DEFAULT_MLFLOW_EXPERIMENT,
     run_name: str | None = None,
     xgboost_estimators: int = 256,
     validation_subjects: set[str] | None = None,
@@ -391,8 +401,9 @@ def train_upper_body_latents(
         "torch_device": str(device),
         "target_mode": target_mode,
         "tracking_backend": tracking_backend,
-        "aim_repo": aim_repo.as_posix(),
-        "aim_experiment": aim_experiment,
+        "mlflow_tracking_uri": mlflow_tracking_uri,
+        "mlflow_artifact_root": mlflow_artifact_root.as_posix(),
+        "mlflow_experiment": mlflow_experiment,
         "run_name": run_name,
         "max_clips": max_clips,
         "max_rows": max_rows,
@@ -513,8 +524,9 @@ def train_upper_body_latents(
                 temporal_excess_margin=temporal_excess_margin,
                 disabled_target_groups=disabled_target_groups,
                 tracking_backend=tracking_backend,
-                aim_repo=aim_repo,
-                aim_experiment=aim_experiment,
+                mlflow_tracking_uri=mlflow_tracking_uri,
+                mlflow_artifact_root=mlflow_artifact_root,
+                mlflow_experiment=mlflow_experiment,
                 run_name=run_name or output_dir.name or model_name,
             )
         cast(list[dict[str, object]], report["leaderboard"]).append(result)
@@ -776,8 +788,9 @@ def _train_torch_model(
     temporal_excess_margin: float,
     disabled_target_groups: set[str],
     tracking_backend: TrackingBackend,
-    aim_repo: Path,
-    aim_experiment: str,
+    mlflow_tracking_uri: str,
+    mlflow_artifact_root: Path,
+    mlflow_experiment: str,
     run_name: str,
 ) -> dict[str, object]:
     torch.manual_seed(seed)
@@ -940,8 +953,9 @@ def _train_torch_model(
     tracker = _create_training_tracker(
         tracking_backend,
         history_path=history_path,
-        aim_repo=aim_repo,
-        aim_experiment=aim_experiment,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_artifact_root=mlflow_artifact_root,
+        mlflow_experiment=mlflow_experiment,
         run_name=f"{run_name}:{model_name}",
         params={
             "model_name": model_name,
@@ -3244,17 +3258,19 @@ def _create_training_tracker(
     backend: TrackingBackend,
     *,
     history_path: Path,
-    aim_repo: Path,
-    aim_experiment: str,
+    mlflow_tracking_uri: str,
+    mlflow_artifact_root: Path,
+    mlflow_experiment: str,
     run_name: str,
     params: Mapping[str, object],
 ) -> TrainingTracker:
     if backend == "jsonl":
         return JsonlTrainingTracker(history_path)
-    if backend == "aim":
-        return AimTrainingTracker(
-            repo=aim_repo,
-            experiment=aim_experiment,
+    if backend == "mlflow":
+        return MlflowTrainingTracker(
+            tracking_uri=mlflow_tracking_uri,
+            artifact_root=mlflow_artifact_root,
+            experiment=mlflow_experiment,
             run_name=run_name,
             params=params,
         )
@@ -3273,6 +3289,43 @@ def _jsonable(value: object) -> object:
     if isinstance(value, tuple | list):
         return [_jsonable(item) for item in value]
     return value
+
+
+def _mlflow_params(params: Mapping[str, object]) -> dict[str, object]:
+    jsonable_params = cast(Mapping[str, object], _jsonable(params))
+    return {
+        key: _mlflow_param_value(value)
+        for key, value in jsonable_params.items()
+        if isinstance(key, str)
+    }
+
+
+def _mlflow_param_value(value: object) -> object:
+    if value is None or isinstance(value, bool | int | float | str):
+        return value
+    return json.dumps(value, sort_keys=True)
+
+
+def _normalize_mlflow_tracking_uri(tracking_uri: str) -> str:
+    parsed = urlparse(tracking_uri)
+    if parsed.scheme and not _is_windows_drive_uri(tracking_uri, parsed.scheme):
+        return tracking_uri
+    return Path(tracking_uri).resolve().as_uri()
+
+
+def _is_windows_drive_uri(value: str, scheme: str) -> bool:
+    return len(scheme) == 1 and len(value) > 1 and value[1] == ":"
+
+
+def _ensure_mlflow_experiment(mlflow: Any, *, experiment: str, artifact_root: Path) -> None:
+    client = mlflow.tracking.MlflowClient()
+    if client.get_experiment_by_name(experiment) is not None:
+        return
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    client.create_experiment(
+        experiment,
+        artifact_location=artifact_root.resolve().as_uri(),
+    )
 
 
 def _cuda_memory_metrics(torch: Any, device: Any) -> dict[str, float]:
