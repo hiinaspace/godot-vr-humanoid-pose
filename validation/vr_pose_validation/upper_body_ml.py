@@ -377,12 +377,23 @@ class LearnedUpperBodyEstimator:
     ) -> HumanoidPoseFrame:
         base_pose = self.base_estimator.estimate(sample, calibration, grounding)
         prediction = self.latent_provider.predict(sample, calibration, grounding)
+        if _is_fk_prediction(prediction):
+            return apply_upper_body_fk_latents(
+                base_pose,
+                prediction,
+                calibration=calibration,
+                min_mask=self.min_mask,
+            )
         return apply_upper_body_latents(
             base_pose,
             prediction,
             calibration=calibration,
             min_mask=self.min_mask,
         )
+
+
+def _is_fk_prediction(prediction: UpperBodyLatentPrediction) -> bool:
+    return any(name.startswith("fk_") for name in prediction.values)
 
 
 def build_sparse_window_dataset(
@@ -1086,6 +1097,268 @@ def apply_upper_body_latents(
     return HumanoidPoseFrame(
         timestamp_seconds=pose.timestamp_seconds, root=pose.root, joints=joints
     )
+
+
+def apply_upper_body_fk_latents(
+    pose: HumanoidPoseFrame,
+    prediction: UpperBodyLatentPrediction,
+    *,
+    calibration: AvatarCalibration,
+    min_mask: float = 0.5,
+) -> HumanoidPoseFrame:
+    joints = dict(pose.joints)
+    values = prediction.values
+    masks = prediction.masks
+    head_joint = joints.get("head")
+    if head_joint is None:
+        return HumanoidPoseFrame(
+            timestamp_seconds=pose.timestamp_seconds, root=pose.root, joints=joints
+        )
+    if not (
+        _fk_vector_enabled(values, masks, "fk_hips_rel", min_mask)
+        and _fk_rotation6d_enabled(values, masks, "fk_hips_rotation6d", min_mask)
+    ):
+        return HumanoidPoseFrame(
+            timestamp_seconds=pose.timestamp_seconds, root=pose.root, joints=joints
+        )
+
+    head_basis = yaw_basis_from_rotation(head_joint.transform.rotation)
+    height_m = max(0.1, calibration.human_height_m)
+    head_position = head_joint.transform.position
+    lengths = _fk_runtime_lengths(calibration)
+    positions: dict[str, Vector3] = {
+        "hips": _world_from_head_relative(
+            _fk_vector_values(values, "fk_hips_rel"),
+            origin=head_position,
+            basis=head_basis,
+            height_m=height_m,
+        )
+    }
+    rotations: dict[str, Quaternion] = {
+        "hips": _rotation6d_quaternion(values, "fk_hips_rotation6d", basis=head_basis)
+    }
+
+    _set_fk_joint(joints, "hips", positions["hips"], rotations["hips"])
+
+    _decode_fk_segment(
+        joints,
+        values,
+        masks,
+        positions=positions,
+        rotations=rotations,
+        joint_name="spine",
+        parent_name="hips",
+        local_prefix="fk_spine_local_rotation6d",
+        offset=(0.0, lengths["spine_to_hips"], 0.0),
+        min_mask=min_mask,
+    )
+    _decode_fk_segment(
+        joints,
+        values,
+        masks,
+        positions=positions,
+        rotations=rotations,
+        joint_name="chest",
+        parent_name="spine",
+        local_prefix="fk_chest_local_rotation6d",
+        offset=(0.0, lengths["chest_to_spine"], 0.0),
+        min_mask=min_mask,
+    )
+    decoded_head = _decode_fk_child_transform(
+        values,
+        masks,
+        positions=positions,
+        rotations=rotations,
+        joint_name="head",
+        parent_name="chest",
+        local_prefix="fk_head_local_rotation6d",
+        offset=(0.0, lengths["head_to_neck"] + lengths["neck_to_chest"], 0.0),
+        min_mask=min_mask,
+    )
+    if decoded_head is not None and "chest" in positions:
+        chest_position = positions["chest"]
+        neck_position = add(chest_position, scale(subtract(head_position, chest_position), 0.7))
+        _set_fk_joint(joints, "neck", neck_position, decoded_head.rotation)
+
+    half_shoulder_width = 0.5 * lengths["shoulder_width"]
+    for side, sign in (("left", 1.0), ("right", -1.0)):
+        shoulder_name = f"{side}_shoulder"
+        elbow_name = f"{side}_elbow"
+        if (
+            _decode_fk_child_transform(
+                values,
+                masks,
+                positions=positions,
+                rotations=rotations,
+                joint_name=shoulder_name,
+                parent_name="chest",
+                local_prefix=f"fk_{shoulder_name}_local_rotation6d",
+                offset=(sign * half_shoulder_width, 0.0, 0.0),
+                min_mask=min_mask,
+            )
+            is not None
+        ):
+            _set_fk_joint(joints, shoulder_name, positions[shoulder_name], rotations[shoulder_name])
+        if (
+            _decode_fk_child_transform(
+                values,
+                masks,
+                positions=positions,
+                rotations=rotations,
+                joint_name=elbow_name,
+                parent_name=shoulder_name,
+                local_prefix=f"fk_{elbow_name}_local_rotation6d",
+                offset=(sign * lengths["upper_arm"], 0.0, 0.0),
+                min_mask=min_mask,
+            )
+            is not None
+        ):
+            _set_fk_joint(joints, elbow_name, positions[elbow_name], rotations[elbow_name])
+
+    return HumanoidPoseFrame(
+        timestamp_seconds=pose.timestamp_seconds, root=pose.root, joints=joints
+    )
+
+
+def _fk_runtime_lengths(calibration: AvatarCalibration) -> dict[str, float]:
+    values = calibration_feature_values(calibration)
+    return {
+        "human_height": values[0],
+        "head_to_neck": values[1],
+        "neck_to_chest": values[2],
+        "chest_to_spine": values[3],
+        "spine_to_hips": values[4],
+        "shoulder_width": values[5],
+        "upper_arm": values[6],
+        "lower_arm": values[7],
+        "arm_length": values[8],
+    }
+
+
+def _decode_fk_segment(
+    joints: dict[str, JointPose],
+    values: Mapping[str, float],
+    masks: Mapping[str, float],
+    *,
+    positions: dict[str, Vector3],
+    rotations: dict[str, Quaternion],
+    joint_name: str,
+    parent_name: str,
+    local_prefix: str,
+    offset: Vector3,
+    min_mask: float,
+) -> None:
+    decoded = _decode_fk_child_transform(
+        values,
+        masks,
+        positions=positions,
+        rotations=rotations,
+        joint_name=joint_name,
+        parent_name=parent_name,
+        local_prefix=local_prefix,
+        offset=offset,
+        min_mask=min_mask,
+    )
+    if decoded is not None:
+        _set_fk_joint(joints, joint_name, decoded.position, decoded.rotation)
+
+
+def _decode_fk_child_transform(
+    values: Mapping[str, float],
+    masks: Mapping[str, float],
+    *,
+    positions: dict[str, Vector3],
+    rotations: dict[str, Quaternion],
+    joint_name: str,
+    parent_name: str,
+    local_prefix: str,
+    offset: Vector3,
+    min_mask: float,
+) -> Transform | None:
+    if parent_name not in positions or parent_name not in rotations:
+        return None
+    if not _fk_rotation6d_enabled(values, masks, local_prefix, min_mask):
+        return None
+    rotation = _normalize_quaternion(
+        multiply_quaternion(
+            rotations[parent_name],
+            _rotation6d_quaternion(values, local_prefix, basis=IDENTITY_BASIS),
+        )
+    )
+    position = add(positions[parent_name], rotate_vector(rotation, offset))
+    positions[joint_name] = position
+    rotations[joint_name] = rotation
+    return Transform(position=position, rotation=rotation)
+
+
+def _set_fk_joint(
+    joints: dict[str, JointPose],
+    joint_name: str,
+    position: Vector3,
+    rotation: Quaternion,
+) -> None:
+    old_joint = joints.get(joint_name, JointPose(Transform()))
+    joints[joint_name] = JointPose(
+        transform=Transform(position=position, rotation=rotation),
+        confidence=old_joint.confidence,
+        estimated=True,
+    )
+
+
+def _fk_vector_enabled(
+    values: Mapping[str, float],
+    masks: Mapping[str, float],
+    prefix: str,
+    min_mask: float,
+) -> bool:
+    return all(
+        _enabled(values, masks, f"{prefix}_{component}", min_mask) for component in ("x", "y", "z")
+    )
+
+
+def _fk_rotation6d_enabled(
+    values: Mapping[str, float],
+    masks: Mapping[str, float],
+    prefix: str,
+    min_mask: float,
+) -> bool:
+    return all(_enabled(values, masks, f"{prefix}_{index}", min_mask) for index in range(6))
+
+
+def _fk_vector_values(values: Mapping[str, float], prefix: str) -> Vector3:
+    return (
+        values.get(f"{prefix}_x", 0.0),
+        values.get(f"{prefix}_y", 0.0),
+        values.get(f"{prefix}_z", 0.0),
+    )
+
+
+def _rotation6d_quaternion(
+    values: Mapping[str, float],
+    prefix: str,
+    *,
+    basis: Basis3,
+) -> Quaternion:
+    forward = _vector_from_basis(
+        (
+            values.get(f"{prefix}_0", 0.0),
+            values.get(f"{prefix}_1", 0.0),
+            values.get(f"{prefix}_2", 1.0),
+        ),
+        basis,
+    )
+    raw_up = _vector_from_basis(
+        (
+            values.get(f"{prefix}_3", 0.0),
+            values.get(f"{prefix}_4", 1.0),
+            values.get(f"{prefix}_5", 0.0),
+        ),
+        basis,
+    )
+    forward = normalize(forward, WORLD_FORWARD)
+    right = normalize(cross(raw_up, forward), basis.right)
+    up = normalize(cross(forward, right), basis.up)
+    return look_rotation(forward, up)
 
 
 def _relative_position_enabled(

@@ -26,6 +26,8 @@ from validation.vr_pose_validation.upper_body_ml import (
     TARGET_SCHEMA,
     SparseWindowConfig,
     StaticUpperBodyLatentProvider,
+    UpperBodyLatentPrediction,
+    apply_upper_body_fk_latents,
     apply_upper_body_latents,
     build_sparse_window_dataset,
     elbow_pole_vector,
@@ -257,6 +259,59 @@ def test_chain_latents_move_runtime_torso_anchors() -> None:
         adjusted.joints["chest"].transform.position[2]
         > base_pose.joints["chest"].transform.position[2]
     )
+
+
+def test_fk_latents_move_runtime_upper_body_but_keep_tracked_endpoints() -> None:
+    frame = _pose_frame(0.0)
+    sample = generate_three_point_samples([frame])[0]
+    calibration = AvatarCalibration(human_height_m=1.8)
+    base_pose = BasisPortEstimator().estimate(sample, calibration, GroundingContext())
+    fk_targets = extract_upper_body_fk_targets(
+        {name: joint.transform for name, joint in base_pose.joints.items()},
+        calibration,
+    )
+    values = dict(fk_targets.values)
+    masks = dict(fk_targets.masks)
+    values["fk_hips_rel_z"] += 0.2
+
+    adjusted = apply_upper_body_fk_latents(
+        base_pose,
+        UpperBodyLatentPrediction(values=values, masks=masks),
+        calibration=calibration,
+    )
+
+    assert adjusted.joints["head"].transform == base_pose.joints["head"].transform
+    assert adjusted.joints["left_hand"].transform == base_pose.joints["left_hand"].transform
+    assert adjusted.joints["right_hand"].transform == base_pose.joints["right_hand"].transform
+    assert (
+        adjusted.joints["hips"].transform.position[2]
+        > base_pose.joints["hips"].transform.position[2]
+    )
+    assert (
+        adjusted.joints["left_shoulder"].transform.position[2]
+        > base_pose.joints["left_shoulder"].transform.position[2]
+    )
+
+
+def test_fk_latents_with_zero_masks_leave_runtime_pose_unchanged() -> None:
+    frame = _pose_frame(0.0)
+    sample = generate_three_point_samples([frame])[0]
+    calibration = AvatarCalibration(human_height_m=1.8)
+    base_pose = BasisPortEstimator().estimate(sample, calibration, GroundingContext())
+    fk_targets = extract_upper_body_fk_targets(
+        {name: joint.transform for name, joint in base_pose.joints.items()},
+        calibration,
+    )
+    adjusted = apply_upper_body_fk_latents(
+        base_pose,
+        UpperBodyLatentPrediction(
+            values=fk_targets.values,
+            masks={name: 0.0 for name in fk_targets.masks},
+        ),
+        calibration=calibration,
+    )
+
+    assert adjusted.joints == base_pose.joints
 
 
 def _write_clip(

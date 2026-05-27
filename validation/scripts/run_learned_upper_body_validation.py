@@ -27,7 +27,6 @@ from validation.vr_pose_validation.upper_body_ml import (
     DEFAULT_CLEAN_ACTIVITY_CLASSES,
     LearnedUpperBodyEstimator,
     TorchUpperBodyLatentProvider,
-    read_sparse_window_dataframe,
 )
 
 DEFAULT_CACHE_DIR = Path(".cache/cmu/parquet/canonical_full")
@@ -252,7 +251,7 @@ def _filtered_paths(
 
 
 def _dataset_split_clips(dataset_dir: Path, split: str) -> set[tuple[str, str]]:
-    frame = read_sparse_window_dataframe(dataset_dir).select("subject", "clip", "split")
+    frame = cast(pl.DataFrame, _scan_sparse_window_split_columns(dataset_dir).collect())
     return {
         (str(row["subject"]), str(row["clip"]))
         for row in frame.filter(pl.col("split") == split)
@@ -260,6 +259,18 @@ def _dataset_split_clips(dataset_dir: Path, split: str) -> set[tuple[str, str]]:
         .unique()
         .to_dicts()
     }
+
+
+def _scan_sparse_window_split_columns(dataset_dir: Path) -> pl.LazyFrame:
+    windows_path = dataset_dir / "windows.parquet"
+    if windows_path.exists():
+        return pl.scan_parquet(windows_path).select("subject", "clip", "split")
+    shard_dir = dataset_dir / "windows_shards"
+    if shard_dir.exists():
+        return pl.scan_parquet(str(shard_dir / "*.parquet")).select("subject", "clip", "split")
+    raise FileNotFoundError(
+        f"Expected sparse-window dataset at {dataset_dir}; run build_sparse_window_dataset"
+    )
 
 
 def _summary(
