@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import json
+import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -30,6 +32,8 @@ from validation.vr_pose_validation.upper_body_ml import (
 
 DEFAULT_DATASET_DIR = Path(".cache/ml/upper_body_windows")
 DEFAULT_OUTPUT_DIR = Path(".cache/ml/upper_body_models")
+DEFAULT_AIM_REPO = Path(".cache/ml/aim")
+DEFAULT_AIM_EXPERIMENT = "upper_body_latents"
 TorchModelName = Literal[
     "constant",
     "torch_linear",
@@ -37,6 +41,7 @@ TorchModelName = Literal[
     "torch_tcn",
     "xgboost",
 ]
+TrackingBackend = Literal["jsonl", "aim", "none"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +62,99 @@ class LoadedDataset:
     timestamps_s: np.ndarray
     feature_names: list[str]
     target_names: list[str]
+
+
+class TrainingTracker:
+    def log(self, row: Mapping[str, object]) -> None:
+        raise NotImplementedError
+
+    def metadata(self) -> dict[str, object]:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        return
+
+
+class JsonlTrainingTracker(TrainingTracker):
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        if self.path.exists():
+            self.path.unlink()
+
+    def log(self, row: Mapping[str, object]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(row, sort_keys=True) + "\n")
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "tracking_backend": "jsonl",
+            "history_path": self.path.as_posix(),
+        }
+
+
+class AimTrainingTracker(TrainingTracker):
+    def __init__(
+        self,
+        *,
+        repo: Path,
+        experiment: str,
+        run_name: str,
+        params: Mapping[str, object],
+    ) -> None:
+        if importlib.util.find_spec("aim") is None:
+            raise RuntimeError(
+                "Aim tracking was requested, but the 'aim' package is not importable. "
+                "Install Aim in this Python environment, or use WSL/Linux for Aim-backed "
+                "training. Native Windows installs currently fail in uv because Aim's "
+                "aimrocks storage dependency does not publish win_amd64 wheels."
+            )
+        aim = importlib.import_module("aim")
+        self._run = aim.Run(repo=repo.as_posix(), experiment=experiment)
+        self._repo = repo
+        self._experiment = experiment
+        self._run_name = run_name
+        self._run_hash = str(getattr(self._run, "hash", ""))
+        if run_name:
+            try:
+                self._run.name = run_name
+            except (AttributeError, TypeError, ValueError):
+                self._run["run_name"] = run_name
+        self._run["hparams"] = _jsonable(params)
+
+    def log(self, row: Mapping[str, object]) -> None:
+        step_value = row.get("epoch", 0)
+        step = int(step_value) if isinstance(step_value, int | float) else 0
+        for name, value in row.items():
+            if name == "epoch" or isinstance(value, bool) or not isinstance(value, int | float):
+                continue
+            metric_value = float(value)
+            if math.isfinite(metric_value):
+                self._run.track(metric_value, name=name, step=step)
+
+    def metadata(self) -> dict[str, object]:
+        metadata: dict[str, object] = {
+            "tracking_backend": "aim",
+            "aim_repo": self._repo.as_posix(),
+            "aim_experiment": self._experiment,
+            "aim_run_name": self._run_name,
+        }
+        if self._run_hash:
+            metadata["aim_run_hash"] = self._run_hash
+        return metadata
+
+    def close(self) -> None:
+        close = getattr(self._run, "close", None)
+        if callable(close):
+            close()
+
+
+class NullTrainingTracker(TrainingTracker):
+    def log(self, row: Mapping[str, object]) -> None:
+        del row
+
+    def metadata(self) -> dict[str, object]:
+        return {"tracking_backend": "none"}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -82,6 +180,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--allow-cpu", action="store_true")
+    parser.add_argument(
+        "--tracking-backend",
+        choices=("jsonl", "aim", "none"),
+        default="jsonl",
+        help=(
+            "Per-epoch tracking backend. Use 'aim' in an environment where the aim package "
+            "is installed; native Windows currently keeps JSONL as the default."
+        ),
+    )
+    parser.add_argument("--aim-repo", type=Path, default=DEFAULT_AIM_REPO)
+    parser.add_argument("--aim-experiment", default=DEFAULT_AIM_EXPERIMENT)
+    parser.add_argument("--run-name", help="Optional run name prefix for tracked Torch models.")
     parser.add_argument("--xgboost-estimators", type=int, default=256)
     parser.add_argument("--latent-loss-weight", type=float, default=1.0)
     parser.add_argument("--decoded-pose-weight", type=float, default=0.0)
@@ -140,6 +250,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         hidden_dim=max(8, args.hidden_dim),
         seed=args.seed,
         allow_cpu=args.allow_cpu,
+        tracking_backend=cast(TrackingBackend, args.tracking_backend),
+        aim_repo=args.aim_repo,
+        aim_experiment=args.aim_experiment,
+        run_name=args.run_name,
         xgboost_estimators=max(1, args.xgboost_estimators),
         validation_subjects=set(args.validation_subjects or []),
         latent_loss_weight=max(0.0, args.latent_loss_weight),
@@ -179,6 +293,10 @@ def train_upper_body_latents(
     hidden_dim: int = 256,
     seed: int = 0,
     allow_cpu: bool = False,
+    tracking_backend: TrackingBackend = "jsonl",
+    aim_repo: Path = DEFAULT_AIM_REPO,
+    aim_experiment: str = DEFAULT_AIM_EXPERIMENT,
+    run_name: str | None = None,
     xgboost_estimators: int = 256,
     validation_subjects: set[str] | None = None,
     residual_regularization_weight: float = 1e-3,
@@ -227,6 +345,10 @@ def train_upper_body_latents(
         "torch_version": str(torch.__version__),
         "torch_cuda_available": bool(torch.cuda.is_available()),
         "torch_device": str(device),
+        "tracking_backend": tracking_backend,
+        "aim_repo": aim_repo.as_posix(),
+        "aim_experiment": aim_experiment,
+        "run_name": run_name,
         "validation_subjects": sorted(validation_subjects or []),
         "latent_loss_weight": latent_loss_weight,
         "decoded_pose_weight": decoded_pose_weight,
@@ -341,6 +463,10 @@ def train_upper_body_latents(
                 temporal_excess_ratio=temporal_excess_ratio,
                 temporal_excess_margin=temporal_excess_margin,
                 disabled_target_groups=disabled_target_groups,
+                tracking_backend=tracking_backend,
+                aim_repo=aim_repo,
+                aim_experiment=aim_experiment,
+                run_name=run_name or output_dir.name or model_name,
             )
         cast(list[dict[str, object]], report["leaderboard"]).append(result)
 
@@ -558,6 +684,10 @@ def _train_torch_model(
     temporal_excess_ratio: float,
     temporal_excess_margin: float,
     disabled_target_groups: set[str],
+    tracking_backend: TrackingBackend,
+    aim_repo: Path,
+    aim_experiment: str,
+    run_name: str,
 ) -> dict[str, object]:
     torch.manual_seed(seed)
     prediction_mode = "residual" if _is_residual_model(model_name) else "absolute"
@@ -710,8 +840,50 @@ def _train_torch_model(
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     history_path = output_path.with_name(f"{output_path.stem}_history.jsonl")
-    if history_path.exists():
-        history_path.unlink()
+    tracker = _create_training_tracker(
+        tracking_backend,
+        history_path=history_path,
+        aim_repo=aim_repo,
+        aim_experiment=aim_experiment,
+        run_name=f"{run_name}:{model_name}",
+        params={
+            "model_name": model_name,
+            "prediction_mode": prediction_mode,
+            "dataset_rows": int(features.shape[0]),
+            "train_rows": int(train_mask.sum()),
+            "validation_rows": int(validation_mask.sum()),
+            "features": int(features.shape[1]),
+            "targets": int(targets.shape[1]),
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "learning_rate": learning_rate,
+            "weight_decay": weight_decay,
+            "hidden_dim": hidden_dim,
+            "seed": seed,
+            "latent_loss_weight": latent_loss_weight,
+            "decoded_pose_weight": decoded_pose_weight,
+            "decoded_torso_weight": decoded_torso_weight,
+            "decoded_shoulder_weight": decoded_shoulder_weight,
+            "decoded_elbow_weight": decoded_elbow_weight,
+            "decoded_arm_direction_weight": decoded_arm_direction_weight,
+            "decoded_stretch_weight": decoded_stretch_weight,
+            "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+            "reach_ratio_limit": reach_ratio_limit,
+            "temporal_velocity_weight": temporal_velocity_weight,
+            "temporal_acceleration_weight": temporal_acceleration_weight,
+            "temporal_jerk_weight": temporal_jerk_weight,
+            "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+            "pole_velocity_weight": pole_velocity_weight,
+            "pole_excess_jerk_weight": pole_excess_jerk_weight,
+            "temporal_loss_windows": effective_temporal_loss_windows,
+            "temporal_excess_ratio": temporal_excess_ratio,
+            "temporal_excess_margin": temporal_excess_margin,
+            "disabled_target_groups": sorted(active_disabled_target_groups),
+            "decoded_decoder": decoded_decoder,
+            "device": str(device),
+        },
+    )
+    tracking_metadata = tracker.metadata()
 
     start = time.perf_counter()
 
@@ -784,7 +956,7 @@ def _train_torch_model(
         train_latent_mse=None,
         epoch_seconds=None,
     )
-    _write_jsonl_row(history_path, initial_history_row)
+    tracker.log(initial_history_row)
     initial_loss_value = initial_history_row["validation_mse"]
     if not isinstance(initial_loss_value, int | float):
         raise TypeError("Expected validation_mse in initial training history")
@@ -1016,7 +1188,7 @@ def _train_torch_model(
             train_latent_mse=train_latent_sum / max(1, train_row_count),
             epoch_seconds=time.perf_counter() - epoch_start,
         )
-        _write_jsonl_row(history_path, epoch_history_row)
+        tracker.log(epoch_history_row)
     if device.type == "cuda":
         torch.cuda.synchronize()
     train_seconds = time.perf_counter() - start
@@ -1125,7 +1297,7 @@ def _train_torch_model(
             "temporal_excess_margin": temporal_excess_margin,
             "disabled_target_groups": sorted(active_disabled_target_groups),
             "decoded_decoder": decoded_decoder,
-            "history_path": history_path.as_posix(),
+            **tracking_metadata,
             "model_state_dict": model.state_dict(),
             "feature_names": list(feature_names),
             "target_names": list(target_names),
@@ -1133,6 +1305,7 @@ def _train_torch_model(
         },
         output_path,
     )
+    tracker.close()
     return {
         "model": model_name,
         "device": str(device),
@@ -1142,7 +1315,6 @@ def _train_torch_model(
         "final_validation_mse": final_loss,
         "inference_seconds_per_sample": inference_seconds / max(1, int(validation_mask.sum())),
         "artifact": output_path.as_posix(),
-        "history_path": history_path.as_posix(),
         "prediction_mode": prediction_mode,
         "latent_loss_weight": latent_loss_weight,
         "decoded_pose_weight": decoded_pose_weight,
@@ -1162,6 +1334,7 @@ def _train_torch_model(
         "temporal_excess_margin": temporal_excess_margin,
         "disabled_target_groups": sorted(active_disabled_target_groups),
         "decoded_decoder": decoded_decoder,
+        **tracking_metadata,
         **extra_metrics,
         **_metric_dict(
             targets[validation_mask],
@@ -2722,10 +2895,39 @@ def _tensor_rows(values: Any, indices: Any, *, device: Any) -> Any:
     return selected if selected.device == device else selected.to(device)
 
 
-def _write_jsonl_row(path: Path, row: Mapping[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(row, sort_keys=True) + "\n")
+def _create_training_tracker(
+    backend: TrackingBackend,
+    *,
+    history_path: Path,
+    aim_repo: Path,
+    aim_experiment: str,
+    run_name: str,
+    params: Mapping[str, object],
+) -> TrainingTracker:
+    if backend == "jsonl":
+        return JsonlTrainingTracker(history_path)
+    if backend == "aim":
+        return AimTrainingTracker(
+            repo=aim_repo,
+            experiment=aim_experiment,
+            run_name=run_name,
+            params=params,
+        )
+    return NullTrainingTracker()
+
+
+def _jsonable(value: object) -> object:
+    if isinstance(value, Path):
+        return value.as_posix()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, set):
+        return sorted(_jsonable(item) for item in value)
+    if isinstance(value, tuple | list):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 def _cuda_memory_metrics(torch: Any, device: Any) -> dict[str, float]:

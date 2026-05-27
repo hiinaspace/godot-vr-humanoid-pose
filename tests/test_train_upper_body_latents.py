@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from collections.abc import Mapping
+from pathlib import Path
 from typing import cast
 
 import polars as pl
@@ -112,6 +113,29 @@ def test_torch_tcn_saves_absolute_chain_artifact(tmp_path) -> None:
     assert leaderboard["torch_tcn"]["prediction_mode"] == "absolute"
     assert (tmp_path / "models" / "torch_tcn.pt").exists()
     assert (tmp_path / "models" / "torch_tcn_history.jsonl").exists()
+
+
+def test_aim_tracking_backend_requires_importable_aim(tmp_path, monkeypatch) -> None:
+    from validation.scripts import train_upper_body_latents
+
+    original_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name: str, package: str | None = None) -> object | None:
+        if name == "aim":
+            return None
+        return original_find_spec(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+
+    with pytest.raises(RuntimeError, match="Aim tracking was requested"):
+        train_upper_body_latents._create_training_tracker(
+            "aim",
+            history_path=tmp_path / "unused.jsonl",
+            aim_repo=Path(".cache/ml/aim"),
+            aim_experiment="test",
+            run_name="test-run",
+            params={"model_name": "torch_mlp"},
+        )
 
 
 def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:

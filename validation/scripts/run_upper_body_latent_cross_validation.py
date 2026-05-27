@@ -13,9 +13,12 @@ from validation.scripts.run_learned_upper_body_validation import (
     run_learned_upper_body_validation,
 )
 from validation.scripts.train_upper_body_latents import (
+    DEFAULT_AIM_EXPERIMENT,
+    DEFAULT_AIM_REPO,
     DEFAULT_DATASET_DIR,
     DEFAULT_OUTPUT_DIR,
     TorchModelName,
+    TrackingBackend,
     load_dataset,
     train_upper_body_latents,
 )
@@ -52,6 +55,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--allow-cpu", action="store_true")
+    parser.add_argument(
+        "--tracking-backend",
+        choices=("jsonl", "aim", "none"),
+        default="jsonl",
+        help="Per-epoch tracking backend for Torch models trained in each fold.",
+    )
+    parser.add_argument("--aim-repo", type=Path, default=DEFAULT_AIM_REPO)
+    parser.add_argument("--aim-experiment", default=DEFAULT_AIM_EXPERIMENT)
+    parser.add_argument("--run-name", help="Optional run name prefix for tracked fold models.")
     parser.add_argument("--xgboost-estimators", type=int, default=256)
     parser.add_argument("--latent-loss-weight", type=float, default=1.0)
     parser.add_argument("--decoded-pose-weight", type=float, default=0.0)
@@ -125,6 +137,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         hidden_dim=max(8, args.hidden_dim),
         seed=args.seed,
         allow_cpu=args.allow_cpu,
+        tracking_backend=cast(TrackingBackend, args.tracking_backend),
+        aim_repo=args.aim_repo,
+        aim_experiment=args.aim_experiment,
+        run_name=args.run_name,
         xgboost_estimators=max(1, args.xgboost_estimators),
         latent_loss_weight=max(0.0, args.latent_loss_weight),
         decoded_pose_weight=max(0.0, args.decoded_pose_weight),
@@ -167,6 +183,10 @@ def run_upper_body_latent_cross_validation(
     hidden_dim: int = 256,
     seed: int = 0,
     allow_cpu: bool = False,
+    tracking_backend: TrackingBackend = "jsonl",
+    aim_repo: Path = DEFAULT_AIM_REPO,
+    aim_experiment: str = DEFAULT_AIM_EXPERIMENT,
+    run_name: str | None = None,
     xgboost_estimators: int = 256,
     residual_regularization_weight: float = 1e-3,
     residual_scale: float = 1.0,
@@ -218,6 +238,10 @@ def run_upper_body_latent_cross_validation(
             hidden_dim=hidden_dim,
             seed=seed + fold_index,
             allow_cpu=allow_cpu,
+            tracking_backend=tracking_backend,
+            aim_repo=aim_repo,
+            aim_experiment=aim_experiment,
+            run_name=f"{run_name or output_dir.name}:fold_{fold_index:02d}",
             xgboost_estimators=xgboost_estimators,
             residual_regularization_weight=residual_regularization_weight,
             residual_scale=residual_scale,
@@ -271,6 +295,10 @@ def run_upper_body_latent_cross_validation(
             "subjects": subjects,
             "models": list(model_names),
             "total_seconds": time.perf_counter() - start,
+            "tracking_backend": tracking_backend,
+            "aim_repo": aim_repo.as_posix(),
+            "aim_experiment": aim_experiment,
+            "run_name": run_name,
             "latent_leaderboard": _aggregate_latent_leaderboard(fold_reports),
             "downstream": _aggregate_downstream(fold_reports),
         },
