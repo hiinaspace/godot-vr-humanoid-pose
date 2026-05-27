@@ -146,7 +146,11 @@ masked when the arm is near straight. Rows also include local reference and heur
 points plus local heuristic base-pose context for decoded post-IK losses. When
 that context is present, Torch training decodes predicted latents through the
 differentiable runtime arm/torso chain instead of the older approximate
-surrogate. Decoded temporal losses penalize velocity, acceleration, and jerk,
+surrogate. Rows also include auxiliary `upper_body_fk_v1` targets: head-yaw-local
+hips position/rotation plus upper-body parent-relative 6D joint rotations. Those
+FK targets are not used by the default trainer yet; they are the next
+representation path toward a rotation-plus-FK objective. Decoded temporal losses
+penalize velocity, acceleration, and jerk,
 and the optional temporal excess loss penalizes output jerk only when it exceeds
 reference jerk by a configured ratio. Pole temporal losses compare elbow bend
 direction velocity/jerk, and the reach hinge penalizes shoulder-hand distances

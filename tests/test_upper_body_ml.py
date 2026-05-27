@@ -20,6 +20,8 @@ from validation.vr_pose_validation.parquet_cache import (
 from validation.vr_pose_validation.synthetic_trackers import generate_three_point_samples
 from validation.vr_pose_validation.types import AvatarCalibration, GroundingContext
 from validation.vr_pose_validation.upper_body_ml import (
+    FK_TARGET_NAMES,
+    FK_TARGET_SCHEMA,
     RUNTIME_DECODER_CONTEXT_JOINTS,
     TARGET_SCHEMA,
     SparseWindowConfig,
@@ -27,11 +29,13 @@ from validation.vr_pose_validation.upper_body_ml import (
     apply_upper_body_latents,
     build_sparse_window_dataset,
     elbow_pole_vector,
+    extract_upper_body_fk_targets,
     extract_upper_body_latents,
     feature_schema,
     rotation6d,
     split_for_subject,
     yaw_basis_from_rotation,
+    yaw_rotated_pose_frame,
 )
 
 
@@ -65,16 +69,18 @@ def test_sparse_window_export_writes_causal_rows_and_heuristic_latents(tmp_path)
     assert rows[0]["split"] == split_for_subject("01", 3)
     assert "heuristic_left_elbow_pole_x" in rows[0]
     assert "left_shoulder_rel_y" in rows[0]
-    assert (
-        __import__("json").loads((output_dir / "schema.json").read_text())["target_schema"]
-        == TARGET_SCHEMA
-    )
+    schema = __import__("json").loads((output_dir / "schema.json").read_text())
+    assert schema["target_schema"] == TARGET_SCHEMA
+    assert schema["fk_target_schema"] == FK_TARGET_SCHEMA
+    assert schema["fk_target_names"] == list(FK_TARGET_NAMES)
     assert rows[0]["reference_left_elbow_valid"] == 1.0
     assert rows[0]["reference_neck_valid"] == 1.0
     assert rows[0]["heuristic_left_elbow_valid"] == 1.0
     assert rows[0]["heuristic_context_hips_valid"] == 1.0
     assert rows[0]["heuristic_context_left_hand_valid"] == 1.0
     assert rows[0]["reference_left_shoulder_position_x"] == approx(0.22)
+    assert rows[0]["fk_hips_rotation6d_0_mask"] == 1.0
+    assert rows[0]["fk_left_elbow_local_rotation6d_0_mask"] == 1.0
 
 
 def test_sparse_window_export_writes_loadable_shards(tmp_path) -> None:
@@ -123,6 +129,40 @@ def test_rotation6d_is_independent_of_quaternion_sign() -> None:
     basis = yaw_basis_from_rotation(rotation)
 
     assert rotation6d(rotation, basis=basis) == approx(rotation6d(negated, basis=basis))
+
+
+def test_upper_body_fk_targets_are_yaw_invariant() -> None:
+    frame = _pose_frame(0.0)
+    rotated = yaw_rotated_pose_frame(frame, 137.0)
+
+    original_targets = extract_upper_body_fk_targets(
+        frame,
+        AvatarCalibration(human_height_m=1.8),
+    )
+    rotated_targets = extract_upper_body_fk_targets(
+        rotated,
+        AvatarCalibration(human_height_m=1.8),
+    )
+
+    assert original_targets.masks == rotated_targets.masks
+    for name in FK_TARGET_NAMES:
+        assert rotated_targets.values[name] == approx(original_targets.values[name], abs=1e-6)
+
+
+def test_upper_body_fk_targets_encode_local_identity_rotations() -> None:
+    targets = extract_upper_body_fk_targets(
+        _pose_frame(0.0),
+        AvatarCalibration(human_height_m=1.8),
+    )
+
+    assert (
+        targets.values["fk_left_elbow_local_rotation6d_0"],
+        targets.values["fk_left_elbow_local_rotation6d_1"],
+        targets.values["fk_left_elbow_local_rotation6d_2"],
+        targets.values["fk_left_elbow_local_rotation6d_3"],
+        targets.values["fk_left_elbow_local_rotation6d_4"],
+        targets.values["fk_left_elbow_local_rotation6d_5"],
+    ) == approx((0.0, 0.0, 1.0, 0.0, 1.0, 0.0), abs=1e-6)
 
 
 def test_upper_body_sparse_representation_invariance_smoke() -> None:

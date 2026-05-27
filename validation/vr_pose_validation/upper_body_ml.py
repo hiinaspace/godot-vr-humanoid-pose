@@ -19,10 +19,12 @@ from validation.vr_pose_validation.baseline import EstimatorName, create_estimat
 from validation.vr_pose_validation.calibration import calibration_from_reference_frames
 from validation.vr_pose_validation.cmu_metadata import ActivityClass, EnvironmentSplit
 from validation.vr_pose_validation.geometry import (
+    Quaternion,
     Transform,
     Vector3,
     add,
     axis_name_quaternion,
+    conjugate_quaternion,
     cross,
     distance,
     dot,
@@ -71,6 +73,7 @@ DEFAULT_CLEAN_ACTIVITY_CLASSES: tuple[ActivityClass, ...] = (
 )
 EXCLUDED_TAGS = frozenset(("data_issue", "parse_issue", "inverted_segment"))
 TARGET_SCHEMA = "upper_body_chain_v1"
+FK_TARGET_SCHEMA = "upper_body_fk_v1"
 TARGET_NAMES = (
     "chest_rel_x",
     "chest_rel_y",
@@ -118,6 +121,50 @@ TARGET_GROUPS = {
     ),
 }
 MASK_NAMES = tuple(f"{name}_mask" for name in TARGET_NAMES)
+FK_CHAIN_PARENTS = {
+    "spine": "hips",
+    "chest": "spine",
+    "head": "chest",
+    "left_shoulder": "chest",
+    "left_elbow": "left_shoulder",
+    "left_hand": "left_elbow",
+    "right_shoulder": "chest",
+    "right_elbow": "right_shoulder",
+    "right_hand": "right_elbow",
+}
+FK_TARGET_NAMES = (
+    *(f"fk_hips_rel_{component}" for component in ("x", "y", "z")),
+    *(f"fk_hips_rotation6d_{index}" for index in range(6)),
+    *(
+        f"fk_{joint_name}_local_rotation6d_{index}"
+        for joint_name in FK_CHAIN_PARENTS
+        for index in range(6)
+    ),
+)
+FK_MASK_NAMES = tuple(f"{name}_mask" for name in FK_TARGET_NAMES)
+FK_TARGET_GROUPS = {
+    "global": (
+        *(f"fk_hips_rel_{component}" for component in ("x", "y", "z")),
+        *(f"fk_hips_rotation6d_{index}" for index in range(6)),
+    ),
+    "torso": tuple(
+        f"fk_{joint_name}_local_rotation6d_{index}"
+        for joint_name in ("spine", "chest", "head")
+        for index in range(6)
+    ),
+    "arm": tuple(
+        f"fk_{joint_name}_local_rotation6d_{index}"
+        for joint_name in (
+            "left_shoulder",
+            "left_elbow",
+            "left_hand",
+            "right_shoulder",
+            "right_elbow",
+            "right_hand",
+        )
+        for index in range(6)
+    ),
+}
 STATIC_CALIBRATION_FEATURE_NAMES = (
     "calibration_human_height_m",
     "calibration_shoulder_width_m",
@@ -183,6 +230,12 @@ class SparseWindowExportSummary:
 
 @dataclass(frozen=True, slots=True)
 class UpperBodyLatents:
+    values: dict[str, float]
+    masks: dict[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class UpperBodyFkTargets:
     values: dict[str, float]
     masks: dict[str, float]
 
@@ -409,6 +462,10 @@ def build_sparse_window_dataset(
         "mask_names": list(MASK_NAMES),
         "target_schema": TARGET_SCHEMA,
         "target_groups": {key: list(value) for key, value in TARGET_GROUPS.items()},
+        "fk_target_names": list(FK_TARGET_NAMES),
+        "fk_mask_names": list(FK_MASK_NAMES),
+        "fk_target_schema": FK_TARGET_SCHEMA,
+        "fk_target_groups": {key: list(value) for key, value in FK_TARGET_GROUPS.items()},
         "windows_path": "windows_shards/*.parquet" if wrote_shards else "windows.parquet",
         "config": asdict(effective_config),
     }
@@ -599,11 +656,69 @@ def extract_upper_body_latents(
     return UpperBodyLatents(values=values, masks=masks)
 
 
+def extract_upper_body_fk_targets(
+    joints: Mapping[str, Transform],
+    calibration: AvatarCalibration | None = None,
+) -> UpperBodyFkTargets:
+    """Extract AvatarPoser-style global plus local rotation targets.
+
+    The existing chain latents predict point anchors. These FK targets keep a
+    separate global stabilizer target for the hips and local 6D rotations for
+    the upper-body kinematic chain, so a later model can train through FK
+    without using head-relative point anchors as its only representation.
+    """
+
+    values = {name: 0.0 for name in FK_TARGET_NAMES}
+    masks = {name: 0.0 for name in FK_TARGET_NAMES}
+    head = joints.get("head")
+    hips = joints.get("hips")
+    if head is None or hips is None:
+        return UpperBodyFkTargets(values=values, masks=masks)
+
+    effective_calibration = calibration or AvatarCalibration()
+    height = max(0.1, effective_calibration.human_height_m)
+    head_basis = yaw_basis_from_rotation(head.rotation)
+    hips_rel = _head_relative_position(
+        hips.position,
+        origin=head.position,
+        basis=head_basis,
+        height_m=height,
+    )
+    _set_vector_target(values, masks, "fk_hips_rel", hips_rel)
+    _set_sequence_target(
+        values,
+        masks,
+        "fk_hips_rotation6d",
+        rotation6d(hips.rotation, basis=head_basis),
+    )
+
+    for joint_name, parent_name in FK_CHAIN_PARENTS.items():
+        joint = joints.get(joint_name)
+        parent = joints.get(parent_name)
+        if joint is None or parent is None:
+            continue
+        local_rotation = _local_rotation(parent.rotation, joint.rotation)
+        _set_sequence_target(
+            values,
+            masks,
+            f"fk_{joint_name}_local_rotation6d",
+            rotation6d(local_rotation, basis=IDENTITY_BASIS),
+        )
+    return UpperBodyFkTargets(values=values, masks=masks)
+
+
 @dataclass(frozen=True, slots=True)
 class Basis3:
     right: Vector3
     up: Vector3
     forward: Vector3
+
+
+IDENTITY_BASIS = Basis3(
+    right=(1.0, 0.0, 0.0),
+    up=(0.0, 1.0, 0.0),
+    forward=(0.0, 0.0, 1.0),
+)
 
 
 def yaw_basis_from_rotation(rotation: tuple[float, float, float, float]) -> Basis3:
@@ -677,6 +792,48 @@ def _vector_from_basis(vector: Vector3, basis: Basis3) -> Vector3:
         add(scale(basis.right, vector[0]), scale(basis.up, vector[1])),
         scale(basis.forward, vector[2]),
     )
+
+
+def _local_rotation(parent_rotation: Quaternion, child_rotation: Quaternion) -> Quaternion:
+    return _normalize_quaternion(
+        multiply_quaternion(conjugate_quaternion(parent_rotation), child_rotation)
+    )
+
+
+def _normalize_quaternion(rotation: Quaternion) -> Quaternion:
+    magnitude = sqrt(sum(component * component for component in rotation))
+    if magnitude <= 1e-9:
+        return (0.0, 0.0, 0.0, 1.0)
+    return (
+        rotation[0] / magnitude,
+        rotation[1] / magnitude,
+        rotation[2] / magnitude,
+        rotation[3] / magnitude,
+    )
+
+
+def _set_vector_target(
+    values: dict[str, float],
+    masks: dict[str, float],
+    prefix: str,
+    vector: Vector3,
+) -> None:
+    for component, value in zip(("x", "y", "z"), vector, strict=True):
+        name = f"{prefix}_{component}"
+        values[name] = float(value)
+        masks[name] = 1.0
+
+
+def _set_sequence_target(
+    values: dict[str, float],
+    masks: dict[str, float],
+    prefix: str,
+    sequence: Sequence[float],
+) -> None:
+    for index, value in enumerate(sequence):
+        name = f"{prefix}_{index}"
+        values[name] = float(value)
+        masks[name] = 1.0
 
 
 def calibration_feature_values(calibration: AvatarCalibration | None = None) -> list[float]:
@@ -954,6 +1111,9 @@ def _export_clip_windows(
     target_latents = [
         extract_upper_body_latents(frame.joints, calibration) for frame in cached_frames
     ]
+    fk_targets = [
+        extract_upper_body_fk_targets(frame.joints, calibration) for frame in cached_frames
+    ]
     heuristic_latents = [
         extract_upper_body_latents(pose_joints(pose), calibration) for pose in estimated_poses
     ]
@@ -1011,6 +1171,10 @@ def _export_clip_windows(
             row[f"{name}_mask"] = target.masks[name]
             row[f"heuristic_{name}"] = heuristic.values[name]
             row[f"heuristic_{name}_mask"] = heuristic.masks[name]
+        fk_target = fk_targets[center_index]
+        for name in FK_TARGET_NAMES:
+            row[name] = fk_target.values[name]
+            row[f"{name}_mask"] = fk_target.masks[name]
         rows.append(row)
     return rows
 
@@ -1202,6 +1366,9 @@ def _empty_windows_frame(feature_names: Sequence[str]) -> pl.DataFrame:
         schema[f"{name}_mask"] = pl.Float64
         schema[f"heuristic_{name}"] = pl.Float64
         schema[f"heuristic_{name}_mask"] = pl.Float64
+    for name in FK_TARGET_NAMES:
+        schema[name] = pl.Float64
+        schema[f"{name}_mask"] = pl.Float64
     for prefix in ("reference", "heuristic"):
         for joint_name in DECODED_REFERENCE_JOINTS:
             for component in ("x", "y", "z"):
