@@ -193,6 +193,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--max-clips",
+        type=int,
+        help="Load only the first N clips from the sparse-window cache for bounded-memory runs.",
+    )
+    parser.add_argument(
+        "--max-rows",
+        type=int,
+        help="Load only the first N rows from the sparse-window cache for bounded-memory runs.",
+    )
+    parser.add_argument(
         "--target-mode",
         choices=("chain", "fk"),
         default="chain",
@@ -274,6 +284,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         weight_decay=args.weight_decay,
         hidden_dim=max(8, args.hidden_dim),
         seed=args.seed,
+        max_clips=args.max_clips,
+        max_rows=args.max_rows,
         target_mode=cast(TargetMode, args.target_mode),
         allow_cpu=args.allow_cpu,
         tracking_backend=cast(TrackingBackend, args.tracking_backend),
@@ -319,6 +331,8 @@ def train_upper_body_latents(
     weight_decay: float = 1e-4,
     hidden_dim: int = 256,
     seed: int = 0,
+    max_clips: int | None = None,
+    max_rows: int | None = None,
     target_mode: TargetMode = "chain",
     allow_cpu: bool = False,
     tracking_backend: TrackingBackend = "jsonl",
@@ -353,7 +367,7 @@ def train_upper_body_latents(
     temporal_excess_margin: float = 0.0,
     disabled_target_groups: set[str] | None = None,
 ) -> dict[str, object]:
-    dataset = load_dataset(dataset_dir)
+    dataset = load_dataset(dataset_dir, max_clips=max_clips, max_rows=max_rows)
     dataset = _dataset_for_target_mode(dataset, target_mode)
     torch = _import_torch()
     device = _torch_device(torch, allow_cpu=allow_cpu)
@@ -380,6 +394,8 @@ def train_upper_body_latents(
         "aim_repo": aim_repo.as_posix(),
         "aim_experiment": aim_experiment,
         "run_name": run_name,
+        "max_clips": max_clips,
+        "max_rows": max_rows,
         "validation_subjects": sorted(validation_subjects or []),
         "latent_loss_weight": latent_loss_weight,
         "decoded_pose_weight": decoded_pose_weight,
@@ -508,7 +524,12 @@ def train_upper_body_latents(
     return report
 
 
-def load_dataset(dataset_dir: Path) -> LoadedDataset:
+def load_dataset(
+    dataset_dir: Path,
+    *,
+    max_clips: int | None = None,
+    max_rows: int | None = None,
+) -> LoadedDataset:
     schema_path = dataset_dir / "schema.json"
     if not schema_path.exists():
         raise FileNotFoundError(
@@ -524,7 +545,11 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
     feature_names = [str(name) for name in schema["feature_names"]]
     target_names = [str(name) for name in schema.get("target_names", TARGET_NAMES)]
     fk_target_names = [str(name) for name in schema.get("fk_target_names", FK_TARGET_NAMES)]
-    dataframe = read_sparse_window_dataframe(dataset_dir)
+    dataframe = read_sparse_window_dataframe(
+        dataset_dir,
+        max_clips=max_clips,
+        max_rows=max_rows,
+    )
     if dataframe.is_empty():
         raise ValueError(f"No training rows found in {dataset_dir}")
     features = _feature_matrix(dataframe, feature_count=len(feature_names))

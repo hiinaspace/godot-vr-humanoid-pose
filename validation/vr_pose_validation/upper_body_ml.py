@@ -11,7 +11,7 @@ from hashlib import sha1
 from math import isfinite, sqrt
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 import polars as pl
 
@@ -591,16 +591,41 @@ def _float32_window_columns() -> tuple[str, ...]:
     return tuple(columns)
 
 
-def read_sparse_window_dataframe(dataset_dir: Path) -> pl.DataFrame:
+def read_sparse_window_dataframe(
+    dataset_dir: Path,
+    *,
+    max_rows: int | None = None,
+    max_clips: int | None = None,
+) -> pl.DataFrame:
     windows_path = dataset_dir / "windows.parquet"
     if windows_path.exists():
-        return pl.read_parquet(windows_path)
+        scan = pl.scan_parquet(windows_path)
+        return _collect_sparse_window_scan(scan, max_rows=max_rows, max_clips=max_clips)
     shard_dir = dataset_dir / "windows_shards"
     if shard_dir.exists():
-        return pl.read_parquet(str(shard_dir / "*.parquet"))
+        scan = pl.scan_parquet(str(shard_dir / "*.parquet"))
+        return _collect_sparse_window_scan(scan, max_rows=max_rows, max_clips=max_clips)
     raise FileNotFoundError(
         f"Expected sparse-window dataset at {dataset_dir}; run build_sparse_window_dataset"
     )
+
+
+def _collect_sparse_window_scan(
+    scan: pl.LazyFrame,
+    *,
+    max_rows: int | None,
+    max_clips: int | None,
+) -> pl.DataFrame:
+    if max_clips is not None and max_clips > 0:
+        clip_frame = cast(
+            pl.DataFrame,
+            scan.select("clip").unique(maintain_order=True).limit(max_clips).collect(),
+        )
+        clip_ids = clip_frame["clip"].to_list()
+        scan = scan.filter(pl.col("clip").is_in(clip_ids))
+    if max_rows is not None and max_rows > 0:
+        scan = scan.head(max_rows)
+    return cast(pl.DataFrame, scan.collect())
 
 
 def feature_schema(window_size: int) -> list[str]:

@@ -461,6 +461,20 @@ def test_validation_subject_override_prevents_subject_leakage(tmp_path) -> None:
     assert train_subjects.isdisjoint(validation_subjects)
 
 
+def test_load_dataset_can_limit_rows_and_clips(tmp_path) -> None:
+    pytest.importorskip("numpy")
+
+    from validation.scripts.train_upper_body_latents import load_dataset
+
+    dataset_dir = _write_synthetic_dataset(tmp_path, row_count=32, clip_mod=4)
+    row_limited = load_dataset(dataset_dir, max_rows=5)
+    clip_limited = load_dataset(dataset_dir, max_clips=2)
+
+    assert row_limited.features.shape[0] == 5
+    assert clip_limited.features.shape[0] == 16
+    assert set(clip_limited.clips.tolist()) == {"00_01", "01_01"}
+
+
 def test_cross_validation_runner_writes_subject_folds(tmp_path) -> None:
     pytest.importorskip("numpy")
     pytest.importorskip("torch")

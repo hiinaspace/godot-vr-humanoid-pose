@@ -163,6 +163,9 @@ direction velocity/jerk, and the reach hinge penalizes shoulder-hand distances
 near full extension before the two-bone IK singularity. Training reports compare the constant
 baseline, Torch linear, Torch MLP, Torch TCN, and native XGBoost CUDA paths.
 Torch CUDA is required by default; pass `--allow-cpu` only for smoke tests.
+For full dense caches, use `--max-clips` or `--max-rows` until the trainer has
+a streaming/batch-transfer dataset path; those limits filter the existing
+Parquet cache without rebuilding it.
 
 For shoulder/elbow experiments, use decoded losses against the exported
 reference points instead of only latent MAE:
