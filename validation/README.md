@@ -136,9 +136,12 @@ The sparse-window exporter writes ignored Parquet artifacts under `.cache/ml/`.
 By default the CLI parallelizes by clip and writes `windows_shards/*.parquet`;
 pass `--workers 1 --shard-rows 0` for the older single-file path. The default
 worker count is capped at 2 for `--stride 1` dense exports to avoid queuing too
-many large clip row batches in RAM; pass a higher `--workers` value only after
-watching memory usage. Use `--stride 1` for dense temporal training; larger
-strides are useful for quicker representation smoke tests. Rows use causal HMD/controller windows, static
+many large clip row batches in RAM, but the expanded FK schema is still safest
+with `--workers 1 --shard-rows 5000` for full-cache regeneration. Use
+`--stride 1` for dense temporal training; larger strides are useful for quicker
+representation smoke tests. Numeric training columns are stored as Float32
+Parquet values; dense windows are still large because each stride-1 row
+materializes the full causal window. Rows use causal HMD/controller windows, static
 calibration features such as
 height/shoulder width/arm lengths, and `upper_body_chain_v1` targets: normalized
 head-yaw-relative chest, neck, shoulder anchors, plus elbow pole directions
@@ -147,9 +150,12 @@ points plus local heuristic base-pose context for decoded post-IK losses. When
 that context is present, Torch training decodes predicted latents through the
 differentiable runtime arm/torso chain instead of the older approximate
 surrogate. Rows also include auxiliary `upper_body_fk_v1` targets: head-yaw-local
-hips position/rotation plus upper-body parent-relative 6D joint rotations. Those
-FK targets are not used by the default trainer yet; they are the next
-representation path toward a rotation-plus-FK objective. Decoded temporal losses
+hips position/rotation plus upper-body parent-relative 6D joint rotations. Use
+`--target-mode fk --fk-decoded-pose-weight <weight>` to train those rotation
+targets with a differentiable FK point objective against the exported reference
+chest/neck/shoulder/elbow points. FK mode also reports decoded position,
+velocity, acceleration, and jerk metrics, but it is not wired into the runtime
+learned-estimator validation path yet. Decoded temporal losses
 penalize velocity, acceleration, and jerk,
 and the optional temporal excess loss penalizes output jerk only when it exceeds
 reference jerk by a configured ratio. Pole temporal losses compare elbow bend

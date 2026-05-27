@@ -8,7 +8,14 @@ from typing import cast
 import polars as pl
 import pytest
 
-from validation.vr_pose_validation.upper_body_ml import TARGET_NAMES, TARGET_SCHEMA, feature_schema
+from validation.vr_pose_validation.upper_body_ml import (
+    DECODED_REFERENCE_JOINTS,
+    FK_TARGET_NAMES,
+    FK_TARGET_SCHEMA,
+    TARGET_NAMES,
+    TARGET_SCHEMA,
+    feature_schema,
+)
 
 
 def test_sparse_window_layout_infers_tcn_shape() -> None:
@@ -19,7 +26,7 @@ def test_sparse_window_layout_infers_tcn_shape() -> None:
 
     assert layout.window_size == 3
     assert layout.per_frame_dim == 57
-    assert layout.static_dim == 7
+    assert layout.static_dim == 11
 
 
 def test_torch_linear_smoke_reduces_synthetic_validation_loss(tmp_path) -> None:
@@ -93,6 +100,7 @@ def test_torch_tcn_saves_absolute_chain_artifact(tmp_path) -> None:
     dataset_dir = _write_synthetic_dataset(
         tmp_path,
         feature_names=feature_schema(3),
+        clip_mod=1,
         row_count=32,
     )
     report = train_upper_body_latents(
@@ -113,6 +121,44 @@ def test_torch_tcn_saves_absolute_chain_artifact(tmp_path) -> None:
     assert leaderboard["torch_tcn"]["prediction_mode"] == "absolute"
     assert (tmp_path / "models" / "torch_tcn.pt").exists()
     assert (tmp_path / "models" / "torch_tcn_history.jsonl").exists()
+
+
+def test_torch_fk_mode_trains_against_fk_targets(tmp_path) -> None:
+    pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import train_upper_body_latents
+
+    dataset_dir = _write_synthetic_dataset(
+        tmp_path,
+        feature_names=feature_schema(3),
+        row_count=32,
+    )
+    report = train_upper_body_latents(
+        dataset_dir=dataset_dir,
+        output_dir=tmp_path / "models",
+        model_names=("torch_mlp",),
+        target_mode="fk",
+        epochs=2,
+        batch_size=16,
+        learning_rate=1e-2,
+        weight_decay=0.0,
+        hidden_dim=16,
+        allow_cpu=True,
+        seed=3,
+        fk_decoded_pose_weight=0.1,
+        temporal_velocity_weight=0.01,
+        temporal_loss_windows=8,
+    )
+    leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
+    leaderboard = {row["model"]: row for row in leaderboard_rows}
+    decoded_mse = leaderboard["torch_mlp"]["validation_fk_decoded_position_mse"]
+
+    assert leaderboard["torch_mlp"]["decoded_decoder"] == "fk"
+    assert isinstance(decoded_mse, int | float)
+    assert decoded_mse >= 0.0
+    assert "validation_decoded_velocity_mse" in leaderboard["torch_mlp"]
+    assert (tmp_path / "models" / "torch_mlp.pt").exists()
 
 
 def test_aim_tracking_backend_requires_importable_aim(tmp_path, monkeypatch) -> None:
@@ -451,6 +497,7 @@ def _write_synthetic_dataset(
     *,
     row_count: int = 80,
     feature_names: list[str] | None = None,
+    clip_mod: int = 8,
 ):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
@@ -462,7 +509,7 @@ def _write_synthetic_dataset(
         base = 0.4 * x0 - 0.2 * x1 + 0.1 * x2 + 0.05 * x3
         row = {
             "subject": f"{index % 8:02d}",
-            "clip": f"{index % 8:02d}_01",
+            "clip": f"{index % clip_mod:02d}_01",
             "frame_index": index,
             "timestamp_s": index / 120.0,
             "center_row_index": index,
@@ -478,6 +525,13 @@ def _write_synthetic_dataset(
             row[f"{target_name}_mask"] = 1.0
             row[f"heuristic_{target_name}"] = target_value - 0.15
             row[f"heuristic_{target_name}_mask"] = 1.0
+        for target_index, target_name in enumerate(FK_TARGET_NAMES):
+            row[target_name] = _synthetic_fk_target_value(target_name, base, target_index)
+            row[f"{target_name}_mask"] = 1.0
+        for joint_name, position in _synthetic_decoded_reference_points(base).items():
+            for component, value in zip(("x", "y", "z"), position, strict=True):
+                row[f"reference_{joint_name}_position_{component}"] = value
+            row[f"reference_{joint_name}_valid"] = 1.0
         rows.append(row)
     pl.DataFrame(rows).write_parquet(dataset_dir / "windows.parquet")
     (dataset_dir / "schema.json").write_text(
@@ -487,6 +541,9 @@ def _write_synthetic_dataset(
                 "target_names": list(TARGET_NAMES),
                 "mask_names": [f"{name}_mask" for name in TARGET_NAMES],
                 "target_schema": TARGET_SCHEMA,
+                "fk_target_names": list(FK_TARGET_NAMES),
+                "fk_mask_names": [f"{name}_mask" for name in FK_TARGET_NAMES],
+                "fk_target_schema": FK_TARGET_SCHEMA,
             },
             indent=2,
             sort_keys=True,
@@ -527,6 +584,14 @@ def _synthetic_features(feature_names: list[str], index: int) -> list[float]:
             values.append(0.15 + 0.01 * (index % 4))
         elif name == "calibration_human_height_m":
             values.append(1.8)
+        elif name == "calibration_head_to_neck_m":
+            values.append(0.10)
+        elif name == "calibration_neck_to_chest_m":
+            values.append(0.14)
+        elif name == "calibration_chest_to_spine_m":
+            values.append(0.20)
+        elif name == "calibration_spine_to_hips_m":
+            values.append(0.22)
         elif name == "calibration_shoulder_width_m":
             values.append(0.4)
         elif name == "calibration_upper_arm_m":
@@ -552,3 +617,29 @@ def _synthetic_target_value(target_name: str, base: float, target_index: int) ->
         sine = 0.4 * base
         return (1.0 - sine * sine) ** 0.5
     return base
+
+
+def _synthetic_fk_target_value(target_name: str, base: float, target_index: int) -> float:
+    del target_index
+    if target_name.startswith("fk_hips_rel_"):
+        if target_name.endswith("_x"):
+            return 0.02 * base
+        if target_name.endswith("_y"):
+            return -0.35 + 0.01 * base
+        return 0.04 * base
+    rotation_component = int(target_name.rsplit("_", maxsplit=1)[1])
+    identity_rotation6d = (0.0, 0.0, 1.0, 0.0, 1.0, 0.0)
+    return identity_rotation6d[rotation_component] + 0.01 * base
+
+
+def _synthetic_decoded_reference_points(base: float) -> dict[str, tuple[float, float, float]]:
+    del base
+    values = {
+        "chest": (0.0, 1.32, 0.0),
+        "neck": (0.0, 1.488, 0.0),
+        "left_shoulder": (0.20, 1.32, 0.0),
+        "right_shoulder": (-0.20, 1.32, 0.0),
+        "left_elbow": (0.50, 1.32, 0.0),
+        "right_elbow": (-0.50, 1.32, 0.0),
+    }
+    return {name: values[name] for name in DECODED_REFERENCE_JOINTS}

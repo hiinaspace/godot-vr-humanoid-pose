@@ -9,20 +9,29 @@ import json
 import math
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
 import numpy as np
+import polars as pl
 
 from validation.vr_pose_validation.torch_upper_body_decoder import (
     RuntimeDecoderFeatureIndices,
     decode_upper_body_runtime_points,
     runtime_decoder_feature_indices,
 )
+from validation.vr_pose_validation.torch_upper_body_fk_decoder import (
+    UpperBodyFkFeatureIndices,
+    decode_upper_body_fk_points,
+    fk_decoded_point_masks,
+    upper_body_fk_feature_indices,
+)
 from validation.vr_pose_validation.torch_upper_body_models import make_torch_upper_body_model
 from validation.vr_pose_validation.upper_body_ml import (
     DECODED_REFERENCE_JOINTS,
+    FK_TARGET_NAMES,
+    FK_TARGET_SCHEMA,
     RUNTIME_DECODER_CONTEXT_JOINTS,
     TARGET_GROUPS,
     TARGET_NAMES,
@@ -42,6 +51,7 @@ TorchModelName = Literal[
     "xgboost",
 ]
 TrackingBackend = Literal["jsonl", "aim", "none"]
+TargetMode = Literal["chain", "fk"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +59,8 @@ class LoadedDataset:
     features: np.ndarray
     targets: np.ndarray
     masks: np.ndarray
+    fk_targets: np.ndarray | None
+    fk_masks: np.ndarray | None
     heuristics: np.ndarray | None
     heuristic_masks: np.ndarray | None
     decoded_reference_points: np.ndarray | None
@@ -62,6 +74,7 @@ class LoadedDataset:
     timestamps_s: np.ndarray
     feature_names: list[str]
     target_names: list[str]
+    fk_target_names: list[str]
 
 
 class TrainingTracker:
@@ -179,6 +192,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--target-mode",
+        choices=("chain", "fk"),
+        default="chain",
+        help="Train existing point/pole chain latents or auxiliary rotation-FK targets.",
+    )
     parser.add_argument("--allow-cpu", action="store_true")
     parser.add_argument(
         "--tracking-backend",
@@ -201,6 +220,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--decoded-arm-direction-weight", type=float, default=0.25)
     parser.add_argument("--decoded-stretch-weight", type=float, default=0.25)
     parser.add_argument("--decoded-reach-hinge-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--fk-decoded-pose-weight",
+        type=float,
+        default=0.0,
+        help="Additional FK-decoded point loss for --target-mode fk.",
+    )
     parser.add_argument("--reach-ratio-limit", type=float, default=0.97)
     parser.add_argument("--surrogate-position-weight", type=float, default=0.0)
     parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
@@ -249,6 +274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         weight_decay=args.weight_decay,
         hidden_dim=max(8, args.hidden_dim),
         seed=args.seed,
+        target_mode=cast(TargetMode, args.target_mode),
         allow_cpu=args.allow_cpu,
         tracking_backend=cast(TrackingBackend, args.tracking_backend),
         aim_repo=args.aim_repo,
@@ -264,6 +290,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         decoded_arm_direction_weight=max(0.0, args.decoded_arm_direction_weight),
         decoded_stretch_weight=max(0.0, args.decoded_stretch_weight),
         decoded_reach_hinge_weight=max(0.0, args.decoded_reach_hinge_weight),
+        fk_decoded_pose_weight=max(0.0, args.fk_decoded_pose_weight),
         reach_ratio_limit=max(0.0, args.reach_ratio_limit),
         surrogate_position_weight=max(0.0, args.surrogate_position_weight),
         temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
@@ -292,6 +319,7 @@ def train_upper_body_latents(
     weight_decay: float = 1e-4,
     hidden_dim: int = 256,
     seed: int = 0,
+    target_mode: TargetMode = "chain",
     allow_cpu: bool = False,
     tracking_backend: TrackingBackend = "jsonl",
     aim_repo: Path = DEFAULT_AIM_REPO,
@@ -311,6 +339,7 @@ def train_upper_body_latents(
     decoded_arm_direction_weight: float = 0.25,
     decoded_stretch_weight: float = 0.25,
     decoded_reach_hinge_weight: float = 0.0,
+    fk_decoded_pose_weight: float = 0.0,
     reach_ratio_limit: float = 0.97,
     surrogate_position_weight: float = 0.0,
     temporal_velocity_weight: float = 0.0,
@@ -325,6 +354,7 @@ def train_upper_body_latents(
     disabled_target_groups: set[str] | None = None,
 ) -> dict[str, object]:
     dataset = load_dataset(dataset_dir)
+    dataset = _dataset_for_target_mode(dataset, target_mode)
     torch = _import_torch()
     device = _torch_device(torch, allow_cpu=allow_cpu)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -345,6 +375,7 @@ def train_upper_body_latents(
         "torch_version": str(torch.__version__),
         "torch_cuda_available": bool(torch.cuda.is_available()),
         "torch_device": str(device),
+        "target_mode": target_mode,
         "tracking_backend": tracking_backend,
         "aim_repo": aim_repo.as_posix(),
         "aim_experiment": aim_experiment,
@@ -358,6 +389,7 @@ def train_upper_body_latents(
         "decoded_arm_direction_weight": decoded_arm_direction_weight,
         "decoded_stretch_weight": decoded_stretch_weight,
         "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+        "fk_decoded_pose_weight": fk_decoded_pose_weight,
         "reach_ratio_limit": reach_ratio_limit,
         "surrogate_position_weight": surrogate_position_weight,
         "temporal_velocity_weight": temporal_velocity_weight,
@@ -451,6 +483,7 @@ def train_upper_body_latents(
                 decoded_arm_direction_weight=decoded_arm_direction_weight,
                 decoded_stretch_weight=decoded_stretch_weight,
                 decoded_reach_hinge_weight=decoded_reach_hinge_weight,
+                fk_decoded_pose_weight=fk_decoded_pose_weight,
                 reach_ratio_limit=reach_ratio_limit,
                 surrogate_position_weight=surrogate_position_weight,
                 temporal_velocity_weight=temporal_velocity_weight,
@@ -490,10 +523,11 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
         )
     feature_names = [str(name) for name in schema["feature_names"]]
     target_names = [str(name) for name in schema.get("target_names", TARGET_NAMES)]
+    fk_target_names = [str(name) for name in schema.get("fk_target_names", FK_TARGET_NAMES)]
     dataframe = read_sparse_window_dataframe(dataset_dir)
     if dataframe.is_empty():
         raise ValueError(f"No training rows found in {dataset_dir}")
-    features = _feature_matrix(dataframe["features"].to_numpy())
+    features = _feature_matrix(dataframe, feature_count=len(feature_names))
     targets = np.asarray(
         dataframe.select(target_names).to_numpy(),
         dtype=np.float32,
@@ -503,6 +537,13 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
         dataframe.select(mask_names).to_numpy(),
         dtype=np.float32,
     )
+    fk_mask_names = [f"{name}_mask" for name in fk_target_names]
+    if all(name in dataframe.columns for name in (*fk_target_names, *fk_mask_names)):
+        fk_targets = np.asarray(dataframe.select(fk_target_names).to_numpy(), dtype=np.float32)
+        fk_masks = np.asarray(dataframe.select(fk_mask_names).to_numpy(), dtype=np.float32)
+    else:
+        fk_targets = None
+        fk_masks = None
     heuristic_names = [f"heuristic_{name}" for name in target_names]
     heuristic_mask_names = [f"heuristic_{name}_mask" for name in target_names]
     if all(name in dataframe.columns for name in (*heuristic_names, *heuristic_mask_names)):
@@ -525,6 +566,8 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
         features=features,
         targets=targets,
         masks=masks,
+        fk_targets=fk_targets,
+        fk_masks=fk_masks,
         heuristics=heuristics,
         heuristic_masks=heuristic_masks,
         decoded_reference_points=decoded_reference_points,
@@ -538,13 +581,35 @@ def load_dataset(dataset_dir: Path) -> LoadedDataset:
         timestamps_s=timestamps_s,
         feature_names=feature_names,
         target_names=target_names,
+        fk_target_names=fk_target_names,
     )
 
 
-def _feature_matrix(values: np.ndarray) -> np.ndarray:
-    if values.size == 0:
+def _dataset_for_target_mode(dataset: LoadedDataset, target_mode: TargetMode) -> LoadedDataset:
+    if target_mode == "chain":
+        return dataset
+    if dataset.fk_targets is None or dataset.fk_masks is None:
+        raise ValueError(
+            f"FK target mode requires {FK_TARGET_SCHEMA} columns; "
+            "regenerate the sparse-window cache."
+        )
+    return replace(
+        dataset,
+        targets=dataset.fk_targets,
+        masks=dataset.fk_masks,
+        heuristics=None,
+        heuristic_masks=None,
+        target_names=dataset.fk_target_names,
+    )
+
+
+def _feature_matrix(dataframe: pl.DataFrame, *, feature_count: int) -> np.ndarray:
+    if dataframe.is_empty():
         return np.empty((0, 0), dtype=np.float32)
-    return np.vstack(cast(Sequence[Any], values)).astype(np.float32, copy=False)
+    feature_array = dataframe.select(pl.col("features").list.to_array(feature_count))[
+        "features"
+    ].to_numpy()
+    return np.asarray(feature_array, dtype=np.float32)
 
 
 def _load_decoded_reference_points(dataframe: Any) -> tuple[np.ndarray | None, np.ndarray | None]:
@@ -672,6 +737,7 @@ def _train_torch_model(
     decoded_arm_direction_weight: float,
     decoded_stretch_weight: float,
     decoded_reach_hinge_weight: float,
+    fk_decoded_pose_weight: float,
     reach_ratio_limit: float,
     surrogate_position_weight: float,
     temporal_velocity_weight: float,
@@ -798,12 +864,18 @@ def _train_torch_model(
     effective_m_val = effective_m_val * group_mask[None, :]
     surrogate_indices = _surrogate_feature_indices(feature_names)
     runtime_decoder_indices = runtime_decoder_feature_indices(feature_names)
+    fk_target_mode = _is_fk_target_names(target_names)
+    fk_feature_indices = upper_body_fk_feature_indices(feature_names)
     decoded_decoder = (
-        "runtime"
-        if runtime_decoder_indices is not None
-        and runtime_context_points_train is not None
-        and runtime_context_masks_train is not None
-        else "surrogate"
+        "fk"
+        if fk_target_mode and fk_feature_indices is not None
+        else (
+            "runtime"
+            if runtime_decoder_indices is not None
+            and runtime_context_points_train is not None
+            and runtime_context_masks_train is not None
+            else "surrogate"
+        )
     )
     train_pairs = torch.as_tensor(
         _temporal_pairs(dataset, train_mask),
@@ -868,6 +940,7 @@ def _train_torch_model(
             "decoded_arm_direction_weight": decoded_arm_direction_weight,
             "decoded_stretch_weight": decoded_stretch_weight,
             "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+            "fk_decoded_pose_weight": fk_decoded_pose_weight,
             "reach_ratio_limit": reach_ratio_limit,
             "temporal_velocity_weight": temporal_velocity_weight,
             "temporal_acceleration_weight": temporal_acceleration_weight,
@@ -999,7 +1072,29 @@ def _train_torch_model(
                     effective_m_train[batch_indices],
                 )
             effective_decoded_weight = decoded_pose_weight + surrogate_position_weight
-            if effective_decoded_weight > 0.0 and surrogate_indices is not None:
+            if (
+                fk_target_mode
+                and fk_decoded_pose_weight > 0.0
+                and fk_feature_indices is not None
+                and decoded_points_train is not None
+                and decoded_masks_train is not None
+            ):
+                batch_raw_features = _tensor_rows(raw_x_train, batch_indices, device=device)
+                loss = loss + fk_decoded_pose_weight * _fk_decoded_pose_loss(
+                    torch,
+                    prediction,
+                    effective_m_train[batch_indices],
+                    batch_raw_features,
+                    decoded_reference_points=decoded_points_train[batch_indices],
+                    decoded_reference_masks=decoded_masks_train[batch_indices],
+                    feature_indices=fk_feature_indices,
+                    target_names=target_names,
+                )
+            elif (
+                not fk_target_mode
+                and effective_decoded_weight > 0.0
+                and surrogate_indices is not None
+            ):
                 batch_raw_features = _tensor_rows(raw_x_train, batch_indices, device=device)
                 loss = loss + effective_decoded_weight * _decoded_pose_loss(
                     torch,
@@ -1062,7 +1157,7 @@ def _train_torch_model(
                     residual_gates=residual_group_gates,
                     max_windows=effective_temporal_loss_windows,
                 )
-            if pole_velocity_weight > 0.0 and train_pairs.numel() > 0:
+            if not fk_target_mode and pole_velocity_weight > 0.0 and train_pairs.numel() > 0:
                 loss = loss + pole_velocity_weight * _pole_temporal_motion_loss(
                     torch,
                     model,
@@ -1079,7 +1174,7 @@ def _train_torch_model(
                     residual_gates=residual_group_gates,
                     max_windows=effective_temporal_loss_windows,
                 )
-            if pole_excess_jerk_weight > 0.0 and train_quads.numel() > 0:
+            if not fk_target_mode and pole_excess_jerk_weight > 0.0 and train_quads.numel() > 0:
                 loss = loss + pole_excess_jerk_weight * _pole_temporal_motion_loss(
                     torch,
                     model,
@@ -1285,6 +1380,7 @@ def _train_torch_model(
             "decoded_arm_direction_weight": decoded_arm_direction_weight,
             "decoded_stretch_weight": decoded_stretch_weight,
             "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+            "fk_decoded_pose_weight": fk_decoded_pose_weight,
             "reach_ratio_limit": reach_ratio_limit,
             "temporal_velocity_weight": temporal_velocity_weight,
             "temporal_acceleration_weight": temporal_acceleration_weight,
@@ -1324,6 +1420,7 @@ def _train_torch_model(
         "decoded_arm_direction_weight": decoded_arm_direction_weight,
         "decoded_stretch_weight": decoded_stretch_weight,
         "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+        "fk_decoded_pose_weight": fk_decoded_pose_weight,
         "reach_ratio_limit": reach_ratio_limit,
         "temporal_jerk_weight": temporal_jerk_weight,
         "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
@@ -1458,6 +1555,8 @@ def _normalize_torch_poles(
     latents: Any,
     target_names: Sequence[str],
 ) -> Any:
+    if not all(f"{side}_elbow_pole_x" in target_names for side in ("left", "right")):
+        return latents
     columns = [latents[:, index] for index in range(latents.shape[1])]
     for side in ("left", "right"):
         indices = [
@@ -1471,6 +1570,10 @@ def _normalize_torch_poles(
         for index in indices:
             columns[index] = columns[index] / magnitude
     return torch.stack(columns, dim=1)
+
+
+def _is_fk_target_names(target_names: Sequence[str]) -> bool:
+    return bool(target_names) and all(name in target_names for name in FK_TARGET_NAMES)
 
 
 def _fit_residual_gates(
@@ -1720,6 +1823,102 @@ def _decoded_pose_loss(
     if total_weight <= 0.0:
         return total
     return total / total_weight
+
+
+def _fk_decoded_pose_loss(
+    torch: Any,
+    prediction: Any,
+    target_mask: Any,
+    raw_features: Any,
+    *,
+    decoded_reference_points: Any,
+    decoded_reference_masks: Any,
+    feature_indices: UpperBodyFkFeatureIndices,
+    target_names: Sequence[str],
+) -> Any:
+    terms = _fk_decoded_pose_terms(
+        torch,
+        prediction,
+        target_mask,
+        raw_features,
+        decoded_reference_points=decoded_reference_points,
+        decoded_reference_masks=decoded_reference_masks,
+        feature_indices=feature_indices,
+        target_names=target_names,
+    )
+    return terms["position_mse"]
+
+
+def _fk_decoded_pose_terms(
+    torch: Any,
+    prediction: Any,
+    target_mask: Any,
+    raw_features: Any,
+    *,
+    decoded_reference_points: Any,
+    decoded_reference_masks: Any,
+    feature_indices: UpperBodyFkFeatureIndices,
+    target_names: Sequence[str],
+) -> dict[str, Any]:
+    prediction_points = decode_upper_body_fk_points(
+        torch,
+        prediction,
+        raw_features,
+        feature_indices=feature_indices,
+        target_names=target_names,
+    )
+    point_masks = decoded_reference_masks * fk_decoded_point_masks(torch, target_mask, target_names)
+    torso_mask = point_masks[:, 0] * point_masks[:, 1]
+    left_shoulder_mask = point_masks[:, 2]
+    right_shoulder_mask = point_masks[:, 3]
+    left_elbow_mask = point_masks[:, 4]
+    right_elbow_mask = point_masks[:, 5]
+    torso_mse = _average_losses(
+        torch,
+        (
+            _masked_point_mse(prediction_points[:, 0], decoded_reference_points[:, 0], torso_mask),
+            _masked_point_mse(prediction_points[:, 1], decoded_reference_points[:, 1], torso_mask),
+        ),
+    )
+    shoulder_mse = _average_losses(
+        torch,
+        (
+            _masked_point_mse(
+                prediction_points[:, 2],
+                decoded_reference_points[:, 2],
+                left_shoulder_mask,
+            ),
+            _masked_point_mse(
+                prediction_points[:, 3],
+                decoded_reference_points[:, 3],
+                right_shoulder_mask,
+            ),
+        ),
+    )
+    elbow_mse = _average_losses(
+        torch,
+        (
+            _masked_point_mse(
+                prediction_points[:, 4],
+                decoded_reference_points[:, 4],
+                left_elbow_mask,
+            ),
+            _masked_point_mse(
+                prediction_points[:, 5],
+                decoded_reference_points[:, 5],
+                right_elbow_mask,
+            ),
+        ),
+    )
+    return {
+        "torso_mse": torso_mse,
+        "shoulder_mse": shoulder_mse,
+        "elbow_mse": elbow_mse,
+        "position_mse": _average_losses(torch, (torso_mse, shoulder_mse, elbow_mse)),
+        "prediction_points": prediction_points,
+        "target_points": decoded_reference_points,
+        "point_masks": point_masks,
+    }
 
 
 def _decoded_pose_terms(
@@ -2130,9 +2329,6 @@ def _decoded_temporal_motion_loss(
     excess_ratio: float = 1.25,
     excess_margin: float = 0.0,
 ) -> Any:
-    surrogate_indices = _surrogate_feature_indices(feature_names)
-    if surrogate_indices is None:
-        return torch.zeros((), dtype=features.dtype, device=features.device)
     if windows.shape[1] != order + 1:
         raise ValueError("Temporal windows must be one frame wider than the derivative order")
     selected_windows = windows[
@@ -2150,34 +2346,78 @@ def _decoded_temporal_motion_loss(
         residual_gates,
         target_names,
     )
-    prediction_points, target_points, point_masks = _decoded_temporal_points(
-        torch,
-        raw_prediction,
-        targets[flat_indices],
-        target_masks[flat_indices],
-        heuristics[flat_indices],
-        flat_raw_features,
-        decoded_reference_points=(
-            decoded_reference_points[flat_indices] if decoded_reference_points is not None else None
-        ),
-        decoded_reference_masks=(
-            decoded_reference_masks[flat_indices] if decoded_reference_masks is not None else None
-        ),
-        runtime_context_points=(
-            runtime_context_points[flat_indices] if runtime_context_points is not None else None
-        ),
-        runtime_context_masks=(
-            runtime_context_masks[flat_indices] if runtime_context_masks is not None else None
-        ),
-        window_count=selected_windows.shape[0],
-        window_width=selected_windows.shape[1],
-        prediction_mode=prediction_mode,
-        residual_scale=residual_scale,
-        residual_smoothing_alpha=residual_smoothing_alpha,
-        runtime_decoder_indices=runtime_decoder_indices,
-        surrogate_indices=surrogate_indices,
-        target_names=target_names,
-    )
+    if _is_fk_target_names(target_names):
+        fk_feature_indices = upper_body_fk_feature_indices(feature_names)
+        if (
+            fk_feature_indices is None
+            or decoded_reference_points is None
+            or decoded_reference_masks is None
+        ):
+            return torch.zeros((), dtype=features.dtype, device=features.device)
+        prediction = _compose_temporal_prediction(
+            torch,
+            raw_prediction,
+            heuristics[flat_indices],
+            window_count=selected_windows.shape[0],
+            window_width=selected_windows.shape[1],
+            prediction_mode=prediction_mode,
+            residual_scale=residual_scale,
+            residual_smoothing_alpha=residual_smoothing_alpha,
+            target_names=target_names,
+        )
+        prediction_points = decode_upper_body_fk_points(
+            torch,
+            prediction,
+            flat_raw_features,
+            feature_indices=fk_feature_indices,
+            target_names=target_names,
+        ).reshape(selected_windows.shape[0], selected_windows.shape[1], -1, 3)
+        target_points = decoded_reference_points[flat_indices].reshape(
+            selected_windows.shape[0],
+            selected_windows.shape[1],
+            -1,
+            3,
+        )
+        point_masks = (
+            decoded_reference_masks[flat_indices]
+            * fk_decoded_point_masks(torch, target_masks[flat_indices], target_names)
+        ).reshape(selected_windows.shape[0], selected_windows.shape[1], -1)
+    else:
+        surrogate_indices = _surrogate_feature_indices(feature_names)
+        if surrogate_indices is None:
+            return torch.zeros((), dtype=features.dtype, device=features.device)
+        prediction_points, target_points, point_masks = _decoded_temporal_points(
+            torch,
+            raw_prediction,
+            targets[flat_indices],
+            target_masks[flat_indices],
+            heuristics[flat_indices],
+            flat_raw_features,
+            decoded_reference_points=(
+                decoded_reference_points[flat_indices]
+                if decoded_reference_points is not None
+                else None
+            ),
+            decoded_reference_masks=(
+                decoded_reference_masks[flat_indices]
+                if decoded_reference_masks is not None
+                else None
+            ),
+            runtime_context_points=(
+                runtime_context_points[flat_indices] if runtime_context_points is not None else None
+            ),
+            runtime_context_masks=(
+                runtime_context_masks[flat_indices] if runtime_context_masks is not None else None
+            ),
+            window_count=selected_windows.shape[0],
+            window_width=selected_windows.shape[1],
+            prediction_mode=prediction_mode,
+            residual_scale=residual_scale,
+            residual_smoothing_alpha=residual_smoothing_alpha,
+            runtime_decoder_indices=runtime_decoder_indices,
+            surrogate_indices=surrogate_indices,
+            target_names=target_names,
+        )
     prediction_delta = _temporal_difference(prediction_points, order=order)
     target_delta = _temporal_difference(target_points, order=order)
     temporal_mask = point_masks.prod(dim=1)
@@ -2214,20 +2454,15 @@ def _decoded_temporal_points(
     surrogate_indices: SurrogateFeatureIndices,
     target_names: Sequence[str],
 ) -> tuple[Any, Any, Any]:
-    if prediction_mode == "residual":
-        raw_prediction = _smooth_temporal_residuals(
-            torch,
-            raw_prediction,
-            window_count=window_count,
-            window_width=window_width,
-            alpha=residual_smoothing_alpha,
-        )
-    prediction = _compose_torch_latents(
+    prediction = _compose_temporal_prediction(
         torch,
         raw_prediction,
         heuristics,
+        window_count=window_count,
+        window_width=window_width,
         prediction_mode=prediction_mode,
         residual_scale=residual_scale,
+        residual_smoothing_alpha=residual_smoothing_alpha,
         target_names=target_names,
     )
     prediction_points, prediction_point_masks = _decoded_prediction_points_and_masks(
@@ -2255,6 +2490,36 @@ def _decoded_temporal_points(
         prediction_points.reshape(window_count, window_width, -1, 3),
         target_points.reshape(window_count, window_width, -1, 3),
         point_masks.reshape(window_count, window_width, -1),
+    )
+
+
+def _compose_temporal_prediction(
+    torch: Any,
+    raw_prediction: Any,
+    heuristics: Any,
+    *,
+    window_count: int,
+    window_width: int,
+    prediction_mode: Literal["absolute", "residual"],
+    residual_scale: float,
+    residual_smoothing_alpha: float,
+    target_names: Sequence[str],
+) -> Any:
+    if prediction_mode == "residual":
+        raw_prediction = _smooth_temporal_residuals(
+            torch,
+            raw_prediction,
+            window_count=window_count,
+            window_width=window_width,
+            alpha=residual_smoothing_alpha,
+        )
+    return _compose_torch_latents(
+        torch,
+        raw_prediction,
+        heuristics,
+        prediction_mode=prediction_mode,
+        residual_scale=residual_scale,
+        target_names=target_names,
     )
 
 
@@ -2449,6 +2714,61 @@ def _surrogate_validation_metrics(
     temporal_excess_margin: float,
     reach_ratio_limit: float,
 ) -> dict[str, float]:
+    if _is_fk_target_names(target_names):
+        fk_feature_indices = upper_body_fk_feature_indices(feature_names)
+        if (
+            fk_feature_indices is None
+            or decoded_reference_points is None
+            or decoded_reference_masks is None
+        ):
+            return {}
+        with torch.no_grad():
+            terms = _fk_decoded_pose_terms(
+                torch,
+                prediction,
+                target_mask,
+                raw_features,
+                decoded_reference_points=decoded_reference_points,
+                decoded_reference_masks=decoded_reference_masks,
+                feature_indices=fk_feature_indices,
+                target_names=target_names,
+            )
+            position_mse = float(terms["position_mse"].detach().cpu())
+            velocity_mse = _decoded_temporal_validation_metric(
+                torch,
+                terms["prediction_points"],
+                terms["target_points"],
+                terms["point_masks"],
+                temporal_pairs,
+                order=1,
+            )
+            acceleration_mse = _decoded_temporal_validation_metric(
+                torch,
+                terms["prediction_points"],
+                terms["target_points"],
+                terms["point_masks"],
+                temporal_triples,
+                order=2,
+            )
+            jerk_mse = _decoded_temporal_validation_metric(
+                torch,
+                terms["prediction_points"],
+                terms["target_points"],
+                terms["point_masks"],
+                temporal_quads,
+                order=3,
+            )
+        return {
+            "validation_fk_decoded_position_mse": position_mse,
+            "validation_fk_decoded_torso_mse": float(terms["torso_mse"].detach().cpu()),
+            "validation_fk_decoded_shoulder_mse": float(terms["shoulder_mse"].detach().cpu()),
+            "validation_fk_decoded_elbow_mse": float(terms["elbow_mse"].detach().cpu()),
+            "validation_decoded_position_mse": position_mse,
+            "validation_decoded_velocity_mse": velocity_mse,
+            "validation_decoded_acceleration_mse": acceleration_mse,
+            "validation_decoded_jerk_mse": jerk_mse,
+        }
+
     surrogate_indices = _surrogate_feature_indices(feature_names)
     if surrogate_indices is None:
         return {}

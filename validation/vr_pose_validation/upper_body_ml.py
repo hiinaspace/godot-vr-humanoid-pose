@@ -167,6 +167,10 @@ FK_TARGET_GROUPS = {
 }
 STATIC_CALIBRATION_FEATURE_NAMES = (
     "calibration_human_height_m",
+    "calibration_head_to_neck_m",
+    "calibration_neck_to_chest_m",
+    "calibration_chest_to_spine_m",
+    "calibration_spine_to_hips_m",
     "calibration_shoulder_width_m",
     "calibration_upper_arm_m",
     "calibration_lower_arm_m",
@@ -445,7 +449,7 @@ def build_sparse_window_dataset(
 
     windows_path = output_dir / "windows.parquet"
     if shard_rows <= 0 and rows:
-        pl.DataFrame(rows).write_parquet(windows_path, compression="zstd")
+        _window_rows_frame(rows).write_parquet(windows_path, compression="zstd")
     elif total_windows == 0:
         if shard_dir.exists():
             shutil.rmtree(shard_dir)
@@ -550,8 +554,41 @@ def _write_window_shard(
         return 0
     shard_dir.mkdir(parents=True, exist_ok=True)
     shard_path = shard_dir / f"part-{shard_index:05d}.parquet"
-    pl.DataFrame(rows).write_parquet(shard_path, compression="zstd")
+    _window_rows_frame(rows).write_parquet(shard_path, compression="zstd")
     return 1
+
+
+def _window_rows_frame(rows: Sequence[dict[str, object]]) -> pl.DataFrame:
+    return pl.DataFrame(rows).with_columns(
+        pl.col("timestamp_s").cast(pl.Float32),
+        pl.col("features").cast(pl.List(pl.Float32)),
+        *(pl.col(name).cast(pl.Float32) for name in _float32_window_columns()),
+    )
+
+
+def _float32_window_columns() -> tuple[str, ...]:
+    columns: list[str] = []
+    for name in TARGET_NAMES:
+        columns.extend(
+            (
+                name,
+                f"{name}_mask",
+                f"heuristic_{name}",
+                f"heuristic_{name}_mask",
+            )
+        )
+    for name in FK_TARGET_NAMES:
+        columns.extend((name, f"{name}_mask"))
+    for prefix in ("reference", "heuristic"):
+        for joint_name in DECODED_REFERENCE_JOINTS:
+            for component in ("x", "y", "z"):
+                columns.append(f"{prefix}_{joint_name}_position_{component}")
+            columns.append(f"{prefix}_{joint_name}_valid")
+    for joint_name in RUNTIME_DECODER_CONTEXT_JOINTS:
+        for component in ("x", "y", "z"):
+            columns.append(f"heuristic_context_{joint_name}_position_{component}")
+        columns.append(f"heuristic_context_{joint_name}_valid")
+    return tuple(columns)
 
 
 def read_sparse_window_dataframe(dataset_dir: Path) -> pl.DataFrame:
@@ -839,12 +876,36 @@ def _set_sequence_target(
 def calibration_feature_values(calibration: AvatarCalibration | None = None) -> list[float]:
     effective_calibration = calibration or AvatarCalibration()
     human_height = max(0.1, effective_calibration.human_height_m)
+    head_to_neck = _calibrated_length(
+        effective_calibration,
+        ("head_to_neck",),
+        human_height * 0.055,
+    )
+    neck_to_chest = _calibrated_length(
+        effective_calibration,
+        ("neck_to_chest",),
+        human_height * 0.085,
+    )
+    chest_to_spine = _calibrated_length(
+        effective_calibration,
+        ("chest_to_spine",),
+        human_height * 0.13,
+    )
+    spine_to_hips = _calibrated_length(
+        effective_calibration,
+        ("spine_to_hips",),
+        human_height * 0.14,
+    )
     shoulder_width = _shoulder_width(effective_calibration)
     upper_arm = _upper_arm_length(effective_calibration)
     lower_arm = _lower_arm_length(effective_calibration)
     arm_length = max(0.1, upper_arm + lower_arm)
     return [
         human_height,
+        head_to_neck,
+        neck_to_chest,
+        chest_to_spine,
+        spine_to_hips,
         shoulder_width,
         upper_arm,
         lower_arm,
@@ -1352,32 +1413,32 @@ def _empty_windows_frame(feature_names: Sequence[str]) -> pl.DataFrame:
         "subject": pl.String,
         "clip": pl.String,
         "frame_index": pl.Int64,
-        "timestamp_s": pl.Float64,
+        "timestamp_s": pl.Float32,
         "center_row_index": pl.Int64,
         "split": pl.String,
-        "features": pl.List(pl.Float64),
+        "features": pl.List(pl.Float32),
         "environment_split": pl.String,
         "activity_class": pl.String,
         "motion_description": pl.String,
     }
     del feature_names
     for name in TARGET_NAMES:
-        schema[name] = pl.Float64
-        schema[f"{name}_mask"] = pl.Float64
-        schema[f"heuristic_{name}"] = pl.Float64
-        schema[f"heuristic_{name}_mask"] = pl.Float64
+        schema[name] = pl.Float32
+        schema[f"{name}_mask"] = pl.Float32
+        schema[f"heuristic_{name}"] = pl.Float32
+        schema[f"heuristic_{name}_mask"] = pl.Float32
     for name in FK_TARGET_NAMES:
-        schema[name] = pl.Float64
-        schema[f"{name}_mask"] = pl.Float64
+        schema[name] = pl.Float32
+        schema[f"{name}_mask"] = pl.Float32
     for prefix in ("reference", "heuristic"):
         for joint_name in DECODED_REFERENCE_JOINTS:
             for component in ("x", "y", "z"):
-                schema[f"{prefix}_{joint_name}_position_{component}"] = pl.Float64
-            schema[f"{prefix}_{joint_name}_valid"] = pl.Float64
+                schema[f"{prefix}_{joint_name}_position_{component}"] = pl.Float32
+            schema[f"{prefix}_{joint_name}_valid"] = pl.Float32
     for joint_name in RUNTIME_DECODER_CONTEXT_JOINTS:
         for component in ("x", "y", "z"):
-            schema[f"heuristic_context_{joint_name}_position_{component}"] = pl.Float64
-        schema[f"heuristic_context_{joint_name}_valid"] = pl.Float64
+            schema[f"heuristic_context_{joint_name}_position_{component}"] = pl.Float32
+        schema[f"heuristic_context_{joint_name}_valid"] = pl.Float32
     return pl.DataFrame(schema=schema)
 
 

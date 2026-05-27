@@ -17,6 +17,7 @@ from validation.scripts.train_upper_body_latents import (
     DEFAULT_AIM_REPO,
     DEFAULT_DATASET_DIR,
     DEFAULT_OUTPUT_DIR,
+    TargetMode,
     TorchModelName,
     TrackingBackend,
     load_dataset,
@@ -54,6 +55,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--target-mode",
+        choices=("chain", "fk"),
+        default="chain",
+        help="Train existing point/pole chain latents or auxiliary rotation-FK targets.",
+    )
     parser.add_argument("--allow-cpu", action="store_true")
     parser.add_argument(
         "--tracking-backend",
@@ -73,6 +80,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--decoded-arm-direction-weight", type=float, default=0.25)
     parser.add_argument("--decoded-stretch-weight", type=float, default=0.25)
     parser.add_argument("--decoded-reach-hinge-weight", type=float, default=0.0)
+    parser.add_argument("--fk-decoded-pose-weight", type=float, default=0.0)
     parser.add_argument("--reach-ratio-limit", type=float, default=0.97)
     parser.add_argument("--surrogate-position-weight", type=float, default=0.0)
     parser.add_argument("--temporal-velocity-weight", type=float, default=0.0)
@@ -136,6 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         weight_decay=args.weight_decay,
         hidden_dim=max(8, args.hidden_dim),
         seed=args.seed,
+        target_mode=cast(TargetMode, args.target_mode),
         allow_cpu=args.allow_cpu,
         tracking_backend=cast(TrackingBackend, args.tracking_backend),
         aim_repo=args.aim_repo,
@@ -150,6 +159,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         decoded_arm_direction_weight=max(0.0, args.decoded_arm_direction_weight),
         decoded_stretch_weight=max(0.0, args.decoded_stretch_weight),
         decoded_reach_hinge_weight=max(0.0, args.decoded_reach_hinge_weight),
+        fk_decoded_pose_weight=max(0.0, args.fk_decoded_pose_weight),
         reach_ratio_limit=max(0.0, args.reach_ratio_limit),
         surrogate_position_weight=max(0.0, args.surrogate_position_weight),
         temporal_velocity_weight=max(0.0, args.temporal_velocity_weight),
@@ -182,6 +192,7 @@ def run_upper_body_latent_cross_validation(
     weight_decay: float = 1e-4,
     hidden_dim: int = 256,
     seed: int = 0,
+    target_mode: TargetMode = "chain",
     allow_cpu: bool = False,
     tracking_backend: TrackingBackend = "jsonl",
     aim_repo: Path = DEFAULT_AIM_REPO,
@@ -200,6 +211,7 @@ def run_upper_body_latent_cross_validation(
     decoded_arm_direction_weight: float = 0.25,
     decoded_stretch_weight: float = 0.25,
     decoded_reach_hinge_weight: float = 0.0,
+    fk_decoded_pose_weight: float = 0.0,
     reach_ratio_limit: float = 0.97,
     surrogate_position_weight: float = 0.0,
     temporal_velocity_weight: float = 0.0,
@@ -237,6 +249,7 @@ def run_upper_body_latent_cross_validation(
             weight_decay=weight_decay,
             hidden_dim=hidden_dim,
             seed=seed + fold_index,
+            target_mode=target_mode,
             allow_cpu=allow_cpu,
             tracking_backend=tracking_backend,
             aim_repo=aim_repo,
@@ -255,6 +268,7 @@ def run_upper_body_latent_cross_validation(
             decoded_arm_direction_weight=decoded_arm_direction_weight,
             decoded_stretch_weight=decoded_stretch_weight,
             decoded_reach_hinge_weight=decoded_reach_hinge_weight,
+            fk_decoded_pose_weight=fk_decoded_pose_weight,
             reach_ratio_limit=reach_ratio_limit,
             surrogate_position_weight=surrogate_position_weight,
             temporal_velocity_weight=temporal_velocity_weight,
@@ -295,6 +309,7 @@ def run_upper_body_latent_cross_validation(
             "subjects": subjects,
             "models": list(model_names),
             "total_seconds": time.perf_counter() - start,
+            "target_mode": target_mode,
             "tracking_backend": tracking_backend,
             "aim_repo": aim_repo.as_posix(),
             "aim_experiment": aim_experiment,
