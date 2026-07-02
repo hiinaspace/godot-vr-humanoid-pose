@@ -42,6 +42,8 @@ class TrackerState:
     confidence: float = 1.0
     valid: bool = True
     attachment: TrackerAttachment | None = None
+    linear_velocity: Vector3 = (0.0, 0.0, 0.0)
+    angular_velocity: Vector3 = (0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True, slots=True)

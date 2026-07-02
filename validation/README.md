@@ -307,3 +307,49 @@ The live recorder keeps running in the background. The Godot overlay sends a
 stopping the Python sidecar. The analyzer also reports calibrated tracker role
 coverage; a `chest` role in the default seven-tracker setup usually means the
 T-pose calibration was captured too early or in the wrong pose.
+
+## Tracker Noise Capture Protocol
+
+PLAN.md milestone 1 fits the synthetic corruption model in
+`vr_pose_validation/synthetic_trackers.py` to real device logs instead of the
+invented priors. Record a short labeled session with the live overlay (or Brekel
+OpenVR Recorder exported into the same `devices.parquet` schema), then fit it.
+
+Capture one clip per condition, wearing the same tracker layout you want to
+model (HMD, both controllers, and any strap trackers). Keep the device native
+`linear_velocity`/`angular_velocity` channels on — SteamVR poses embed
+photon-time prediction overshoot that only the native velocity exposes.
+
+- **Idle standing (~60 s)** — stand still, arms relaxed then loosely folded.
+  This clip anchors sub-mm jitter and low-frequency strap drift, so hold each
+  pose long enough for the drift estimator to see a stationary window.
+- **Dance / fast motion (~60 s)** — large fast arm and torso motion, jumps,
+  spins. Drives the excursion and prediction-overshoot terms and the
+  velocity-domain error that fails first.
+- **Sit / stand transitions (~45 s)** — repeated sit down, settle, stand up at
+  a normal desk/chair. Captures occlusion around the hips/legs and the
+  reacquisition excursion when trackers come back into view.
+- **Controllers occluded (~45 s)** — deliberately hide the controllers behind
+  your back and holster them at your hip for a few seconds at a time. This is
+  the >19 cm dropout mode: it drives dropout run-length, the hold-last vs
+  invalid-confidence split, and the reacquisition excursion.
+
+Fit a profile from one or more recorded session directories:
+
+```powershell
+uv run python -m validation.scripts.fit_tracker_noise .cache/live_capture --output validation/reports/fitted_tracker_noise.json --frame-rate-hz 90
+```
+
+The fitter groups device rows by role, estimates dropout rate and run length,
+hold-last fraction, jitter, drift *amplitude*, excursion *magnitude*, and
+native-vs-finite-difference velocity error, and writes a
+`tracker_noise_profile.v1` JSON document. Magnitude-style terms (excursion,
+native-velocity, and angular-velocity noise) are reported as the per-axis
+Gaussian standard deviation the generator consumes, recovered from the observed
+3D-vector magnitudes. It degrades gracefully on sessions missing some roles,
+reports per-role sample counts, and flags the parameters it cannot fit without
+ground truth, which fall back to the role priors: calibration bias, latency,
+prediction-overshoot gain, excursion run-length (`excursion_frames`), and drift
+period (`drift_period_seconds`). Load the result with
+`noise_profile_io.config_from_fitted_profile_file` to build a
+`SyntheticTrackerConfig` for synthetic tracker generation.
