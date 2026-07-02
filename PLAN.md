@@ -221,6 +221,11 @@ Changes adopted from the 2026-07 re-evaluation:
   and its released weights (~15 mm MPJPE on Xsens eval) are the 6-point
   benchmark to approach; sitting under FBT is mostly passthrough plus
   grounding, which is why seated *inference* effort stays scoped to 3-point.
+  The remaining inference work under FBT is primarily shoulder/spine fixup
+  and secondarily foot/ankle angle — leg pose comes from real data, which is
+  part of why 6-point quality is co-equal rather than deferred: high value
+  for the VRChat-enthusiast audience at lower difficulty than full
+  lower-body prediction.
 - **Filtering: speed-adaptive 1€-style filter replaces fixed EMA** on latents
   and outputs. Latency provably trades worse than sub-mm jitter for the
   self-avatar. Filter lag is counted in the latency ledger; self and remote
