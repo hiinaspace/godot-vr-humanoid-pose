@@ -69,6 +69,7 @@ from validation.vr_pose_validation.types import (
 
 DEFAULT_CACHE_DIR = Path(".cache/cmu/parquet/canonical")
 DEFAULT_REPORT_PATH = Path("validation/reports/cached_baseline_smoke.json")
+DEFAULT_HARD_CLIPS_PATH = Path("validation/hard_clips.json")
 DEFAULT_SYNTHETIC_TRACKER_CONFIG = SyntheticTrackerConfig()
 SUMMARY_METRICS = (
     "mean_target_error_m",
@@ -188,12 +189,26 @@ class CachedValidationTask:
     estimator_name: EstimatorName
 
 
+def load_hard_clip_ids(path: Path) -> set[str]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return set(payload.get("clips", {}))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT_PATH)
     parser.add_argument("--csv-report", type=Path)
     parser.add_argument("--subjects", nargs="*", help="Subject ids such as 07 08 09.")
+    parser.add_argument(
+        "--hard-clips",
+        nargs="?",
+        const=str(DEFAULT_HARD_CLIPS_PATH),
+        help=(
+            "Restrict evaluation to the committed hard-clip set. Pass a path to override "
+            f"the default ({DEFAULT_HARD_CLIPS_PATH})."
+        ),
+    )
     parser.add_argument("--max-clips", type=int)
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument(
@@ -236,12 +251,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "basis_arm_swivel",
             "basis_shrug",
             "basis_research",
+            "basis_dual_frame",
         ),
         default="trivial",
         help="Estimator implementation to evaluate.",
     )
     args = parser.parse_args(argv)
 
+    hard_clips = load_hard_clip_ids(Path(args.hard_clips)) if args.hard_clips else None
     result = run_cached_validation(
         cache_dir=args.cache_dir,
         subjects=set(args.subjects or []),
@@ -251,6 +268,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         environment_splits=cast(set[EnvironmentSplit], set(args.environment_split or [])),
         activity_classes=cast(set[ActivityClass], set(args.activity_class or [])),
         top_clip_count=max(0, args.top_clips),
+        hard_clips=hard_clips,
     )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -271,6 +289,7 @@ def run_cached_validation(
     environment_splits: set[EnvironmentSplit] | None = None,
     activity_classes: set[ActivityClass] | None = None,
     top_clip_count: int = 10,
+    hard_clips: set[str] | None = None,
 ) -> dict[str, object]:
     start = time.perf_counter()
     paths = list_clip_cache_files(cache_dir, subjects or None)
@@ -279,6 +298,8 @@ def run_cached_validation(
         environment_splits=environment_splits,
         activity_classes=activity_classes,
     )
+    if hard_clips is not None:
+        paths = [path for path in paths if _subject_and_clip_from_path(path)[1] in hard_clips]
     if max_clips is not None:
         paths = paths[:max_clips]
 

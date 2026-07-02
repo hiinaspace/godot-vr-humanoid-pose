@@ -8,7 +8,7 @@ limb midpoint solves.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import exp, pi, radians, sin, tan
+from math import acos, degrees, exp, pi, radians, sin, tan
 from typing import Literal
 
 from validation.vr_pose_validation.geometry import (
@@ -16,6 +16,7 @@ from validation.vr_pose_validation.geometry import (
     Transform,
     Vector3,
     add,
+    axis_angle_quaternion,
     cross,
     dot,
     horizontal_distance,
@@ -38,6 +39,7 @@ from validation.vr_pose_validation.types import (
 
 WORLD_UP: Vector3 = (0.0, 1.0, 0.0)
 WORLD_FORWARD: Vector3 = (0.0, 0.0, 1.0)
+_MAX_DIVERGENCE_DWELL_STEP_S = 0.1
 type FootPhase = Literal["unplanted", "planted", "swing", "settle"]
 type ArmBendStrategy = Literal["default", "basis_lookup", "manikin_swivel"]
 type TorsoHeightPolicy = Literal["standing", "crouch", "sitting"]
@@ -77,6 +79,21 @@ class BasisEstimatorSettings:
     body_heading_min_head_horizontal: float = 0.20
     body_heading_full_head_horizontal: float = 0.55
     body_heading_flip_deadzone: float = -0.15
+    dual_frame_enabled: bool = False
+    dual_frame_trajectory_min_speed_m_s: float = 0.18
+    dual_frame_trajectory_full_speed_m_s: float = 0.55
+    dual_frame_trajectory_sign_hysteresis: float = 0.20
+    dual_frame_hand_forward_min_m: float = 0.10
+    dual_frame_hand_forward_full_m: float = 0.35
+    dual_frame_trajectory_max_weight: float = 0.85
+    dual_frame_agreement_full_dot: float = 0.5
+    dual_frame_divergence_threshold_deg: float = 105.0
+    dual_frame_divergence_release_deg: float = 75.0
+    dual_frame_divergence_dwell_s: float = 0.45
+    dual_frame_head_converge_speed: float = 6.0
+    dual_frame_lying_gravity_dot: float = 0.72
+    dual_frame_lying_head_height_ratio: float = 0.45
+    dual_frame_lying_converge_speed: float = 1.5
     controller_lateral_flip_threshold_m: float = 0.08
     controller_lateral_flip_min_head_pitch: float = 0.20
     neck_rotation_lerp_speed: float = 40.0
@@ -179,6 +196,14 @@ class _FootTarget:
 
 
 @dataclass(slots=True)
+class _DualFrameState:
+    trajectory_sign: float = 1.0
+    divergence_dwell_s: float = 0.0
+    head_locked: bool = False
+    lying_forward: Vector3 | None = None
+
+
+@dataclass(slots=True)
 class _TorsoState:
     body_forward: Vector3 | None = None
     neck_rotation: Quaternion | None = None
@@ -186,6 +211,7 @@ class _TorsoState:
     spine_rotation: Quaternion | None = None
     hips_rotation: Quaternion | None = None
     previous_timestamp_seconds: float | None = None
+    dual_frame: _DualFrameState = field(default_factory=_DualFrameState)
 
 
 @dataclass(slots=True)
@@ -209,6 +235,7 @@ class BasisPortEstimator:
     def reset(self) -> None:
         self._foot_states.clear()
         self._torso_state = _TorsoState()
+        self._torso_state.dual_frame = _DualFrameState()
         self._active_swing_foot = None
         self._last_stepped_foot = None
         self._last_step_time_seconds = None
@@ -233,6 +260,7 @@ class BasisPortEstimator:
             sample,
             _head_forward(sample.hmd),
             grounding,
+            calibration,
             dt,
         )
         right = normalize(cross(forward, WORLD_UP), fallback=(-1.0, 0.0, 0.0))
@@ -495,6 +523,7 @@ class BasisPortEstimator:
         sample: TrackedPoseSample,
         head_forward: Vector3,
         grounding: GroundingContext,
+        calibration: AvatarCalibration,
         dt: float,
     ) -> Vector3:
         candidate = _disambiguate_body_forward(
@@ -504,15 +533,26 @@ class BasisPortEstimator:
             self.settings.controller_lateral_flip_min_head_pitch,
         )
         previous = self._torso_state.body_forward
-        target = _body_forward_evidence(
-            sample,
-            grounding,
-            candidate,
-            previous,
-            self.settings,
-        )
+        if self.settings.dual_frame_enabled:
+            target = self._dual_frame_forward(
+                sample,
+                grounding,
+                calibration,
+                candidate,
+                previous,
+                dt,
+            )
+        else:
+            target = _body_forward_evidence(
+                sample,
+                grounding,
+                candidate,
+                previous,
+                self.settings,
+            )
         if (
-            previous is not None
+            not self.settings.dual_frame_enabled
+            and previous is not None
             and dot(target, previous) < self.settings.body_heading_flip_deadzone
         ):
             target = previous
@@ -527,6 +567,46 @@ class BasisPortEstimator:
         )
         self._torso_state.body_forward = forward
         return forward
+
+    def _dual_frame_forward(
+        self,
+        sample: TrackedPoseSample,
+        grounding: GroundingContext,
+        calibration: AvatarCalibration,
+        candidate: Vector3,
+        previous: Vector3 | None,
+        dt: float,
+    ) -> Vector3:
+        settings = self.settings
+        state = self._torso_state.dual_frame
+        reference = previous if previous is not None else candidate
+
+        if _is_lying_down(sample, grounding, calibration, settings):
+            if state.lying_forward is None:
+                state.lying_forward = reference
+            state.divergence_dwell_s = 0.0
+            state.head_locked = False
+            return state.lying_forward
+        state.lying_forward = None
+
+        projection_frame = candidate
+        trajectory_frame = _trajectory_frame(sample, grounding, reference, state, settings)
+
+        blended = _blend_reference_frames(
+            sample,
+            projection_frame,
+            trajectory_frame,
+            settings,
+        )
+
+        return _resolve_sustained_divergence(
+            projection_frame,
+            blended,
+            reference,
+            state,
+            dt,
+            settings,
+        )
 
     def _estimate_hips(
         self,
@@ -1426,6 +1506,152 @@ def _body_forward_evidence(
     if total_weight <= 1e-9:
         return previous if previous is not None else candidate
     return normalize(weighted, fallback=previous if previous is not None else candidate)
+
+
+def _is_lying_down(
+    sample: TrackedPoseSample,
+    grounding: GroundingContext,
+    calibration: AvatarCalibration,
+    settings: BasisEstimatorSettings,
+) -> bool:
+    head_forward = normalize(
+        rotate_vector(sample.hmd.transform.rotation, WORLD_FORWARD),
+        fallback=WORLD_FORWARD,
+    )
+    gravity_aligned = abs(dot(head_forward, WORLD_UP)) >= settings.dual_frame_lying_gravity_dot
+    head_height = _source_joint_position(sample.hmd)[1] - grounding.floor_height_m
+    height_ratio = head_height / max(calibration.human_height_m, 0.1)
+    head_low = height_ratio <= settings.dual_frame_lying_head_height_ratio
+    return gravity_aligned or head_low
+
+
+def _trajectory_frame(
+    sample: TrackedPoseSample,
+    grounding: GroundingContext,
+    reference: Vector3,
+    state: _DualFrameState,
+    settings: BasisEstimatorSettings,
+) -> tuple[Vector3, float] | None:
+    velocity = _heading_velocity(sample, grounding)
+    if velocity is None:
+        return None
+    heading, speed = velocity
+    if speed < settings.dual_frame_trajectory_min_speed_m_s:
+        return None
+
+    # Disambiguate the sign-ambiguous trajectory against facing. Controllers sit in
+    # front of the torso, so the hand midpoint is the most reliable facing proxy;
+    # fall back to state continuity with a hysteresis deadzone. Both use hysteresis
+    # so the sign flips deliberately rather than snapping every frame.
+    hand_hint = _hand_midpoint_forward(sample)
+    if hand_hint is not None and hand_hint[1] >= settings.dual_frame_hand_forward_min_m:
+        facing = hand_hint[0]
+    else:
+        facing = reference
+    signed_dot = dot(scale(heading, state.trajectory_sign), facing)
+    if signed_dot < -settings.dual_frame_trajectory_sign_hysteresis:
+        state.trajectory_sign = -state.trajectory_sign
+    signed = scale(heading, state.trajectory_sign)
+
+    confidence = _smoothstep(
+        settings.dual_frame_trajectory_min_speed_m_s,
+        settings.dual_frame_trajectory_full_speed_m_s,
+        speed,
+    )
+    return normalize(signed, fallback=reference), confidence
+
+
+def _blend_reference_frames(
+    sample: TrackedPoseSample,
+    projection_frame: Vector3,
+    trajectory_frame: tuple[Vector3, float] | None,
+    settings: BasisEstimatorSettings,
+) -> Vector3:
+    if trajectory_frame is None:
+        return projection_frame
+    trajectory_forward, speed_confidence = trajectory_frame
+
+    alignment = (dot(projection_frame, trajectory_forward) + 1.0) * 0.5
+    agreement = _clamp01(alignment / settings.dual_frame_agreement_full_dot)
+    disagreement = 1.0 - agreement
+    hand_hint = _hand_midpoint_forward(sample)
+    hand_backs_trajectory = 0.0
+    if hand_hint is not None:
+        hand_forward, hand_distance = hand_hint
+        hand_strength = _smoothstep(
+            settings.dual_frame_hand_forward_min_m,
+            settings.dual_frame_hand_forward_full_m,
+            hand_distance,
+        )
+        hand_backs_trajectory = hand_strength * _clamp01(dot(trajectory_forward, hand_forward))
+
+    trajectory_weight = min(
+        settings.dual_frame_trajectory_max_weight,
+        speed_confidence * (disagreement + hand_backs_trajectory),
+    )
+    return _smooth_direction(projection_frame, trajectory_forward, _clamp01(trajectory_weight))
+
+
+def _resolve_sustained_divergence(
+    projection_frame: Vector3,
+    blended: Vector3,
+    reference: Vector3,
+    state: _DualFrameState,
+    dt: float,
+    settings: BasisEstimatorSettings,
+) -> Vector3:
+    divergence_deg = _vector_angle_deg(projection_frame, blended)
+    if state.head_locked:
+        # Release only once the divergence driver itself has ceased (blend back in
+        # agreement with the head frame), not merely once the torso caught up to the
+        # head: releasing while the blend still points away re-accumulates divergence
+        # and produces a lock/release torso-wobble limit cycle.
+        if (
+            divergence_deg <= settings.dual_frame_divergence_release_deg
+            and _vector_angle_deg(projection_frame, reference)
+            <= settings.dual_frame_divergence_release_deg
+        ):
+            state.head_locked = False
+            state.divergence_dwell_s = 0.0
+            # Reconcile the trajectory sign with the frame the torso committed to so
+            # unlocking does not snap the blend back to the stale facing.
+            if dot(blended, reference) < 0.0:
+                state.trajectory_sign = -state.trajectory_sign
+                return reference
+    elif divergence_deg >= settings.dual_frame_divergence_threshold_deg:
+        state.divergence_dwell_s += min(dt, _MAX_DIVERGENCE_DWELL_STEP_S)
+        if state.divergence_dwell_s >= settings.dual_frame_divergence_dwell_s:
+            state.head_locked = True
+    else:
+        state.divergence_dwell_s = 0.0
+
+    if state.head_locked:
+        return _converge_direction(
+            reference,
+            projection_frame,
+            _exp_alpha(settings.dual_frame_head_converge_speed, dt),
+        )
+    return blended
+
+
+def _converge_direction(current: Vector3, target: Vector3, alpha: float) -> Vector3:
+    """Rotate ``current`` toward ``target`` about world-up, robust to antipodal pairs."""
+
+    current_h = normalize(_horizontal_vector(current), fallback=WORLD_FORWARD)
+    target_h = normalize(_horizontal_vector(target), fallback=current_h)
+    cos_angle = max(-1.0, min(1.0, dot(current_h, target_h)))
+    angle = acos(cos_angle)
+    if angle <= 1e-4:
+        return target_h
+    step = angle * _clamp01(alpha)
+    turn_sign = 1.0 if dot(cross(current_h, target_h), WORLD_UP) >= 0.0 else -1.0
+    rotation = axis_angle_quaternion(WORLD_UP, degrees(step) * turn_sign)
+    return normalize(rotate_vector(rotation, current_h), fallback=target_h)
+
+
+def _vector_angle_deg(a: Vector3, b: Vector3) -> float:
+    cos_angle = dot(normalize(a, fallback=WORLD_FORWARD), normalize(b, fallback=WORLD_FORWARD))
+    return degrees(acos(max(-1.0, min(1.0, cos_angle))))
 
 
 def _hand_midpoint_forward(sample: TrackedPoseSample) -> tuple[Vector3, float] | None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pytest import approx
 
 from validation.vr_pose_validation.baseline import (
@@ -816,6 +818,364 @@ def test_basis_footstep_planner_aligns_startup_to_current_body() -> None:
     assert estimator._foot_states["right_foot"].phase == "planted"
     assert horizontal_distance(hips, pose.joints["left_foot"].transform.position) < 0.25
     assert horizontal_distance(hips, pose.joints["right_foot"].transform.position) < 0.25
+
+
+def _dual_frame_settings(**overrides: Any) -> BasisEstimatorSettings:
+    base: dict[str, Any] = {
+        "dual_frame_enabled": True,
+        "body_heading_lerp_speed": 200.0,
+        "hips_forward_bias_m": 0.0,
+        "support_hips_xz_follow_blend": 0.0,
+    }
+    base.update(overrides)
+    return BasisEstimatorSettings(**base)
+
+
+def _dual_frame_sample(
+    *,
+    timestamp_seconds: float,
+    head_forward: tuple[float, float, float],
+    hands_forward_z: float,
+    velocity: tuple[float, float, float],
+    head_position: tuple[float, float, float] = (0.0, 1.6, 0.0),
+) -> TrackedPoseSample:
+    x, _, z = head_position
+    return TrackedPoseSample(
+        timestamp_seconds=timestamp_seconds,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(position=head_position, rotation=look_rotation(head_forward)),
+        ),
+        left_hand=TrackerState(
+            role="left_hand",
+            transform=Transform(position=(x + 0.3, 1.2, z + hands_forward_z)),
+        ),
+        right_hand=TrackerState(
+            role="right_hand",
+            transform=Transform(position=(x - 0.3, 1.2, z + hands_forward_z)),
+        ),
+        character_velocity=velocity,
+    )
+
+
+def _run_dual_frame(
+    estimator: BasisPortEstimator,
+    samples: list[TrackedPoseSample],
+) -> tuple[float, float, float]:
+    calibration = AvatarCalibration(human_height_m=1.8, foot_height_m=0.05)
+    grounding = GroundingContext()
+    for sample in samples:
+        estimator.estimate(sample, calibration, grounding)
+    forward = estimator._torso_state.body_forward
+    assert forward is not None
+    return forward
+
+
+def test_dual_frame_disabled_preserves_default_heading_evidence() -> None:
+    sample = _dual_frame_sample(
+        timestamp_seconds=0.0,
+        head_forward=(0.0, 0.0, 1.0),
+        hands_forward_z=0.2,
+        velocity=(0.0, 0.0, -1.0),
+    )
+    calibration = AvatarCalibration(human_height_m=1.8)
+    grounding = GroundingContext()
+
+    default_pose = create_estimator("basis").estimate(sample, calibration, grounding)
+    disabled = BasisPortEstimator(BasisEstimatorSettings()).estimate(sample, calibration, grounding)
+
+    assert (
+        disabled.joints["hips"].transform.position == default_pose.joints["hips"].transform.position
+    )
+
+
+def test_dual_frame_trajectory_sign_disambiguates_backward_motion() -> None:
+    estimator = BasisPortEstimator(_dual_frame_settings())
+    # Facing +Z, walking backward (-Z), hands held in front (+Z), head yawed ~150deg.
+    samples = [
+        _dual_frame_sample(
+            timestamp_seconds=index / 30.0,
+            head_forward=normalize((0.5, 0.0, -1.0)),
+            hands_forward_z=0.25,
+            velocity=(0.0, 0.0, -1.0),
+        )
+        for index in range(6)
+    ]
+
+    forward = _run_dual_frame(estimator, samples)
+
+    # Torso should hold the facing (+Z) frame, not follow the reversed head yaw.
+    assert forward[2] > 0.5
+    assert estimator._torso_state.dual_frame.trajectory_sign == -1.0
+
+
+def test_dual_frame_backward_walk_holds_torso_against_reversed_head() -> None:
+    estimator = BasisPortEstimator(_dual_frame_settings())
+    forward = _run_dual_frame(
+        estimator,
+        [
+            _dual_frame_sample(
+                timestamp_seconds=index / 30.0,
+                head_forward=normalize((0.0, 0.0, 1.0)),
+                hands_forward_z=0.25,
+                velocity=(0.0, 0.0, -1.2),
+            )
+            for index in range(6)
+        ],
+    )
+
+    assert forward[2] > 0.8
+
+
+def test_dual_frame_brief_look_back_does_not_flip_torso() -> None:
+    estimator = BasisPortEstimator(_dual_frame_settings(body_heading_lerp_speed=12.0))
+    calibration = AvatarCalibration(human_height_m=1.8, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    # Establish forward-facing torso while walking forward.
+    for index in range(8):
+        estimator.estimate(
+            _dual_frame_sample(
+                timestamp_seconds=index / 30.0,
+                head_forward=(0.0, 0.0, 1.0),
+                hands_forward_z=0.25,
+                velocity=(0.0, 0.0, 1.0),
+            ),
+            calibration,
+            grounding,
+        )
+    before = estimator._torso_state.body_forward
+    assert before is not None
+
+    # A single-frame look-back must not converge to the head frame.
+    estimator.estimate(
+        _dual_frame_sample(
+            timestamp_seconds=8 / 30.0,
+            head_forward=normalize((0.0, 0.0, -1.0)),
+            hands_forward_z=0.25,
+            velocity=(0.0, 0.0, 1.0),
+        ),
+        calibration,
+        grounding,
+    )
+    after = estimator._torso_state.body_forward
+    assert after is not None
+    assert after[2] > 0.7
+    assert not estimator._torso_state.dual_frame.head_locked
+
+
+def test_dual_frame_sustained_turn_converges_to_head_frame() -> None:
+    estimator = BasisPortEstimator(_dual_frame_settings(dual_frame_divergence_dwell_s=0.2))
+    calibration = AvatarCalibration(human_height_m=1.8, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    # Walk forward to lock trajectory frame at +Z.
+    for index in range(6):
+        estimator.estimate(
+            _dual_frame_sample(
+                timestamp_seconds=index / 30.0,
+                head_forward=(0.0, 0.0, 1.0),
+                hands_forward_z=0.25,
+                velocity=(0.0, 0.0, 1.0),
+            ),
+            calibration,
+            grounding,
+        )
+
+    # Then the head stays turned ~180deg and the body keeps moving the same way
+    # (velocity +Z) so the trajectory frame holds the torso at +Z, sustaining a
+    # large head/torso divergence: the whole-body-turn signal.
+    for step in range(9):
+        estimator.estimate(
+            _dual_frame_sample(
+                timestamp_seconds=(6 + step) / 30.0,
+                head_forward=normalize((0.05, 0.0, -1.0)),
+                hands_forward_z=0.25,
+                velocity=(0.0, 0.0, 1.0),
+            ),
+            calibration,
+            grounding,
+        )
+
+    # Within the dwell + convergence window the torso has committed to the head
+    # frame rather than fighting the divergence forever.
+    assert estimator._torso_state.dual_frame.head_locked
+    forward = estimator._torso_state.body_forward
+    assert forward is not None
+    assert forward[2] < 0.3
+
+
+def test_dual_frame_sustained_hold_does_not_limit_cycle() -> None:
+    from math import acos, degrees
+
+    estimator = BasisPortEstimator(_dual_frame_settings(dual_frame_divergence_dwell_s=0.2))
+    calibration = AvatarCalibration(human_height_m=1.8, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    for index in range(6):
+        estimator.estimate(
+            _dual_frame_sample(
+                timestamp_seconds=index / 30.0,
+                head_forward=(0.0, 0.0, 1.0),
+                hands_forward_z=0.25,
+                velocity=(0.0, 0.0, 1.0),
+            ),
+            calibration,
+            grounding,
+        )
+
+    # Hold the head/trajectory contradiction well past the dwell window: the lock
+    # must engage once and stay committed to the head frame, not release into the
+    # still-diverged blend and re-lock (a periodic torso-wobble limit cycle).
+    lock_transitions = 0
+    previous_locked = False
+    previous = None
+    max_step_deg = 0.0
+    for step in range(90):
+        estimator.estimate(
+            _dual_frame_sample(
+                timestamp_seconds=(6 + step) / 30.0,
+                head_forward=normalize((0.05, 0.0, -1.0)),
+                hands_forward_z=0.25,
+                velocity=(0.0, 0.0, 1.0),
+            ),
+            calibration,
+            grounding,
+        )
+        locked = estimator._torso_state.dual_frame.head_locked
+        if locked != previous_locked:
+            lock_transitions += 1
+            previous_locked = locked
+        current = estimator._torso_state.body_forward
+        assert current is not None
+        if previous is not None:
+            cos_step = max(-1.0, min(1.0, dot(previous, current)))
+            max_step_deg = max(max_step_deg, degrees(acos(cos_step)))
+        previous = current
+
+    assert lock_transitions == 1
+    assert estimator._torso_state.dual_frame.head_locked
+    assert max_step_deg < 45.0
+    forward = estimator._torso_state.body_forward
+    assert forward is not None
+    assert forward[2] < -0.9
+
+
+def test_dual_frame_divergence_dwell_is_capped_per_frame() -> None:
+    estimator = BasisPortEstimator(_dual_frame_settings())
+    calibration = AvatarCalibration(human_height_m=1.8, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    for index in range(6):
+        estimator.estimate(
+            _dual_frame_sample(
+                timestamp_seconds=index / 30.0,
+                head_forward=(0.0, 0.0, 1.0),
+                hands_forward_z=0.25,
+                velocity=(0.0, 0.0, 1.0),
+            ),
+            calibration,
+            grounding,
+        )
+
+    # A single frame hitch longer than the dwell window must not satisfy the dwell
+    # and lock in one step.
+    estimator.estimate(
+        _dual_frame_sample(
+            timestamp_seconds=6 / 30.0 + 2.0,
+            head_forward=normalize((0.05, 0.0, -1.0)),
+            hands_forward_z=0.25,
+            velocity=(0.0, 0.0, 1.0),
+        ),
+        calibration,
+        grounding,
+    )
+
+    state = estimator._torso_state.dual_frame
+    assert not state.head_locked
+    assert state.divergence_dwell_s <= 0.1 + 1e-9
+
+
+def test_dual_frame_lying_down_holds_last_stable_frame() -> None:
+    estimator = BasisPortEstimator(_dual_frame_settings())
+    calibration = AvatarCalibration(human_height_m=1.8, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    for index in range(4):
+        estimator.estimate(
+            _dual_frame_sample(
+                timestamp_seconds=index / 30.0,
+                head_forward=(0.0, 0.0, 1.0),
+                hands_forward_z=0.25,
+                velocity=(0.0, 0.0, 0.6),
+            ),
+            calibration,
+            grounding,
+        )
+    stable = estimator._torso_state.body_forward
+    assert stable is not None
+
+    # Head pitched down toward gravity and near the floor: lying-down fallback engages.
+    estimator.estimate(
+        _dual_frame_sample(
+            timestamp_seconds=5 / 30.0,
+            head_forward=normalize((0.0, -1.0, 0.05)),
+            hands_forward_z=0.2,
+            velocity=(0.9, 0.0, 0.0),
+            head_position=(0.0, 0.5, 0.0),
+        ),
+        calibration,
+        grounding,
+    )
+
+    assert estimator._torso_state.dual_frame.lying_forward is not None
+    forward = estimator._torso_state.body_forward
+    assert forward is not None
+    # Frame stays near the pre-lying forward instead of snapping to the sideways velocity.
+    assert dot(forward, stable) > 0.8
+
+
+def test_dual_frame_no_discontinuous_flip_across_deadzone() -> None:
+    estimator = BasisPortEstimator(_dual_frame_settings(body_heading_lerp_speed=12.0))
+    calibration = AvatarCalibration(human_height_m=1.8, foot_height_m=0.05)
+    grounding = GroundingContext()
+
+    previous = None
+    max_step_deg = 0.0
+    for index in range(40):
+        # Oscillate head yaw across the flip boundary while walking forward.
+        angle = 1.0 if index % 2 == 0 else -1.0
+        estimator.estimate(
+            _dual_frame_sample(
+                timestamp_seconds=index / 30.0,
+                head_forward=normalize((angle, 0.0, 0.1)),
+                hands_forward_z=0.25,
+                velocity=(0.0, 0.0, 1.0),
+            ),
+            calibration,
+            grounding,
+        )
+        current = estimator._torso_state.body_forward
+        assert current is not None
+        if previous is not None:
+            cos_step = max(-1.0, min(1.0, dot(previous, current)))
+            from math import acos, degrees
+
+            max_step_deg = max(max_step_deg, degrees(acos(cos_step)))
+        previous = current
+
+    # No single-frame discontinuous flip; smoothing keeps per-frame change bounded.
+    assert max_step_deg < 45.0
+
+
+def test_dual_frame_factory_isolated_from_default_basis() -> None:
+    default = create_estimator("basis")
+    experiment = create_estimator("basis_dual_frame")
+
+    assert isinstance(default, BasisPortEstimator)
+    assert isinstance(experiment, BasisPortEstimator)
+    assert not default.settings.dual_frame_enabled
+    assert experiment.settings.dual_frame_enabled
 
 
 def test_basis_footstep_planner_steps_trailing_foot_after_stop() -> None:

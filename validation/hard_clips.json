@@ -1,0 +1,22 @@
+{
+  "description": "Named hard clips for torso/orientation failure modes. Used by run_cached_validation --hard-clips to filter the cached CMU eval to the regression cases called out in PLAN.md (look-back during backward walking, walk-while-turning-head, seated, lying-down). Each entry: clip id -> reason and failure_mode tag.",
+  "clips": {
+    "69_34": {"failure_mode": "backward_walk_turn", "reason": "walk backwards and turn: torso must hold facing while trajectory reverses and head turns"},
+    "69_35": {"failure_mode": "backward_walk_turn", "reason": "walk backwards and turn"},
+    "69_38": {"failure_mode": "backward_walk_turn", "reason": "walk backwards and turn (repeated)"},
+    "69_50": {"failure_mode": "backward_walk", "reason": "walk sideways and backwards: sign-ambiguous trajectory"},
+    "40_02": {"failure_mode": "backward_walk", "reason": "navigate - walk forward, backward, on a diagonal"},
+    "41_02": {"failure_mode": "backward_walk", "reason": "navigate - walk forward, backward, sideways, on a diagonal"},
+    "09_12": {"failure_mode": "backward_walk", "reason": "navigate - walk forward, backward, sideways"},
+    "139_01": {"failure_mode": "look_around", "reason": "looking around: sustained head-torso yaw divergence in place"},
+    "139_04": {"failure_mode": "look_around", "reason": "looking around"},
+    "91_18": {"failure_mode": "walk_look_around", "reason": "careful walk while looking around: head yaw diverges from trajectory"},
+    "105_18": {"failure_mode": "walk_look_around", "reason": "careful walk while looking around"},
+    "86_09": {"failure_mode": "seated_transition", "reason": "walking, sitting, looking, stand up: seated transition plus look"},
+    "13_01": {"failure_mode": "seated", "reason": "sit on high stool, stand up"},
+    "14_29": {"failure_mode": "seated", "reason": "sit on stepstool, stand up, swing legs"},
+    "111_12": {"failure_mode": "lying_down", "reason": "lay down: head-forward approaches gravity, both dual frames break"},
+    "113_08": {"failure_mode": "lying_down", "reason": "lay down and get up"},
+    "77_18": {"failure_mode": "lying_down", "reason": "laying down on back, getting up"}
+  }
+}

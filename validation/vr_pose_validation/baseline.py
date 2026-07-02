@@ -30,6 +30,7 @@ type EstimatorName = Literal[
     "basis_arm_swivel",
     "basis_shrug",
     "basis_research",
+    "basis_dual_frame",
 ]
 
 __all__ = [
@@ -152,7 +153,13 @@ def create_estimator(name: EstimatorName) -> PoseEstimator:
                 arm_bend_strategy="manikin_swivel",
             )
         )
+    if name == "basis_dual_frame":
+        return BasisPortEstimator(_dual_frame_settings())
     raise ValueError(f"Unknown estimator: {name}")
+
+
+def _dual_frame_settings() -> BasisEstimatorSettings:
+    return BasisEstimatorSettings(dual_frame_enabled=True)
 
 
 def _shoulder_shrug_settings() -> BasisEstimatorSettings:
