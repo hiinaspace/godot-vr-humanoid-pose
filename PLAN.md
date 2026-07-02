@@ -31,27 +31,42 @@ general-purpose inverse kinematics library.
 
 The practical benchmark is convincing social-VR style avatar pose quality from
 sparse VR tracking, while keeping the implementation open source and suitable
-for commercial games.
+for commercial games. V1 ships inside our own Godot project first; a reusable
+addon for other Godot developers is a follow-on goal, not the v1 bar.
 
 Quality and latency targets (2026-07):
 
+- **Quality yardstick: parity floor + fidelity stretch.** The hard floor is
+  Basis-baseline parity — never regress against the in-repo Basis estimator
+  on plausibility/stability metrics or the named shipping failure modes
+  (Basis is the open-source, ToS-safe proxy for VRChat-style behavior; direct
+  VRChat skeletal output stays off the table). GT-fidelity effort is spent
+  where it is perceptually visible: upper body, torso facing, and
+  transitions.
 - **End-to-end latency budget: ≤75–80 ms movement→avatar pose**, counting
   model window lookahead (each frame of future context at 90 Hz costs ~11 ms),
   filter lag, and solve time. Detectability starts at ~75 ms (Waltemate
   VRST'16) / ~80 ms for fast motion (Hoyet AIVR'19). Maintain a latency ledger
   per estimator configuration, with self-view and remote-view tunings tracked
   separately.
-- **Accuracy reference is real-signal SOTA: ~7.4 cm full-body MPJPE** (Meta
-  RPM on GORP, real Quest 3 signals) — not the ~3.3 cm synthetic-AMASS
-  protocol numbers. The sim-to-real gap is roughly 2x.
+- **Real-signal fidelity reference (stretch metric): ~7.4 cm full-body MPJPE**
+  (Meta RPM on GORP, real Quest 3 signals) — not the ~3.3 cm synthetic-AMASS
+  protocol numbers. The sim-to-real gap is roughly 2x. This is the stretch
+  target behind the parity floor, not the star metric.
 - **Tracking-loss and transition handling** (holstered controllers, hands out
   of FOV, stale trackers) is a first-class design requirement, not an edge
   case. RPM's rolling prediction with consistency anchoring is the reference
   design (knowledge only — its code/data are CC BY-NC).
-- **Seated and floor poses are an early milestone**, not deferred polish.
-  Sitting is the #1 quality cliff in every shipping system, and nobody ships
-  good automatic posture-mode inference; it is the cheapest differentiation
-  available.
+- **FBT (6+ point) is a co-equal v1 target, not deferred polish.** Tracker
+  override/blending, calibration UX, and per-tracker dropout handling get
+  first-class milestones alongside 3-point inference. 3-point remains the
+  floor for users without trackers.
+- **Seated detection plus a stable seated mode is an early milestone.** The
+  shipping failure to kill is the transition cliff (crouch-snap at an upright
+  threshold, standing legs while seated at a desk, boundary flapping) — not
+  floating-sit itself, which FBT users make read as intentional. Full seated
+  realism (chair-plane estimate, GT-accurate seated legs) is a stretch goal
+  behind the parity-floor yardstick.
 
 ## Current Status (2026-07)
 
@@ -96,7 +111,11 @@ Benchmark results worth remembering:
 - Desktop VR is the primary runtime target; Quest/mobile compatibility is
   valuable but secondary.
 - 3-point HMD plus hands must work well enough without external trackers.
-- Optional trackers should improve results without becoming required.
+- Optional trackers should improve results without becoming required — and
+  the 6+ point FBT path is a co-equal quality target for v1: FBT users' pose
+  quality comes mostly from honoring their real data (override/blending,
+  calibration, dropout decay, grounding as a corrective layer), not from
+  inference.
 - Scene access matters. Foot grounding and lower-body plausibility need
   collision/raycast access, character-controller state, and avatar scale, so
   the main runtime API should not be VMC-only. VMC remains valuable as an
@@ -184,12 +203,24 @@ Changes adopted from the 2026-07 re-evaluation:
   canonical failure of the current design and becomes a named regression
   case. Lying down (head-forward ≈ gravity) breaks even dual frames — detect
   it explicitly and use a dedicated fallback.
-- **Posture modes are first-class.** A small posture classifier (head height
-  vs calibrated standing height, velocity statistics, dwell time) routes to
-  standing/seated/floor handling; a dedicated seated decoder is an early
-  milestone, with an optional chair-plane estimate.
+- **Posture modes are first-class, scoped as detection + stable mode.** A
+  small posture classifier (head height vs calibrated standing height,
+  velocity statistics, dwell time with hysteresis) routes to a stable seated
+  anchor state — style-configurable between grounded squat and floating sit —
+  killing the transition cliff without inventing seated-leg realism. A
+  dedicated seated decoder with chair-plane estimation is the stretch
+  follow-on, pursued only where the fidelity yardstick justifies it.
   `validation/vr_pose_validation/posture.py` exists and needs promotion into
   the main estimator/validation path.
+- **FBT path is co-equal.** Optional trackers (hip, chest, feet, knees,
+  elbows) override or constrain estimates with confidence-weighted blending,
+  smooth decay back to estimates on dropout/staleness, and grounding kept as
+  a corrective layer for tracked feet. The T-pose role-labeling and offset
+  calibration already built for live capture gets promoted into the runtime
+  path. SparsePoser (MIT code) is the learned 6-point architecture reference,
+  and its released weights (~15 mm MPJPE on Xsens eval) are the 6-point
+  benchmark to approach; sitting under FBT is mostly passthrough plus
+  grounding, which is why seated *inference* effort stays scoped to 3-point.
 - **Filtering: speed-adaptive 1€-style filter replaces fixed EMA** on latents
   and outputs. Latency provably trades worse than sub-mm jitter for the
   self-avatar. Filter lag is counted in the latency ledger; self and remote
@@ -243,8 +274,10 @@ Adopt (verified licenses; details and caveats in
   models and motion matching.
 - Eval-only distribution references: BOXRR-23, Who-Is-Alyx (both CC BY-NC-SA
   — held-out eval only, never training; note in the license log).
-- Worth an email: BONES-SEED "qualifying startups" tier
-  (licensing@bones.studio).
+- Deprioritized: BONES-SEED (startup tier, licensing@bones.studio). Generic
+  studio mocap — same out-of-distribution bucket as CMU/Kimodo (no headset,
+  no held controllers, no VR locomotion conventions). Its marginal value is
+  prior scale/quality; email only if that becomes the bottleneck.
 
 Never use: LAFAN1 (CC BY-NC-ND), Bandai Namco (NC), ZeroEGGS (NC-ND),
 Motorica (NC), Mixamo (explicit ML-training ban), Motion-X/EgoBody/Nymeria
@@ -310,17 +343,24 @@ frequency bands, worst-clip tables, distribution plots) is implemented; see
 2. **Dual-reference-frame torso base** (DivaTrack MIT reference) under the
    existing residual decoder; re-run the upper-body eval suite; add look-back
    and seated clips to the hard-clip set.
-3. **Kimodo-SOMA synthetic corpus pipeline**: SOMA→Godot-humanoid retarget
+3. **FBT first-class pass**: promote optional-tracker override/blending with
+   confidence weighting and dropout decay into the estimator path, reuse the
+   live-capture calibration flow at runtime, and evaluate 6-point quality on
+   the SparsePoser Xsens eval split against the released SparsePoser weights
+   (~15 mm) as the benchmark.
+4. **Kimodo-SOMA synthetic corpus pipeline**: SOMA→Godot-humanoid retarget
    (same canonical-cache pattern as the SparsePoser importer) → synthetic
    sparse-input generation → seated/gesture/locomotion-mix corpus; measure
    whether it closes the documented CMU→Xsens distribution gap.
-4. **Posture classifier + seated decoder MVP** from self-captured desk
+5. **Posture classifier + stable seated mode** from self-captured desk
    sessions + CMU seated clips; promote `posture.py` into the estimator and
-   validation path.
-5. **Motion-matching A/B**: 100STYLE + BSD-2 LMM controller vs the procedural
+   validation path. Detection + stable anchor state only; the seated decoder
+   and chair-plane estimate are a stretch follow-on.
+6. **Motion-matching A/B**: 100STYLE + BSD-2 LMM controller vs the procedural
    gait planner on the locomotion eval set (joystick + roomscale).
-6. **Send the two license emails**: UPC-ViRVIG (SparsePoser CC BY
-   confirmation), Bones Studio (BONES-SEED startup tier).
+7. **Send the UPC-ViRVIG email** (SparsePoser CC BY confirmation) — can go
+   out immediately, independent of everything else. The BONES-SEED email is
+   deprioritized (see Data Policy).
 
 Cross-cutting, start alongside milestone 1: the 1€ filter swap and the
 latency ledger (both are measurement infrastructure the other milestones

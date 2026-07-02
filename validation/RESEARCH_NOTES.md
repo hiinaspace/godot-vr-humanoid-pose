@@ -102,7 +102,7 @@ License/status caveats:
   the data under CC BY. Even worst-case BY-SA, current authority (CC's 2025
   guidance; Getty v. Stability UK) says trained weights are likely not
   adaptations — the SA exposure is contractual and survivable, unlike NC.
-- Pending action (PLAN.md milestone 6): confirmation email to the UPC-ViRVIG
+- Pending action (PLAN.md milestone 7): confirmation email to the UPC-ViRVIG
   authors (J. L. Ponton). Until answered, keep the training split
   license-gated as implemented.
 

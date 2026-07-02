@@ -28,7 +28,9 @@ Adopted, with verified licenses (rationale in `RESEARCH_REEVAL-2026-07.md`):
   learned models and the motion-matching A/B.
 - Eval-only: BOXRR-23 and Who-Is-Alyx (CC BY-NC-SA) as held-out real-VR
   distribution references — never training data.
-- Worth an email: BONES-SEED startup tier (licensing@bones.studio).
+- Deprioritized: BONES-SEED startup tier (licensing@bones.studio) — generic
+  studio mocap, same OOD bucket as CMU/Kimodo for VR telemetry; email only if
+  prior scale/quality becomes the bottleneck.
 
 Never use (license-blocked for this project): LAFAN1 (CC BY-NC-ND), Bandai
 Namco (NC), ZeroEGGS (NC-ND), Motorica (NC), Mixamo (ML-training ban),
@@ -81,8 +83,9 @@ Two capture priorities from the 2026-07 re-evaluation:
   back — used to fit dropout/excursion/velocity-error statistics that replace
   the invented corruption priors. Preserve native tracker linear/angular
   velocity; note that SteamVR poses embed photon-time prediction overshoot.
-- **Seated desk sessions** (PLAN.md milestone 4): uniquely cheap to
-  self-capture and the training/eval base for the seated decoder.
+- **Seated desk sessions** (PLAN.md milestone 5): uniquely cheap to
+  self-capture and the training/eval base for the posture classifier and
+  stable seated mode.
 
 A friend-friendly capture app should be boring: start/stop, short prompted
 clips, local preview, local review/delete, and an export bundle. Parquet is a
@@ -101,7 +104,7 @@ with no AMASS/SMPL lineage (trained on NVIDIA's proprietary Bones Rigplay
 set, 30-joint SOMA skeleton). The **Kimodo-SMPLX-RP variant is
 research-only — do not use it.** The primary planned use is generating
 VR-style motion ("seated, gesturing while talking") to attack the CMU
-distribution-shift problem; see PLAN.md milestone 3.
+distribution-shift problem; see PLAN.md milestone 4.
 
 Possible augmentation uses:
 
