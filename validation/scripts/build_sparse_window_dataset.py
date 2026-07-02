@@ -14,6 +14,7 @@ from validation.vr_pose_validation.cmu_metadata import ActivityClass, Environmen
 from validation.vr_pose_validation.upper_body_ml import (
     DEFAULT_CLEAN_ACTIVITY_CLASSES,
     SparseWindowConfig,
+    TrackingSpace,
     build_sparse_window_dataset,
 )
 
@@ -48,6 +49,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-clips", type=int)
     parser.add_argument("--subjects", nargs="*")
     parser.add_argument("--holdout-folds", type=int, default=5)
+    parser.add_argument(
+        "--tracking-space",
+        choices=("head_yaw", "calibration_yaw"),
+        default="calibration_yaw",
+        help=(
+            "Coordinate basis for sparse windows and upper-body targets. "
+            "calibration_yaw keeps clip-initial yaw axes stable while keeping "
+            "positions relative to the current HMD/head origin."
+        ),
+    )
     parser.add_argument(
         "--estimator",
         default="basis_research",
@@ -95,6 +106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         holdout_folds=max(2, args.holdout_folds),
         environment_splits=cast(tuple[EnvironmentSplit, ...], tuple(args.environment_split)),
         activity_classes=cast(tuple[ActivityClass, ...], tuple(args.activity_class)),
+        tracking_space=cast(TrackingSpace, args.tracking_space),
         workers=max(1, args.workers if args.workers is not None else _default_workers(args.stride)),
         shard_rows=max(0, args.shard_rows),
     )

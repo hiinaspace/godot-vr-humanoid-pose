@@ -46,6 +46,15 @@ def make_torch_upper_body_model(
             hidden_dim=hidden_dim,
             layout=layout,
         )
+    if model_name == "torch_gru":
+        layout = infer_sparse_window_layout(feature_names, input_dim=input_dim)
+        return _make_gru(
+            torch,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            hidden_dim=hidden_dim,
+            layout=layout,
+        )
     raise ValueError(f"Unsupported Torch upper-body model: {model_name}")
 
 
@@ -153,6 +162,56 @@ def _make_tcn(
             return self.head(latest)
 
     return SparseWindowTCN()
+
+
+def _make_gru(
+    torch: Any,
+    *,
+    input_dim: int,
+    output_dim: int,
+    hidden_dim: int,
+    layout: SparseWindowLayout,
+) -> Any:
+    class SparseWindowGRU(torch.nn.Module):  # type: ignore[misc]
+        def __init__(self) -> None:
+            super().__init__()
+            self.window_size = layout.window_size
+            self.per_frame_dim = layout.per_frame_dim
+            self.static_dim = layout.static_dim
+            self.frame_dim = layout.frame_dim
+            if self.frame_dim + self.static_dim != input_dim:
+                raise ValueError("GRU layout does not match input_dim")
+            self.static_initial_state = (
+                torch.nn.Linear(layout.static_dim, hidden_dim) if layout.static_dim > 0 else None
+            )
+            self.gru = torch.nn.GRU(
+                input_size=layout.per_frame_dim,
+                hidden_size=hidden_dim,
+                batch_first=True,
+            )
+            self.head = torch.nn.Sequential(
+                torch.nn.Linear(hidden_dim + layout.static_dim, hidden_dim),
+                torch.nn.GELU(),
+                torch.nn.Linear(hidden_dim, output_dim),
+            )
+
+        def forward(self, values: Any) -> Any:
+            temporal = values[:, : self.frame_dim].reshape(
+                values.shape[0],
+                self.window_size,
+                self.per_frame_dim,
+            )
+            static = values[:, self.frame_dim :]
+            initial_state = None
+            if self.static_initial_state is not None:
+                initial_state = torch.tanh(self.static_initial_state(static)).unsqueeze(0)
+            output, _hidden = self.gru(temporal, initial_state)
+            latest = output[:, -1, :]
+            if self.static_dim > 0:
+                latest = torch.cat((latest, static), dim=1)
+            return self.head(latest)
+
+    return SparseWindowGRU()
 
 
 def _is_window_prefix(value: str) -> bool:

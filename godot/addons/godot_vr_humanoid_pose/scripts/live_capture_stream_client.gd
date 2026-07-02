@@ -107,8 +107,9 @@ func build_estimate_request_message(
     sample: Dictionary,
     calibration: Dictionary,
     grounding: Dictionary,
-    pose_universe := "standing",
-    clip_index := 0
+    pose_universe: String = "standing",
+    clip_index: int = 0,
+    devices: Array = []
 ) -> Dictionary:
     return _json_safe({
         "format": CAPTURE_FORMAT,
@@ -123,6 +124,7 @@ func build_estimate_request_message(
         "sample": sample,
         "calibration": calibration,
         "grounding": grounding,
+        "devices": devices,
     })
 
 

@@ -14,7 +14,7 @@ The practical benchmark is convincing social-VR style avatar pose quality from s
 - Optional trackers should improve results without becoming required.
 - Scene access matters. Foot grounding and lower-body plausibility need collision/raycast access, character-controller state, and avatar scale, so the main runtime API should not be VMC-only.
 - VMC is still valuable as an interoperability, recording, and comparison format.
-- CMU mocap is the first validation dataset candidate. AMASS/SMPL-derived assets are useful research references but have licensing constraints for commercial-bound work.
+- CMU mocap is the first validation dataset candidate. AMASS-derived assets are useful research references but have licensing constraints for commercial-bound work. SMPL-family assets need a narrower distinction: SMPL/SMPL-X Body exports are CC BY 4.0, while the full model/software packages are still license-gated.
 - VRChat black-box reverse engineering is not worth the ToS/account risk for this project.
 
 ## Key References
@@ -39,6 +39,25 @@ The practical benchmark is convincing social-VR style avatar pose quality from s
 - `S:\code\ik-pose-research\HMD-Poser`, `AvatarPoser`, `EgoPoser`
   - Useful model architectures and metrics references.
   - Do not assume their dataset/license path is suitable for commercial-bound training.
+- `S:\code\godot-vr-humanoid-pose\.cache\references\LGSIK-Poser`
+  - MIT code release for LGSIK-Poser, cloned as ignored reference material.
+  - Strong current architecture reference: HMD/controllers plus optional IMUs,
+    grouped LSTMs, masked skeleton graph convolution, partition-specific IK
+    refinement MLPs with sparse-input skip connections, anthropometric priors,
+    and multi-scale velocity loss.
+  - Still AMASS/SMPL/SMPL-H based; use for architecture and loss design, not as
+    a direct runtime or commercial training dependency.
+- AvatarJLM, DragPoser, and SSR-HMR papers/code
+  - Useful for the current learned-model posture: joint-level spatiotemporal
+    tokens, structured latent optimization with dynamic hard constraints,
+    graph-convolution skeleton priors, torso adjustment, and multi-scale
+    velocity/jitter losses.
+- Official SMPL/SMPL-X licensing notes
+  - `SMPL-Body` and `SMPL-X Body` outputs are CC BY 4.0, so SMPL-shaped bodies
+    can be useful as an interchange layer.
+  - The full SMPL/SMPL-X model/software licenses are still non-commercial
+    research licenses; do not make them training dependencies for
+    commercial-bound model artifacts without separate review.
 - `S:\code\ik-pose-research\SparsePoser`
   - MIT code with CC BY-SA model/data assets.
   - Useful reference for BVH evaluation, six-tracker live calibration, skeleton-proportion conditioning, and a learned generator plus learned end-effector correction architecture.
@@ -53,6 +72,10 @@ The practical benchmark is convincing social-VR style avatar pose quality from s
 ## Architecture Direction
 
 Use an internal pose-estimation API, with VMC as one possible input/output adapter.
+The current development direction is Python-first learned estimation with
+analytic/runtime correction, rather than a pure Basis-style procedural port. The
+procedural solver remains an important baseline and fallback; learned models are
+now first-class experiments.
 
 Core data types:
 
@@ -60,7 +83,9 @@ Core data types:
   - HMD transform.
   - Left/right controller or hand transforms.
   - Optional tracker transforms by semantic role: hip, chest, left/right foot, left/right knee, left/right elbow.
-  - Tracking confidence, timestamps, and velocities where available.
+  - Tracking confidence, timestamps, native linear/angular velocities where
+    available, and finite-difference fallback velocities for offline synthetic
+    CMU data.
 - `AvatarCalibration`
   - Rest pose, bone lengths, humanoid bone map, avatar scale, eye/head offset, controller-to-wrist offset, foot dimensions, knee bend preferences.
 - `GroundingContext`
@@ -73,7 +98,12 @@ Core data types:
 
 Godot integration options:
 
-- Preferred runtime path: a `SkeletonModifier3D`-based node that applies the estimated pose to a `Skeleton3D`.
+- Near-term live-test path: a Python sidecar owns the learned estimator and
+  streams estimated pose/debug data to the Godot overlay. This avoids
+  maintaining parallel GDScript estimator logic while models are changing.
+- Preferred production runtime path: a `SkeletonModifier3D`-based node that
+  applies the estimated pose to a `Skeleton3D`, probably backed later by a Rust
+  or C++ GDExtension once the model/decoder shape stabilizes.
 - Optional interop path: publish `HumanoidPoseFrame` to an `XRBodyTracker`, allowing `XRBodyModifier3D` and external systems to consume it.
 - Optional VMC path: receive or transmit VMC for tools, tests, recording, and comparison, not as the only runtime API.
 
@@ -125,6 +155,21 @@ Generate multiple synthetic modes from the same clip:
   - Representing hand pose and hand position in head space.
   - Deriving velocities, accelerations, and smoothness metrics.
   - Skipping non-motion AMASS files and normalizing frame rates.
+- LGSIK-Poser is currently the closest architecture reference to the direction
+  of this repo. Its useful transferable pieces are:
+  - Sparse VR input channels: 6D rotation, rotation velocity, position, linear
+    velocity, head-relative hand pose, optional IMU acceleration, and zeroed
+    channels for missing sensor modes.
+  - Causal 40-frame windows and recurrent temporal encoders.
+  - Grouped body partitions: torso/pelvis, head, left/right hands, left/right
+    legs, upper body, lower body, and shape/calibration.
+  - Masked skeleton graph convolution to move information across anatomical
+    groups without dense Transformer-style all-to-all attention.
+  - Partition-specific pose refinement heads that concatenate raw sparse input
+    with learned features, preserving end-effector constraints.
+  - Losses over root orientation, local/global rotations, joint positions,
+    sparse root/hand positions, shape consistency, and multi-scale velocity
+    over several frame intervals.
 - EgoPoser's FOV/dropout handling is a useful model for intermittent observations, even though desktop VR controller tracking is usually not headset-camera FOV limited.
 - AMCParser is a compact MIT-licensed raw ASF/AMC parser worth using as a behavior reference, but the Godot validation pipeline should implement its own parser with explicit CMU scale conversion, coordinate conversion, and robust error reporting.
 - Humenv has curated CMU-derived hard-pose examples such as crouches, sitting, handstands, and hands-on-ground poses. Its license is not suitable for code reuse here, but the clip/frame choices are useful inspiration for a stress-test list.
@@ -245,19 +290,48 @@ This phase is why VMC should not be the internal solver API: the estimator needs
 - Add a local recording format for `TrackedPoseSample`, `GroundingContext` summaries, and `HumanoidPoseFrame`.
 - Use recordings to reproduce live failures offline.
 
-### Phase 7: ML Or Optimizer Backends
+### Phase 7: Learned Temporal-Skeleton Backend
 
-Only after validation exists:
+Validation now exists, and the procedural solver has reached diminishing
+returns for upper-body behavior. The learned backend should be developed as a
+benchmarked replacement or hybrid, with Basis-style output kept as the reference
+baseline.
 
-- Try a small deterministic optimizer for hips/spine/feet using robotics-style costs:
-  - target error,
-  - joint limits,
-  - smoothness,
-  - foot contact,
-  - regularization toward rest or previous pose.
-- Try an ONNX backend trained on CMU-derived synthetic trackers if deterministic methods plateau.
-- Keep ML optional and benchmarked against the deterministic Basis-style solver.
-- Do not build the runtime around AMASS/SMPL assets unless license issues are resolved for the exact use case.
+Model ladder:
+
+- Keep Torch MLP, TCN, and GRU as baseline experiments.
+- Add an LSTM baseline for parity with LGSIK-Poser and HMD-Poser.
+- Add a grouped skeleton-aware model before a full Transformer:
+  - per-group embeddings for torso/pelvis, head, left/right arms, lower body,
+    and calibration/shape;
+  - recurrent causal temporal encoders per group;
+  - masked graph/message passing across body groups;
+  - region-specific output heads with raw tracker skip connections.
+- Continue to test runtime EMA/One-Euro-style filters on inferred latents, but
+  train with multi-scale velocity and jerk/frequency diagnostics so smoothing
+  is a measured latency/plausibility tradeoff, not a hidden patch.
+
+Runtime correction:
+
+- Keep controller/head target alignment as a hard acceptance metric.
+- Use analytic two-bone IK or learned IK-correction heads to preserve hand
+  targets after the learned body prediction.
+- Feed avatar/user calibration into the network and decoder: height, shoulder
+  width, arm lengths, leg lengths, controller grip offsets, and optional
+  tracker attachment offsets.
+- Keep foot grounding scene-aware and procedural/constraint-based at first;
+  lower-body learned motion should be judged by plausibility/contact metrics as
+  much as by exact CMU GT match.
+
+Data policy:
+
+- CMU/raw ASF-AMC plus local VR capture remain the commercial-friendly training
+  and validation base.
+- AMASS/SMPL papers and code are architecture references unless a separate
+  license review explicitly approves their assets or pretrained weights.
+- Live capture should preserve native tracker velocity/angular velocity when
+  available. CMU synthetic trackers can continue using finite differences, but
+  training should distinguish native sensor velocity from derived velocity.
 
 ## Proposed Repo Layout
 

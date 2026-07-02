@@ -63,6 +63,27 @@ uv run python -m validation.scripts.run_live_capture_recorder --estimator basis_
 & 'S:\lib\godot\bin\godot.windows.editor.x86_64.console.exe' --path godot --scene res://scenes/live_overlay_debug.tscn
 ```
 
+### SparsePoser Xsens Overlay
+
+The SparsePoser overlay path uses the same Godot scene and socket recorder, but
+the Python sidecar bridges to the official SparsePoser runtime in its isolated
+reference venv and renders the native 22-joint Xsens skeleton returned by that
+runtime. It currently requires the six SparsePoser inputs: pelvis, left foot,
+right foot, HMD, left controller, and right controller. Extra calibrated
+trackers are still shown as labeled markers and recorded for later analysis.
+
+```powershell
+uv run python -m validation.scripts.run_live_capture_recorder --backend sparseposer_xsens --sparseposer-python .cache/references/SparsePoser/python/.venv/Scripts/python.exe --sparseposer-root .cache/references/SparsePoser/python --sparseposer-model .cache/references/SparsePoser/python/models/model_xsens --sparseposer-reference-bvh .cache/references/SparsePoser/SparsePoserUnity/Assets/Data/male_180_94.txt --output-dir .cache/live_capture_sparseposer
+& 'S:\lib\godot\bin\godot.windows.editor.x86_64.console.exe' --path godot --scene res://scenes/live_overlay_debug.tscn -- --sparseposer-calibration
+```
+
+The calibration flow is two-step when `--sparseposer-calibration` is enabled:
+first gaze-trigger the normal T-pose role-detection mode, then press either
+controller trigger while holding the T-pose to capture roles immediately. Next,
+align yourself with the shown Xsens T-pose skeleton and press either trigger
+again. The second snapshot computes tracker-to-Xsens-joint offsets for the six
+SparsePoser inputs.
+
 Without the OpenVR overlay addon, the scene falls back to synthetic 3-point
 input so the renderer and socket stream can still be smoke-tested. Pass
 `-- --no-synthetic-live-input` to require live XR poses, or pass

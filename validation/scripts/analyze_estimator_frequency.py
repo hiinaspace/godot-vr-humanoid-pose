@@ -194,6 +194,7 @@ def analyze_estimator_frequency(
     estimator_factories: dict[str, EstimatorFactory] = {
         base_estimator_name: lambda: create_estimator(base_estimator_name),
     }
+    effective_window_size = window_size
     if include_learned:
         provider = TorchUpperBodyLatentProvider(
             artifact_path=artifact_path,
@@ -201,6 +202,7 @@ def analyze_estimator_frequency(
             window_size=window_size,
             allow_cpu=allow_cpu,
         )
+        effective_window_size = provider.window_size
         latent_provider = (
             EmaUpperBodyLatentProvider(provider=provider, alpha=latent_ema_alpha)
             if latent_ema_alpha < 1.0
@@ -231,7 +233,7 @@ def analyze_estimator_frequency(
         dataset_dir=dataset_dir,
         artifact_path=artifact_path,
         normalization_path=normalization_path,
-        window_size=window_size,
+        window_size=effective_window_size,
         latent_ema_alpha=latent_ema_alpha,
         base_estimator_name=base_estimator_name,
         learned_label=learned_label,

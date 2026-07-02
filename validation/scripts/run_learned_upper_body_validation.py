@@ -214,7 +214,7 @@ def run_learned_upper_body_validation(
         baseline_results=baseline_results,
         artifact_path=artifact_path,
         normalization_path=normalization_path,
-        window_size=window_size,
+        window_size=provider.window_size,
         latent_ema_alpha=latent_ema_alpha,
         base_estimator_name=base_estimator_name,
         environment_splits=environment_splits or set(),

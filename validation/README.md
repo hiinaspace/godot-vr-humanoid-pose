@@ -51,6 +51,30 @@ labels: `flat`, `nonflat`, or `unknown`, plus deterministic `activity_class`
 labels such as `idle_standing`, `sitting`, `stationary_upper_body`, `locomotion`,
 `dance_exercise`, `swimming`, `floor_pose`, `sports`, or `unknown`.
 
+Build the SparsePoser/Xsens BVH cache:
+
+```powershell
+uv run python -m validation.scripts.build_sparseposer_parquet_cache --cache-dir .cache/sparseposer/parquet/canonical
+```
+
+The SparsePoser cache uses the same canonical wide-Parquet columns and adds
+`dataset=sparseposer_xsens` plus `dataset_split=train|eval`. Keep it
+license-gated for now: the SparsePoser repo and Zenodo metadata disagree between
+CC BY-SA 4.0 and CC BY 4.0. For a fast smoke test, run:
+
+```powershell
+uv run python -m validation.scripts.build_sparseposer_parquet_cache --splits eval --max-clips 1 --max-frames-per-clip 120 --cache-dir .cache/sparseposer/parquet/smoke --force
+```
+
+If the official SparsePoser reference code has generated BVH outputs in a loose
+folder, convert those outputs and compare them against the canonical reference
+cache:
+
+```powershell
+uv run python -m validation.scripts.build_sparseposer_parquet_cache --input-dir .cache/references/SparsePoser/python/data --dataset-split eval --filename-prefix-to-strip eval_ --splits eval --cache-dir .cache/sparseposer/parquet/model_xsens_eval --force
+uv run python -m validation.scripts.run_pose_cache_comparison --reference-cache-dir .cache/sparseposer/parquet/canonical --prediction-cache-dir .cache/sparseposer/parquet/model_xsens_eval --dataset-split eval --report validation/reports/sparseposer_model_xsens_eval_ours.json --csv-report validation/reports/sparseposer_model_xsens_eval_ours.csv
+```
+
 Run cached validation across clips with stateful estimator resets per clip:
 
 ```powershell
@@ -139,18 +163,22 @@ worker count is capped at 2 for `--stride 1` dense exports to avoid queuing too
 many large clip row batches in RAM, but the expanded FK schema is still safest
 with `--workers 1 --shard-rows 5000` for full-cache regeneration. Use
 `--stride 1` for dense temporal training; larger strides are useful for quicker
-representation smoke tests. Numeric training columns are stored as Float32
-Parquet values; dense windows are still large because each stride-1 row
-materializes the full causal window. Rows use causal HMD/controller windows, static
-calibration features such as
-height/shoulder width/arm lengths, and `upper_body_chain_v1` targets: normalized
-head-yaw-relative chest, neck, shoulder anchors, plus elbow pole directions
-masked when the arm is near straight. Rows also include local reference and heuristic chest/neck/shoulder/elbow
-points plus local heuristic base-pose context for decoded post-IK losses. When
-that context is present, Torch training decodes predicted latents through the
-differentiable runtime arm/torso chain instead of the older approximate
-surrogate. Rows also include auxiliary `upper_body_fk_v1` targets: head-yaw-local
-hips position/rotation plus upper-body parent-relative 6D joint rotations. Use
+representation smoke tests. By default, rows use `--tracking-space
+calibration_yaw`: positions stay relative to the current HMD/head origin, but
+the X/Z axes stay fixed to the clip-initial HMD yaw. Use `--tracking-space
+head_yaw` for the older moving-head-yaw convention. Numeric training columns
+are stored as Float32 Parquet values; dense windows are still large because each
+stride-1 row materializes the full causal window. Rows use causal
+HMD/controller windows, static calibration features such as height/shoulder
+width/arm lengths, and `upper_body_chain_v1` targets: normalized tracking-space
+chest, neck, shoulder anchors, plus elbow pole directions masked when the arm is
+near straight. Rows also include local reference and heuristic
+chest/neck/shoulder/elbow points plus local heuristic base-pose context for
+decoded post-IK losses. When that context is present, Torch training decodes
+predicted latents through the differentiable runtime arm/torso chain instead of
+the older approximate surrogate. Rows also include auxiliary `upper_body_fk_v1`
+targets: tracking-space-local hips position/rotation plus upper-body
+parent-relative 6D joint rotations. Use
 `--target-mode fk --fk-decoded-pose-weight <weight>` to train those rotation
 targets with a differentiable FK point objective against the exported reference
 chest/neck/shoulder/elbow points. FK mode also reports decoded position,
@@ -160,18 +188,35 @@ penalize velocity, acceleration, and jerk,
 and the optional temporal excess loss penalizes output jerk only when it exceeds
 reference jerk by a configured ratio. Pole temporal losses compare elbow bend
 direction velocity/jerk, and the reach hinge penalizes shoulder-hand distances
-near full extension before the two-bone IK singularity. Training reports compare the constant
-baseline, Torch linear, Torch MLP, Torch TCN, and native XGBoost CUDA paths.
+near full extension before the two-bone IK singularity. `--yaw-augmentation-degrees`
+adds train-only random vertical yaw rotations in the tracking frame, with
+validation left unaugmented. Torch runs save the best validation checkpoint by
+`--checkpoint-metric` rather than blindly keeping the last epoch, and
+`--early-stopping-patience` can stop flat runs. Training reports compare the constant
+baseline, Torch linear, Torch MLP, Torch TCN, Torch GRU, and native XGBoost CUDA paths.
 Torch CUDA is required by default; pass `--allow-cpu` only for smoke tests.
-For full dense caches, use `--max-clips` or `--max-rows` until the trainer has
-a streaming/batch-transfer dataset path; those limits filter the existing
-Parquet cache without rebuilding it.
+For bounded dense-cache experiments, `--max-clips` and `--max-rows` filter the
+existing Parquet cache without rebuilding it. Use `--stream-training` for
+larger runs to avoid materializing train rows in CPU RAM. The streaming path reads Parquet shards
+with PyArrow, computes normalization over the selected train rows, and keeps a
+bounded validation sample controlled by `--stream-validation-rows`. It applies
+latent and decoded per-row losses plus batch-local temporal regularization for
+contiguous frames that fit inside the same streamed record batch. Temporal
+windows do not cross batch or shard boundaries, so large runs should keep
+`--batch-size` comfortably above `--temporal-loss-windows` when temporal losses
+are important.
 
 For shoulder/elbow experiments, use decoded losses against the exported
 reference points instead of only latent MAE:
 
 ```powershell
-uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp torch_tcn --latent-loss-weight 0.1 --decoded-pose-weight 25 --decoded-torso-weight 1 --decoded-shoulder-weight 2 --decoded-elbow-weight 2 --decoded-arm-direction-weight 0.5 --decoded-stretch-weight 0.25 --decoded-reach-hinge-weight 0.25 --reach-ratio-limit 0.97 --temporal-velocity-weight 0.2 --temporal-acceleration-weight 0.1 --temporal-jerk-weight 0.05 --temporal-excess-jerk-weight 0.05 --pole-velocity-weight 0.05 --pole-excess-jerk-weight 0.02 --temporal-loss-windows 512
+uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp torch_tcn torch_gru --latent-loss-weight 0.1 --decoded-pose-weight 25 --decoded-torso-weight 1 --decoded-shoulder-weight 2 --decoded-elbow-weight 2 --decoded-arm-direction-weight 0.5 --decoded-stretch-weight 0.25 --decoded-reach-hinge-weight 0.25 --reach-ratio-limit 0.97 --temporal-velocity-weight 0.2 --temporal-acceleration-weight 0.1 --temporal-jerk-weight 0.05 --temporal-excess-jerk-weight 0.05 --pole-velocity-weight 0.05 --pole-excess-jerk-weight 0.02 --temporal-loss-windows 512 --yaw-augmentation-degrees 180 --early-stopping-patience 12
+```
+
+For larger dense-cache runs, stream train batches and keep validation bounded:
+
+```powershell
+uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_stream --models torch_mlp torch_tcn torch_gru --stream-training --stream-validation-rows 65536 --latent-loss-weight 0.1 --decoded-pose-weight 10 --decoded-torso-weight 1 --decoded-shoulder-weight 2 --decoded-elbow-weight 2 --decoded-arm-direction-weight 0.5 --decoded-stretch-weight 0.25 --decoded-reach-hinge-weight 0.25 --reach-ratio-limit 0.97 --yaw-augmentation-degrees 180 --early-stopping-patience 12
 ```
 
 Torch training supports `--tracking-backend mlflow`, `jsonl`, or `none`.
@@ -180,7 +225,7 @@ parameters and epoch metrics in a queryable local run store with an actively
 maintained UI:
 
 ```powershell
-uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp torch_tcn --tracking-backend mlflow --mlflow-tracking-uri sqlite:///.cache/ml/mlflow.db --mlflow-artifact-root .cache/ml/mlflow_artifacts --mlflow-experiment upper_body_dense
+uv run --group ml python -m validation.scripts.train_upper_body_latents --dataset-dir .cache/ml/upper_body_windows_dense --output-dir .cache/ml/upper_body_models_decoded --models torch_mlp torch_tcn torch_gru --tracking-backend mlflow --mlflow-tracking-uri sqlite:///.cache/ml/mlflow.db --mlflow-artifact-root .cache/ml/mlflow_artifacts --mlflow-experiment upper_body_dense
 uv run --group ml mlflow ui --backend-store-uri sqlite:///.cache/ml/mlflow.db
 ```
 

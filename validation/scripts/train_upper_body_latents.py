@@ -8,7 +8,7 @@ import importlib.util
 import json
 import math
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -50,6 +50,7 @@ TorchModelName = Literal[
     "torch_linear",
     "torch_mlp",
     "torch_tcn",
+    "torch_gru",
     "xgboost",
 ]
 TrackingBackend = Literal["jsonl", "mlflow", "none"]
@@ -77,11 +78,41 @@ class LoadedDataset:
     feature_names: list[str]
     target_names: list[str]
     fk_target_names: list[str]
+    tracking_space: str
+
+
+@dataclass(frozen=True, slots=True)
+class SparseWindowSchema:
+    feature_names: list[str]
+    target_names: list[str]
+    fk_target_names: list[str]
+    tracking_space: str
+
+
+@dataclass(frozen=True, slots=True)
+class StreamingTorchBatch:
+    features: np.ndarray
+    targets: np.ndarray
+    masks: np.ndarray
+    subjects: np.ndarray
+    clips: np.ndarray
+    center_row_indices: np.ndarray
+    timestamps_s: np.ndarray
+    heuristics: np.ndarray | None
+    heuristic_masks: np.ndarray | None
+    decoded_reference_points: np.ndarray | None
+    decoded_reference_masks: np.ndarray | None
+    runtime_context_points: np.ndarray | None
+    runtime_context_masks: np.ndarray | None
 
 
 class TrainingTracker:
     def log(self, row: Mapping[str, object]) -> None:
         raise NotImplementedError
+
+    def log_artifact(self, path: Path, *, artifact_path: str | None = None) -> None:
+        del path, artifact_path
+        return
 
     def metadata(self) -> dict[str, object]:
         raise NotImplementedError
@@ -163,6 +194,14 @@ class MlflowTrainingTracker(TrainingTracker):
             "mlflow_artifact_uri": self._artifact_uri,
         }
 
+    def log_artifact(self, path: Path, *, artifact_path: str | None = None) -> None:
+        if not path.exists():
+            return
+        if path.is_dir():
+            self._mlflow.log_artifacts(str(path), artifact_path=artifact_path)
+        else:
+            self._mlflow.log_artifact(str(path), artifact_path=artifact_path)
+
     def close(self) -> None:
         active_run = self._mlflow.active_run()
         if active_run is not None and str(active_run.info.run_id) == self._run_id:
@@ -189,6 +228,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "torch_linear",
             "torch_mlp",
             "torch_tcn",
+            "torch_gru",
             "xgboost",
         ),
         default=("constant", "torch_linear", "torch_mlp", "xgboost"),
@@ -199,6 +239,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--yaw-augmentation-degrees",
+        type=float,
+        default=0.0,
+        help="Apply train-only random vertical yaw augmentation in the tracking frame.",
+    )
+    parser.add_argument(
+        "--checkpoint-metric",
+        default="validation_decoded_position_mse",
+        help="Validation history metric used for best-checkpoint selection.",
+    )
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=0,
+        help="Stop after this many epochs without checkpoint-metric improvement; 0 disables.",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=0.0,
+        help="Minimum checkpoint-metric improvement required to reset patience.",
+    )
+    parser.add_argument(
+        "--stream-training",
+        action="store_true",
+        help="Stream Torch training batches from Parquet instead of materializing train rows.",
+    )
+    parser.add_argument(
+        "--stream-validation-rows",
+        type=int,
+        default=65_536,
+        help="Validation rows to materialize when --stream-training is enabled.",
+    )
     parser.add_argument(
         "--max-clips",
         type=int,
@@ -292,6 +366,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         weight_decay=args.weight_decay,
         hidden_dim=max(8, args.hidden_dim),
         seed=args.seed,
+        yaw_augmentation_degrees=max(0.0, args.yaw_augmentation_degrees),
+        checkpoint_metric=args.checkpoint_metric,
+        early_stopping_patience=max(0, args.early_stopping_patience),
+        early_stopping_min_delta=max(0.0, args.early_stopping_min_delta),
+        stream_training=args.stream_training,
+        stream_validation_rows=max(1, args.stream_validation_rows),
         max_clips=args.max_clips,
         max_rows=args.max_rows,
         target_mode=cast(TargetMode, args.target_mode),
@@ -340,6 +420,12 @@ def train_upper_body_latents(
     weight_decay: float = 1e-4,
     hidden_dim: int = 256,
     seed: int = 0,
+    yaw_augmentation_degrees: float = 0.0,
+    checkpoint_metric: str = "validation_decoded_position_mse",
+    early_stopping_patience: int = 0,
+    early_stopping_min_delta: float = 0.0,
+    stream_training: bool = False,
+    stream_validation_rows: int = 65_536,
     max_clips: int | None = None,
     max_rows: int | None = None,
     target_mode: TargetMode = "chain",
@@ -377,6 +463,58 @@ def train_upper_body_latents(
     temporal_excess_margin: float = 0.0,
     disabled_target_groups: set[str] | None = None,
 ) -> dict[str, object]:
+    if stream_training:
+        return _train_upper_body_latents_streaming(
+            dataset_dir=dataset_dir,
+            output_dir=output_dir,
+            model_names=model_names,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            hidden_dim=hidden_dim,
+            seed=seed,
+            yaw_augmentation_degrees=yaw_augmentation_degrees,
+            checkpoint_metric=checkpoint_metric,
+            early_stopping_patience=early_stopping_patience,
+            early_stopping_min_delta=early_stopping_min_delta,
+            stream_validation_rows=stream_validation_rows,
+            max_clips=max_clips,
+            max_rows=max_rows,
+            target_mode=target_mode,
+            allow_cpu=allow_cpu,
+            tracking_backend=tracking_backend,
+            mlflow_tracking_uri=mlflow_tracking_uri,
+            mlflow_artifact_root=mlflow_artifact_root,
+            mlflow_experiment=mlflow_experiment,
+            run_name=run_name,
+            validation_subjects=validation_subjects,
+            residual_regularization_weight=residual_regularization_weight,
+            residual_scale=residual_scale,
+            residual_smoothing_alpha=residual_smoothing_alpha,
+            residual_gate_search=residual_gate_search,
+            latent_loss_weight=latent_loss_weight,
+            decoded_pose_weight=decoded_pose_weight,
+            decoded_torso_weight=decoded_torso_weight,
+            decoded_shoulder_weight=decoded_shoulder_weight,
+            decoded_elbow_weight=decoded_elbow_weight,
+            decoded_arm_direction_weight=decoded_arm_direction_weight,
+            decoded_stretch_weight=decoded_stretch_weight,
+            decoded_reach_hinge_weight=decoded_reach_hinge_weight,
+            fk_decoded_pose_weight=fk_decoded_pose_weight,
+            reach_ratio_limit=reach_ratio_limit,
+            surrogate_position_weight=surrogate_position_weight,
+            temporal_velocity_weight=temporal_velocity_weight,
+            temporal_acceleration_weight=temporal_acceleration_weight,
+            temporal_jerk_weight=temporal_jerk_weight,
+            temporal_excess_jerk_weight=temporal_excess_jerk_weight,
+            pole_velocity_weight=pole_velocity_weight,
+            pole_excess_jerk_weight=pole_excess_jerk_weight,
+            temporal_loss_windows=temporal_loss_windows,
+            temporal_excess_ratio=temporal_excess_ratio,
+            temporal_excess_margin=temporal_excess_margin,
+            disabled_target_groups=disabled_target_groups,
+        )
     dataset = load_dataset(dataset_dir, max_clips=max_clips, max_rows=max_rows)
     dataset = _dataset_for_target_mode(dataset, target_mode)
     torch = _import_torch()
@@ -400,11 +538,16 @@ def train_upper_body_latents(
         "torch_cuda_available": bool(torch.cuda.is_available()),
         "torch_device": str(device),
         "target_mode": target_mode,
+        "tracking_space": dataset.tracking_space,
         "tracking_backend": tracking_backend,
         "mlflow_tracking_uri": mlflow_tracking_uri,
         "mlflow_artifact_root": mlflow_artifact_root.as_posix(),
         "mlflow_experiment": mlflow_experiment,
         "run_name": run_name,
+        "yaw_augmentation_degrees": yaw_augmentation_degrees,
+        "checkpoint_metric": checkpoint_metric,
+        "early_stopping_patience": early_stopping_patience,
+        "early_stopping_min_delta": early_stopping_min_delta,
         "max_clips": max_clips,
         "max_rows": max_rows,
         "validation_subjects": sorted(validation_subjects or []),
@@ -438,6 +581,7 @@ def train_upper_body_latents(
                 "mean": stats["mean"].tolist(),
                 "scale": stats["scale"].tolist(),
                 "target_names": dataset.target_names,
+                "tracking_space": dataset.tracking_space,
             },
             indent=2,
             sort_keys=True,
@@ -496,6 +640,12 @@ def train_upper_body_latents(
                 weight_decay=weight_decay,
                 hidden_dim=hidden_dim,
                 seed=seed,
+                feature_mean=stats["mean"],
+                feature_scale=stats["scale"],
+                yaw_augmentation_degrees=yaw_augmentation_degrees,
+                checkpoint_metric=checkpoint_metric,
+                early_stopping_patience=early_stopping_patience,
+                early_stopping_min_delta=early_stopping_min_delta,
                 feature_names=dataset.feature_names,
                 target_names=dataset.target_names,
                 residual_regularization_weight=residual_regularization_weight,
@@ -536,53 +686,284 @@ def train_upper_body_latents(
     return report
 
 
+def _train_upper_body_latents_streaming(
+    *,
+    dataset_dir: Path,
+    output_dir: Path,
+    model_names: Sequence[TorchModelName],
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    weight_decay: float,
+    hidden_dim: int,
+    seed: int,
+    yaw_augmentation_degrees: float,
+    checkpoint_metric: str,
+    early_stopping_patience: int,
+    early_stopping_min_delta: float,
+    stream_validation_rows: int,
+    max_clips: int | None,
+    max_rows: int | None,
+    target_mode: TargetMode,
+    allow_cpu: bool,
+    tracking_backend: TrackingBackend,
+    mlflow_tracking_uri: str,
+    mlflow_artifact_root: Path,
+    mlflow_experiment: str,
+    run_name: str | None,
+    validation_subjects: set[str] | None,
+    residual_regularization_weight: float,
+    residual_scale: float,
+    residual_smoothing_alpha: float,
+    residual_gate_search: bool,
+    latent_loss_weight: float,
+    decoded_pose_weight: float,
+    decoded_torso_weight: float,
+    decoded_shoulder_weight: float,
+    decoded_elbow_weight: float,
+    decoded_arm_direction_weight: float,
+    decoded_stretch_weight: float,
+    decoded_reach_hinge_weight: float,
+    fk_decoded_pose_weight: float,
+    reach_ratio_limit: float,
+    surrogate_position_weight: float,
+    temporal_velocity_weight: float,
+    temporal_acceleration_weight: float,
+    temporal_jerk_weight: float,
+    temporal_excess_jerk_weight: float,
+    pole_velocity_weight: float,
+    pole_excess_jerk_weight: float,
+    temporal_loss_windows: int,
+    temporal_excess_ratio: float,
+    temporal_excess_margin: float,
+    disabled_target_groups: set[str] | None,
+) -> dict[str, object]:
+    unsupported_models = [name for name in model_names if name in ("constant", "xgboost")]
+    if unsupported_models:
+        raise ValueError(
+            "--stream-training currently supports Torch models only; remove "
+            f"{', '.join(unsupported_models)} from --models."
+        )
+    stream_temporal_losses = _temporal_weights_enabled(
+        temporal_velocity_weight=temporal_velocity_weight,
+        temporal_acceleration_weight=temporal_acceleration_weight,
+        temporal_jerk_weight=temporal_jerk_weight,
+        temporal_excess_jerk_weight=temporal_excess_jerk_weight,
+        pole_velocity_weight=pole_velocity_weight,
+        pole_excess_jerk_weight=pole_excess_jerk_weight,
+    )
+    schema = _load_sparse_window_schema(dataset_dir)
+    torch = _import_torch()
+    device = _torch_device(torch, allow_cpu=allow_cpu)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    disabled_target_groups = _validate_target_groups(disabled_target_groups or set())
+    clip_ids = _stream_clip_ids(dataset_dir, max_clips=max_clips)
+    validation_dataset = load_dataset(
+        dataset_dir,
+        max_rows=stream_validation_rows,
+        split=None if validation_subjects else "validation",
+        subjects=validation_subjects,
+        clip_ids=clip_ids,
+    )
+    validation_dataset = _dataset_for_target_mode(validation_dataset, target_mode)
+    target_names = validation_dataset.target_names
+    stats, train_rows = _streaming_normalization_stats(
+        dataset_dir,
+        schema=schema,
+        split=None if validation_subjects else "train",
+        exclude_subjects=validation_subjects,
+        clip_ids=clip_ids,
+        max_rows=max_rows,
+    )
+    report: dict[str, object] = {
+        "dataset_dir": dataset_dir.as_posix(),
+        "output_dir": output_dir.as_posix(),
+        "rows": int(train_rows + validation_dataset.features.shape[0]),
+        "features": int(len(schema.feature_names)),
+        "targets": target_names,
+        "train_rows": int(train_rows),
+        "validation_rows": int(validation_dataset.features.shape[0]),
+        "torch_version": str(torch.__version__),
+        "torch_cuda_available": bool(torch.cuda.is_available()),
+        "torch_device": str(device),
+        "target_mode": target_mode,
+        "tracking_space": schema.tracking_space,
+        "tracking_backend": tracking_backend,
+        "mlflow_tracking_uri": mlflow_tracking_uri,
+        "mlflow_artifact_root": mlflow_artifact_root.as_posix(),
+        "mlflow_experiment": mlflow_experiment,
+        "run_name": run_name,
+        "stream_training": True,
+        "stream_validation_rows": stream_validation_rows,
+        "stream_temporal_losses": stream_temporal_losses,
+        "yaw_augmentation_degrees": yaw_augmentation_degrees,
+        "checkpoint_metric": checkpoint_metric,
+        "early_stopping_patience": early_stopping_patience,
+        "early_stopping_min_delta": early_stopping_min_delta,
+        "max_clips": max_clips,
+        "max_rows": max_rows,
+        "validation_subjects": sorted(validation_subjects or []),
+        "latent_loss_weight": latent_loss_weight,
+        "decoded_pose_weight": decoded_pose_weight,
+        "decoded_torso_weight": decoded_torso_weight,
+        "decoded_shoulder_weight": decoded_shoulder_weight,
+        "decoded_elbow_weight": decoded_elbow_weight,
+        "decoded_arm_direction_weight": decoded_arm_direction_weight,
+        "decoded_stretch_weight": decoded_stretch_weight,
+        "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+        "fk_decoded_pose_weight": fk_decoded_pose_weight,
+        "reach_ratio_limit": reach_ratio_limit,
+        "surrogate_position_weight": surrogate_position_weight,
+        "temporal_velocity_weight": temporal_velocity_weight,
+        "temporal_acceleration_weight": temporal_acceleration_weight,
+        "temporal_jerk_weight": temporal_jerk_weight,
+        "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+        "pole_velocity_weight": pole_velocity_weight,
+        "pole_excess_jerk_weight": pole_excess_jerk_weight,
+        "temporal_loss_windows": temporal_loss_windows,
+        "temporal_excess_ratio": temporal_excess_ratio,
+        "temporal_excess_margin": temporal_excess_margin,
+        "disabled_target_groups": sorted(disabled_target_groups),
+        "leaderboard": [],
+    }
+    (output_dir / "normalization.json").write_text(
+        json.dumps(
+            {
+                "feature_names": schema.feature_names,
+                "mean": stats["mean"].tolist(),
+                "scale": stats["scale"].tolist(),
+                "target_names": target_names,
+                "tracking_space": schema.tracking_space,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    validation_mask = np.ones(validation_dataset.features.shape[0], dtype=bool)
+    if validation_dataset.heuristics is not None and validation_dataset.heuristic_masks is not None:
+        cast(list[dict[str, object]], report["leaderboard"]).append(
+            {
+                "model": "heuristic_estimator",
+                "train_seconds": 0.0,
+                "inference_seconds_per_sample": 0.0,
+                **_metric_dict(
+                    validation_dataset.targets,
+                    validation_dataset.heuristics,
+                    validation_dataset.masks * validation_dataset.heuristic_masks,
+                    validation_dataset.target_names,
+                ),
+            }
+        )
+    for model_name in model_names:
+        result = _train_torch_model_streaming(
+            torch,
+            model_name=model_name,
+            dataset_dir=dataset_dir,
+            schema=schema,
+            validation_dataset=validation_dataset,
+            feature_mean=stats["mean"],
+            feature_scale=stats["scale"],
+            split=None if validation_subjects else "train",
+            exclude_subjects=validation_subjects,
+            clip_ids=clip_ids,
+            max_rows=max_rows,
+            output_path=output_dir / f"{model_name}.pt",
+            device=device,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            hidden_dim=hidden_dim,
+            seed=seed,
+            yaw_augmentation_degrees=yaw_augmentation_degrees,
+            checkpoint_metric=checkpoint_metric,
+            early_stopping_patience=early_stopping_patience,
+            early_stopping_min_delta=early_stopping_min_delta,
+            target_mode=target_mode,
+            residual_regularization_weight=residual_regularization_weight,
+            residual_scale=residual_scale,
+            residual_smoothing_alpha=residual_smoothing_alpha,
+            residual_gate_search=residual_gate_search,
+            latent_loss_weight=latent_loss_weight,
+            decoded_pose_weight=decoded_pose_weight,
+            decoded_torso_weight=decoded_torso_weight,
+            decoded_shoulder_weight=decoded_shoulder_weight,
+            decoded_elbow_weight=decoded_elbow_weight,
+            decoded_arm_direction_weight=decoded_arm_direction_weight,
+            decoded_stretch_weight=decoded_stretch_weight,
+            decoded_reach_hinge_weight=decoded_reach_hinge_weight,
+            fk_decoded_pose_weight=fk_decoded_pose_weight,
+            reach_ratio_limit=reach_ratio_limit,
+            surrogate_position_weight=surrogate_position_weight,
+            temporal_velocity_weight=temporal_velocity_weight,
+            temporal_acceleration_weight=temporal_acceleration_weight,
+            temporal_jerk_weight=temporal_jerk_weight,
+            temporal_excess_jerk_weight=temporal_excess_jerk_weight,
+            pole_velocity_weight=pole_velocity_weight,
+            pole_excess_jerk_weight=pole_excess_jerk_weight,
+            temporal_loss_windows=temporal_loss_windows,
+            temporal_excess_ratio=temporal_excess_ratio,
+            temporal_excess_margin=temporal_excess_margin,
+            disabled_target_groups=disabled_target_groups,
+            tracking_backend=tracking_backend,
+            mlflow_tracking_uri=mlflow_tracking_uri,
+            mlflow_artifact_root=mlflow_artifact_root,
+            mlflow_experiment=mlflow_experiment,
+            run_name=run_name or output_dir.name or model_name,
+        )
+        cast(list[dict[str, object]], report["leaderboard"]).append(result)
+    report_path = output_dir / "leaderboard.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    del validation_mask
+    return report
+
+
 def load_dataset(
     dataset_dir: Path,
     *,
     max_clips: int | None = None,
     max_rows: int | None = None,
+    split: str | None = None,
+    subjects: set[str] | None = None,
+    exclude_subjects: set[str] | None = None,
+    clip_ids: set[str] | None = None,
 ) -> LoadedDataset:
-    schema_path = dataset_dir / "schema.json"
-    if not schema_path.exists():
-        raise FileNotFoundError(
-            f"Expected sparse-window dataset at {dataset_dir}; run build_sparse_window_dataset"
-        )
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    target_schema = str(schema.get("target_schema", ""))
-    if target_schema != TARGET_SCHEMA:
-        raise ValueError(
-            f"Expected target_schema={TARGET_SCHEMA!r} in {schema_path}; "
-            "regenerate the sparse-window cache."
-        )
-    feature_names = [str(name) for name in schema["feature_names"]]
-    target_names = [str(name) for name in schema.get("target_names", TARGET_NAMES)]
-    fk_target_names = [str(name) for name in schema.get("fk_target_names", FK_TARGET_NAMES)]
+    schema = _load_sparse_window_schema(dataset_dir)
     dataframe = read_sparse_window_dataframe(
         dataset_dir,
         max_clips=max_clips,
         max_rows=max_rows,
+        split=split,
+        subjects=subjects,
+        exclude_subjects=exclude_subjects,
+        clip_ids=clip_ids,
     )
     if dataframe.is_empty():
         raise ValueError(f"No training rows found in {dataset_dir}")
-    features = _feature_matrix(dataframe, feature_count=len(feature_names))
+    features = _feature_matrix(dataframe, feature_count=len(schema.feature_names))
     targets = np.asarray(
-        dataframe.select(target_names).to_numpy(),
+        dataframe.select(schema.target_names).to_numpy(),
         dtype=np.float32,
     )
-    mask_names = [f"{name}_mask" for name in target_names]
+    mask_names = [f"{name}_mask" for name in schema.target_names]
     masks = np.asarray(
         dataframe.select(mask_names).to_numpy(),
         dtype=np.float32,
     )
-    fk_mask_names = [f"{name}_mask" for name in fk_target_names]
-    if all(name in dataframe.columns for name in (*fk_target_names, *fk_mask_names)):
-        fk_targets = np.asarray(dataframe.select(fk_target_names).to_numpy(), dtype=np.float32)
+    fk_mask_names = [f"{name}_mask" for name in schema.fk_target_names]
+    if all(name in dataframe.columns for name in (*schema.fk_target_names, *fk_mask_names)):
+        fk_targets = np.asarray(
+            dataframe.select(schema.fk_target_names).to_numpy(),
+            dtype=np.float32,
+        )
         fk_masks = np.asarray(dataframe.select(fk_mask_names).to_numpy(), dtype=np.float32)
     else:
         fk_targets = None
         fk_masks = None
-    heuristic_names = [f"heuristic_{name}" for name in target_names]
-    heuristic_mask_names = [f"heuristic_{name}_mask" for name in target_names]
+    heuristic_names = [f"heuristic_{name}" for name in schema.target_names]
+    heuristic_mask_names = [f"heuristic_{name}_mask" for name in schema.target_names]
     if all(name in dataframe.columns for name in (*heuristic_names, *heuristic_mask_names)):
         heuristics = np.asarray(dataframe.select(heuristic_names).to_numpy(), dtype=np.float32)
         heuristic_masks = np.asarray(
@@ -595,7 +976,7 @@ def load_dataset(
     decoded_reference_points, decoded_reference_masks = _load_decoded_reference_points(dataframe)
     runtime_context_points, runtime_context_masks = _load_runtime_decoder_context_points(dataframe)
     splits = np.asarray(dataframe["split"].to_list(), dtype=str)
-    subjects = np.asarray(dataframe["subject"].to_list(), dtype=str)
+    subject_ids = np.asarray(dataframe["subject"].to_list(), dtype=str)
     clips = np.asarray(dataframe["clip"].to_list(), dtype=str)
     center_row_indices = np.asarray(dataframe["center_row_index"].to_list(), dtype=np.int64)
     timestamps_s = np.asarray(dataframe["timestamp_s"].to_list(), dtype=np.float32)
@@ -612,13 +993,41 @@ def load_dataset(
         runtime_context_points=runtime_context_points,
         runtime_context_masks=runtime_context_masks,
         splits=splits,
-        subjects=subjects,
+        subjects=subject_ids,
         clips=clips,
         center_row_indices=center_row_indices,
         timestamps_s=timestamps_s,
-        feature_names=feature_names,
-        target_names=target_names,
-        fk_target_names=fk_target_names,
+        feature_names=schema.feature_names,
+        target_names=schema.target_names,
+        fk_target_names=schema.fk_target_names,
+        tracking_space=schema.tracking_space,
+    )
+
+
+def _load_sparse_window_schema(dataset_dir: Path) -> SparseWindowSchema:
+    schema_path = dataset_dir / "schema.json"
+    if not schema_path.exists():
+        raise FileNotFoundError(
+            f"Expected sparse-window dataset at {dataset_dir}; run build_sparse_window_dataset"
+        )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    target_schema = str(schema.get("target_schema", ""))
+    if target_schema != TARGET_SCHEMA:
+        raise ValueError(
+            f"Expected target_schema={TARGET_SCHEMA!r} in {schema_path}; "
+            "regenerate the sparse-window cache."
+        )
+    schema_config = schema.get("config", {})
+    tracking_space = (
+        str(schema_config.get("tracking_space", "head_yaw"))
+        if isinstance(schema_config, Mapping)
+        else "head_yaw"
+    )
+    return SparseWindowSchema(
+        feature_names=[str(name) for name in schema["feature_names"]],
+        target_names=[str(name) for name in schema.get("target_names", TARGET_NAMES)],
+        fk_target_names=[str(name) for name in schema.get("fk_target_names", FK_TARGET_NAMES)],
+        tracking_space=tracking_space,
     )
 
 
@@ -760,6 +1169,12 @@ def _train_torch_model(
     weight_decay: float,
     hidden_dim: int,
     seed: int,
+    feature_mean: np.ndarray,
+    feature_scale: np.ndarray,
+    yaw_augmentation_degrees: float,
+    checkpoint_metric: str,
+    early_stopping_patience: int,
+    early_stopping_min_delta: float,
     feature_names: Sequence[str],
     target_names: Sequence[str],
     residual_regularization_weight: float,
@@ -815,6 +1230,8 @@ def _train_torch_model(
     raw_x_train = torch.as_tensor(raw_features[train_mask], dtype=torch.float32)
     y_train = torch.as_tensor(targets[train_mask], dtype=torch.float32, device=device)
     m_train = torch.as_tensor(masks[train_mask], dtype=torch.float32, device=device)
+    feature_mean_tensor = torch.as_tensor(feature_mean, dtype=torch.float32, device=device)
+    feature_scale_tensor = torch.as_tensor(feature_scale, dtype=torch.float32, device=device)
     x_val = torch.as_tensor(features[validation_mask], dtype=torch.float32, device=device)
     raw_x_val = torch.as_tensor(raw_features[validation_mask], dtype=torch.float32, device=device)
     y_val = torch.as_tensor(targets[validation_mask], dtype=torch.float32, device=device)
@@ -948,6 +1365,10 @@ def _train_torch_model(
     effective_temporal_loss_windows = (
         temporal_loss_windows if temporal_loss_windows > 0 else batch_size
     )
+    yaw_augmentation_indices = yaw_augmentation_indices_for_schema(
+        feature_names,
+        target_names,
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     history_path = output_path.with_name(f"{output_path.stem}_history.jsonl")
     tracker = _create_training_tracker(
@@ -960,6 +1381,7 @@ def _train_torch_model(
         params={
             "model_name": model_name,
             "prediction_mode": prediction_mode,
+            "tracking_space": dataset.tracking_space,
             "dataset_rows": int(features.shape[0]),
             "train_rows": int(train_mask.sum()),
             "validation_rows": int(validation_mask.sum()),
@@ -971,6 +1393,10 @@ def _train_torch_model(
             "weight_decay": weight_decay,
             "hidden_dim": hidden_dim,
             "seed": seed,
+            "yaw_augmentation_degrees": yaw_augmentation_degrees,
+            "checkpoint_metric": checkpoint_metric,
+            "early_stopping_patience": early_stopping_patience,
+            "early_stopping_min_delta": early_stopping_min_delta,
             "latent_loss_weight": latent_loss_weight,
             "decoded_pose_weight": decoded_pose_weight,
             "decoded_torso_weight": decoded_torso_weight,
@@ -1004,6 +1430,7 @@ def _train_torch_model(
         epoch: int,
         train_loss: float | None,
         train_latent_mse: float | None,
+        train_temporal_windows: int | None,
         epoch_seconds: float | None,
     ) -> tuple[Any, dict[str, object]]:
         if device.type == "cuda":
@@ -1011,7 +1438,12 @@ def _train_torch_model(
         with torch.no_grad():
             validation_raw = _apply_residual_gates(
                 torch,
-                model(x_val),
+                _predict_torch_model_in_batches(
+                    torch,
+                    model,
+                    x_val,
+                    batch_size=batch_size,
+                ),
                 residual_group_gates,
                 target_names,
             )
@@ -1032,6 +1464,7 @@ def _train_torch_model(
                 "epoch_seconds": epoch_seconds,
                 "train_loss": train_loss,
                 "train_latent_mse": train_latent_mse,
+                "train_temporal_windows": train_temporal_windows,
                 "validation_mse": validation_mse,
                 "learning_rate": float(optimizer.param_groups[0]["lr"]),
             }
@@ -1066,6 +1499,7 @@ def _train_torch_model(
         epoch=0,
         train_loss=None,
         train_latent_mse=None,
+        train_temporal_windows=None,
         epoch_seconds=None,
     )
     tracker.log(initial_history_row)
@@ -1073,25 +1507,68 @@ def _train_torch_model(
     if not isinstance(initial_loss_value, int | float):
         raise TypeError("Expected validation_mse in initial training history")
     initial_loss = float(initial_loss_value)
+    best_metric_name, best_metric_value = _checkpoint_metric_value(
+        initial_history_row,
+        checkpoint_metric,
+    )
+    best_epoch = 0
+    best_state_dict = _cpu_state_dict(model)
+    epochs_completed = 0
+    early_stopped = False
     for epoch_index in range(epochs):
         epoch_start = time.perf_counter()
         train_loss_sum = 0.0
         train_latent_sum = 0.0
+        train_temporal_window_sum = int(
+            train_pairs.shape[0] + train_triples.shape[0] + train_quads.shape[0],
+        )
         train_row_count = 0
         permutation = torch.randperm(len(train_indices), device=device)
         for start_index in range(0, len(train_indices), batch_size):
             batch_indices = permutation[start_index : start_index + batch_size]
             current_batch_size = int(batch_indices.numel())
+            batch_features = x_train[batch_indices]
+            batch_raw_features = _tensor_rows(raw_x_train, batch_indices, device=device)
+            batch_targets = y_train[batch_indices]
+            batch_masks = effective_m_train[batch_indices]
+            batch_heuristics = h_train[batch_indices]
+            batch_decoded_points = (
+                decoded_points_train[batch_indices] if decoded_points_train is not None else None
+            )
+            batch_runtime_context_points = (
+                runtime_context_points_train[batch_indices]
+                if runtime_context_points_train is not None
+                else None
+            )
+            if yaw_augmentation_degrees > 0.0:
+                augmentation = apply_yaw_augmentation(
+                    torch,
+                    raw_features=batch_raw_features,
+                    targets=batch_targets,
+                    heuristics=batch_heuristics,
+                    decoded_reference_points=batch_decoded_points,
+                    runtime_context_points=batch_runtime_context_points,
+                    feature_mean=feature_mean_tensor,
+                    feature_scale=feature_scale_tensor,
+                    indices=yaw_augmentation_indices,
+                    max_degrees=yaw_augmentation_degrees,
+                )
+                batch_features = augmentation.features
+                batch_raw_features = augmentation.raw_features
+                batch_targets = augmentation.targets
+                batch_heuristics = augmentation.heuristics
+                batch_decoded_points = augmentation.decoded_reference_points
+                batch_runtime_context_points = augmentation.runtime_context_points
             raw_prediction = _apply_residual_gates(
                 torch,
-                model(x_train[batch_indices]),
+                model(batch_features),
                 residual_group_gates,
                 target_names,
             )
             prediction = _compose_torch_latents(
                 torch,
                 raw_prediction,
-                h_train[batch_indices],
+                batch_heuristics,
                 prediction_mode=prediction_mode,
                 residual_scale=residual_scale,
                 target_names=target_names,
@@ -1099,8 +1576,8 @@ def _train_torch_model(
             latent_loss = _masked_mse(
                 torch,
                 prediction,
-                y_train[batch_indices],
-                effective_m_train[batch_indices],
+                batch_targets,
+                batch_masks,
             )
             loss = latent_loss_weight * latent_loss
             if prediction_mode == "residual" and residual_regularization_weight > 0.0:
@@ -1108,7 +1585,7 @@ def _train_torch_model(
                     torch,
                     raw_prediction,
                     torch.zeros_like(raw_prediction),
-                    effective_m_train[batch_indices],
+                    batch_masks,
                 )
             effective_decoded_weight = decoded_pose_weight + surrogate_position_weight
             if (
@@ -1118,13 +1595,12 @@ def _train_torch_model(
                 and decoded_points_train is not None
                 and decoded_masks_train is not None
             ):
-                batch_raw_features = _tensor_rows(raw_x_train, batch_indices, device=device)
                 loss = loss + fk_decoded_pose_weight * _fk_decoded_pose_loss(
                     torch,
                     prediction,
-                    effective_m_train[batch_indices],
+                    batch_masks,
                     batch_raw_features,
-                    decoded_reference_points=decoded_points_train[batch_indices],
+                    decoded_reference_points=batch_decoded_points,
                     decoded_reference_masks=decoded_masks_train[batch_indices],
                     feature_indices=fk_feature_indices,
                     target_names=target_names,
@@ -1134,28 +1610,19 @@ def _train_torch_model(
                 and effective_decoded_weight > 0.0
                 and surrogate_indices is not None
             ):
-                batch_raw_features = _tensor_rows(raw_x_train, batch_indices, device=device)
                 loss = loss + effective_decoded_weight * _decoded_pose_loss(
                     torch,
                     prediction,
-                    y_train[batch_indices],
-                    effective_m_train[batch_indices],
+                    batch_targets,
+                    batch_masks,
                     batch_raw_features,
-                    decoded_reference_points=(
-                        decoded_points_train[batch_indices]
-                        if decoded_points_train is not None
-                        else None
-                    ),
+                    decoded_reference_points=batch_decoded_points,
                     decoded_reference_masks=(
                         decoded_masks_train[batch_indices]
                         if decoded_masks_train is not None
                         else None
                     ),
-                    runtime_context_points=(
-                        runtime_context_points_train[batch_indices]
-                        if runtime_context_points_train is not None
-                        else None
-                    ),
+                    runtime_context_points=batch_runtime_context_points,
                     runtime_context_masks=(
                         runtime_context_masks_train[batch_indices]
                         if runtime_context_masks_train is not None
@@ -1320,18 +1787,38 @@ def _train_torch_model(
             epoch=epoch_index + 1,
             train_loss=train_loss_sum / max(1, train_row_count),
             train_latent_mse=train_latent_sum / max(1, train_row_count),
+            train_temporal_windows=train_temporal_window_sum,
             epoch_seconds=time.perf_counter() - epoch_start,
         )
         tracker.log(epoch_history_row)
+        epochs_completed = epoch_index + 1
+        metric_name, metric_value = _checkpoint_metric_value(
+            epoch_history_row,
+            checkpoint_metric,
+        )
+        if metric_value < best_metric_value - early_stopping_min_delta:
+            best_metric_name = metric_name
+            best_metric_value = metric_value
+            best_epoch = epoch_index + 1
+            best_state_dict = _cpu_state_dict(model)
+        if early_stopping_patience > 0 and epoch_index + 1 - best_epoch >= early_stopping_patience:
+            early_stopped = True
+            break
     if device.type == "cuda":
         torch.cuda.synchronize()
     train_seconds = time.perf_counter() - start
+    model.load_state_dict(best_state_dict)
 
     inference_start = time.perf_counter()
     with torch.no_grad():
         validation_raw_tensor = _apply_residual_gates(
             torch,
-            model(x_val),
+            _predict_torch_model_in_batches(
+                torch,
+                model,
+                x_val,
+                batch_size=batch_size,
+            ),
             residual_group_gates,
             target_names,
         )
@@ -1432,6 +1919,14 @@ def _train_torch_model(
             "temporal_excess_margin": temporal_excess_margin,
             "disabled_target_groups": sorted(active_disabled_target_groups),
             "decoded_decoder": decoded_decoder,
+            "tracking_space": dataset.tracking_space,
+            "yaw_augmentation_degrees": yaw_augmentation_degrees,
+            "checkpoint_metric": checkpoint_metric,
+            "best_checkpoint_metric": best_metric_name,
+            "best_checkpoint_value": best_metric_value,
+            "best_epoch": best_epoch,
+            "epochs_completed": epochs_completed,
+            "early_stopped": early_stopped,
             **tracking_metadata,
             "model_state_dict": model.state_dict(),
             "feature_names": list(feature_names),
@@ -1440,17 +1935,27 @@ def _train_torch_model(
         },
         output_path,
     )
+    tracker.log_artifact(output_path, artifact_path="models")
+    tracker.log_artifact(history_path, artifact_path="history")
     tracker.close()
     return {
         "model": model_name,
         "device": str(device),
         "epochs": epochs,
+        "epochs_completed": epochs_completed,
         "train_seconds": train_seconds,
         "initial_validation_mse": initial_loss,
         "final_validation_mse": final_loss,
         "inference_seconds_per_sample": inference_seconds / max(1, int(validation_mask.sum())),
         "artifact": output_path.as_posix(),
         "prediction_mode": prediction_mode,
+        "tracking_space": dataset.tracking_space,
+        "yaw_augmentation_degrees": yaw_augmentation_degrees,
+        "checkpoint_metric": checkpoint_metric,
+        "best_checkpoint_metric": best_metric_name,
+        "best_checkpoint_value": best_metric_value,
+        "best_epoch": best_epoch,
+        "early_stopped": early_stopped,
         "latent_loss_weight": latent_loss_weight,
         "decoded_pose_weight": decoded_pose_weight,
         "decoded_torso_weight": decoded_torso_weight,
@@ -1476,6 +1981,871 @@ def _train_torch_model(
             targets[validation_mask],
             validation_predictions,
             masks[validation_mask],
+            target_names,
+        ),
+    }
+
+
+def _train_torch_model_streaming(
+    torch: Any,
+    *,
+    model_name: TorchModelName,
+    dataset_dir: Path,
+    schema: SparseWindowSchema,
+    validation_dataset: LoadedDataset,
+    feature_mean: np.ndarray,
+    feature_scale: np.ndarray,
+    split: str | None,
+    exclude_subjects: set[str] | None,
+    clip_ids: set[str] | None,
+    max_rows: int | None,
+    output_path: Path,
+    device: Any,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    weight_decay: float,
+    hidden_dim: int,
+    seed: int,
+    yaw_augmentation_degrees: float,
+    checkpoint_metric: str,
+    early_stopping_patience: int,
+    early_stopping_min_delta: float,
+    target_mode: TargetMode,
+    residual_regularization_weight: float,
+    residual_scale: float,
+    residual_smoothing_alpha: float,
+    residual_gate_search: bool,
+    latent_loss_weight: float,
+    decoded_pose_weight: float,
+    decoded_torso_weight: float,
+    decoded_shoulder_weight: float,
+    decoded_elbow_weight: float,
+    decoded_arm_direction_weight: float,
+    decoded_stretch_weight: float,
+    decoded_reach_hinge_weight: float,
+    fk_decoded_pose_weight: float,
+    reach_ratio_limit: float,
+    surrogate_position_weight: float,
+    temporal_velocity_weight: float,
+    temporal_acceleration_weight: float,
+    temporal_jerk_weight: float,
+    temporal_excess_jerk_weight: float,
+    pole_velocity_weight: float,
+    pole_excess_jerk_weight: float,
+    temporal_loss_windows: int,
+    temporal_excess_ratio: float,
+    temporal_excess_margin: float,
+    disabled_target_groups: set[str],
+    tracking_backend: TrackingBackend,
+    mlflow_tracking_uri: str,
+    mlflow_artifact_root: Path,
+    mlflow_experiment: str,
+    run_name: str,
+) -> dict[str, object]:
+    del residual_gate_search
+    torch.manual_seed(seed)
+    target_names = validation_dataset.target_names
+    prediction_mode = "residual" if _is_residual_model(model_name) else "absolute"
+    if prediction_mode == "residual":
+        raise RuntimeError("Streaming residual Torch models are not implemented yet")
+    model = _make_torch_model(
+        torch,
+        model_name,
+        input_dim=len(schema.feature_names),
+        output_dim=len(target_names),
+        hidden_dim=hidden_dim,
+        feature_names=schema.feature_names,
+    ).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    feature_mean_tensor = torch.as_tensor(feature_mean, dtype=torch.float32, device=device)
+    feature_scale_tensor = torch.as_tensor(feature_scale, dtype=torch.float32, device=device)
+    x_val = torch.as_tensor(
+        _normalize(validation_dataset.features, {"mean": feature_mean, "scale": feature_scale}),
+        dtype=torch.float32,
+        device=device,
+    )
+    raw_x_val = torch.as_tensor(validation_dataset.features, dtype=torch.float32, device=device)
+    y_val = torch.as_tensor(validation_dataset.targets, dtype=torch.float32, device=device)
+    m_val = torch.as_tensor(validation_dataset.masks, dtype=torch.float32, device=device)
+    h_val = torch.zeros_like(y_val)
+    hm_val = torch.ones_like(m_val)
+    if validation_dataset.heuristics is not None and validation_dataset.heuristic_masks is not None:
+        h_val = torch.as_tensor(validation_dataset.heuristics, dtype=torch.float32, device=device)
+        hm_val = torch.as_tensor(
+            validation_dataset.heuristic_masks,
+            dtype=torch.float32,
+            device=device,
+        )
+    decoded_points_val = (
+        torch.as_tensor(
+            validation_dataset.decoded_reference_points,
+            dtype=torch.float32,
+            device=device,
+        )
+        if validation_dataset.decoded_reference_points is not None
+        else None
+    )
+    decoded_masks_val = (
+        torch.as_tensor(
+            validation_dataset.decoded_reference_masks,
+            dtype=torch.float32,
+            device=device,
+        )
+        if validation_dataset.decoded_reference_masks is not None
+        else None
+    )
+    runtime_context_points_val = (
+        torch.as_tensor(
+            validation_dataset.runtime_context_points,
+            dtype=torch.float32,
+            device=device,
+        )
+        if validation_dataset.runtime_context_points is not None
+        else None
+    )
+    runtime_context_masks_val = (
+        torch.as_tensor(
+            validation_dataset.runtime_context_masks,
+            dtype=torch.float32,
+            device=device,
+        )
+        if validation_dataset.runtime_context_masks is not None
+        else None
+    )
+    group_mask = _target_group_mask(
+        torch,
+        target_names,
+        disabled_target_groups,
+        dtype=m_val.dtype,
+        device=device,
+    )
+    residual_group_gates = _residual_gates_for_disabled_groups(
+        target_names,
+        disabled_target_groups,
+    )
+    effective_m_val = m_val * hm_val * group_mask[None, :]
+    surrogate_indices = _surrogate_feature_indices(schema.feature_names)
+    runtime_decoder_indices = runtime_decoder_feature_indices(schema.feature_names)
+    fk_target_mode = _is_fk_target_names(target_names)
+    fk_feature_indices = upper_body_fk_feature_indices(schema.feature_names)
+    decoded_decoder = (
+        "fk"
+        if fk_target_mode and fk_feature_indices is not None
+        else (
+            "runtime"
+            if runtime_decoder_indices is not None
+            and runtime_context_points_val is not None
+            and runtime_context_masks_val is not None
+            else "surrogate"
+        )
+    )
+    validation_mask = np.ones(validation_dataset.features.shape[0], dtype=bool)
+    validation_pairs = torch.as_tensor(
+        _temporal_pairs(validation_dataset, validation_mask),
+        dtype=torch.long,
+        device=device,
+    )
+    validation_triples = torch.as_tensor(
+        _temporal_triples(validation_dataset, validation_mask),
+        dtype=torch.long,
+        device=device,
+    )
+    validation_quads = torch.as_tensor(
+        _temporal_quads(validation_dataset, validation_mask),
+        dtype=torch.long,
+        device=device,
+    )
+    effective_temporal_loss_windows = (
+        temporal_loss_windows if temporal_loss_windows > 0 else batch_size
+    )
+    stream_temporal_losses = _temporal_weights_enabled(
+        temporal_velocity_weight=temporal_velocity_weight,
+        temporal_acceleration_weight=temporal_acceleration_weight,
+        temporal_jerk_weight=temporal_jerk_weight,
+        temporal_excess_jerk_weight=temporal_excess_jerk_weight,
+        pole_velocity_weight=pole_velocity_weight,
+        pole_excess_jerk_weight=pole_excess_jerk_weight,
+    )
+    yaw_augmentation_indices = yaw_augmentation_indices_for_schema(
+        schema.feature_names,
+        target_names,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path = output_path.with_name(f"{output_path.stem}_history.jsonl")
+    tracker = _create_training_tracker(
+        tracking_backend,
+        history_path=history_path,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_artifact_root=mlflow_artifact_root,
+        mlflow_experiment=mlflow_experiment,
+        run_name=f"{run_name}:{model_name}",
+        params={
+            "model_name": model_name,
+            "prediction_mode": prediction_mode,
+            "tracking_space": schema.tracking_space,
+            "stream_training": True,
+            "stream_temporal_losses": stream_temporal_losses,
+            "validation_rows": int(validation_dataset.features.shape[0]),
+            "features": int(len(schema.feature_names)),
+            "targets": int(len(target_names)),
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "learning_rate": learning_rate,
+            "weight_decay": weight_decay,
+            "hidden_dim": hidden_dim,
+            "seed": seed,
+            "yaw_augmentation_degrees": yaw_augmentation_degrees,
+            "checkpoint_metric": checkpoint_metric,
+            "early_stopping_patience": early_stopping_patience,
+            "early_stopping_min_delta": early_stopping_min_delta,
+            "latent_loss_weight": latent_loss_weight,
+            "decoded_pose_weight": decoded_pose_weight,
+            "decoded_torso_weight": decoded_torso_weight,
+            "decoded_shoulder_weight": decoded_shoulder_weight,
+            "decoded_elbow_weight": decoded_elbow_weight,
+            "decoded_arm_direction_weight": decoded_arm_direction_weight,
+            "decoded_stretch_weight": decoded_stretch_weight,
+            "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+            "fk_decoded_pose_weight": fk_decoded_pose_weight,
+            "reach_ratio_limit": reach_ratio_limit,
+            "surrogate_position_weight": surrogate_position_weight,
+            "temporal_velocity_weight": temporal_velocity_weight,
+            "temporal_acceleration_weight": temporal_acceleration_weight,
+            "temporal_jerk_weight": temporal_jerk_weight,
+            "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+            "pole_velocity_weight": pole_velocity_weight,
+            "pole_excess_jerk_weight": pole_excess_jerk_weight,
+            "temporal_loss_windows": effective_temporal_loss_windows,
+            "temporal_excess_ratio": temporal_excess_ratio,
+            "temporal_excess_margin": temporal_excess_margin,
+            "disabled_target_groups": sorted(disabled_target_groups),
+            "decoded_decoder": decoded_decoder,
+            "device": str(device),
+        },
+    )
+    tracking_metadata = tracker.metadata()
+    start = time.perf_counter()
+
+    def history_row(
+        *,
+        epoch: int,
+        train_loss: float | None,
+        train_latent_mse: float | None,
+        train_temporal_windows: int | None,
+        epoch_seconds: float | None,
+    ) -> tuple[Any, dict[str, object]]:
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        with torch.no_grad():
+            validation_raw = _apply_residual_gates(
+                torch,
+                _predict_torch_model_in_batches(
+                    torch,
+                    model,
+                    x_val,
+                    batch_size=batch_size,
+                ),
+                residual_group_gates,
+                target_names,
+            )
+            validation_prediction = _compose_torch_latents(
+                torch,
+                validation_raw,
+                h_val,
+                prediction_mode=prediction_mode,
+                residual_scale=residual_scale,
+                target_names=target_names,
+            )
+            validation_mse = float(
+                _masked_mse(torch, validation_prediction, y_val, effective_m_val).detach().cpu()
+            )
+            row: dict[str, object] = {
+                "epoch": epoch,
+                "elapsed_seconds": time.perf_counter() - start,
+                "epoch_seconds": epoch_seconds,
+                "train_loss": train_loss,
+                "train_latent_mse": train_latent_mse,
+                "train_temporal_windows": train_temporal_windows,
+                "validation_mse": validation_mse,
+                "learning_rate": float(optimizer.param_groups[0]["lr"]),
+            }
+            row.update(
+                _surrogate_validation_metrics(
+                    torch,
+                    validation_prediction,
+                    y_val,
+                    effective_m_val,
+                    raw_x_val,
+                    decoded_reference_points=decoded_points_val,
+                    decoded_reference_masks=decoded_masks_val,
+                    runtime_context_points=runtime_context_points_val,
+                    runtime_context_masks=runtime_context_masks_val,
+                    runtime_decoder_indices=runtime_decoder_indices,
+                    feature_names=schema.feature_names,
+                    target_names=target_names,
+                    temporal_pairs=validation_pairs,
+                    temporal_triples=validation_triples,
+                    temporal_quads=validation_quads,
+                    temporal_excess_ratio=temporal_excess_ratio,
+                    temporal_excess_margin=temporal_excess_margin,
+                    reach_ratio_limit=reach_ratio_limit,
+                )
+            )
+            row.update(_cuda_memory_metrics(torch, device))
+        return validation_prediction, row
+
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    _initial_prediction, initial_history_row = history_row(
+        epoch=0,
+        train_loss=None,
+        train_latent_mse=None,
+        train_temporal_windows=None,
+        epoch_seconds=None,
+    )
+    tracker.log(initial_history_row)
+    initial_loss_value = initial_history_row["validation_mse"]
+    if not isinstance(initial_loss_value, int | float):
+        raise TypeError("Expected validation_mse in initial training history")
+    initial_loss = float(initial_loss_value)
+    best_metric_name, best_metric_value = _checkpoint_metric_value(
+        initial_history_row,
+        checkpoint_metric,
+    )
+    best_epoch = 0
+    best_state_dict = _cpu_state_dict(model)
+    epochs_completed = 0
+    early_stopped = False
+    for epoch_index in range(epochs):
+        epoch_start = time.perf_counter()
+        train_loss_sum = 0.0
+        train_latent_sum = 0.0
+        train_temporal_window_sum = 0
+        train_row_count = 0
+        for batch in _iter_streaming_torch_batches(
+            dataset_dir,
+            schema=schema,
+            target_mode=target_mode,
+            split=split,
+            exclude_subjects=exclude_subjects,
+            clip_ids=clip_ids,
+            batch_size=batch_size,
+            max_rows=max_rows,
+            seed=seed + epoch_index,
+        ):
+            current_batch_size = int(batch.features.shape[0])
+            batch_raw_features = torch.as_tensor(batch.features, dtype=torch.float32, device=device)
+            batch_features = (
+                batch_raw_features - feature_mean_tensor[None, :]
+            ) / feature_scale_tensor[None, :]
+            batch_targets = torch.as_tensor(batch.targets, dtype=torch.float32, device=device)
+            batch_masks = torch.as_tensor(batch.masks, dtype=torch.float32, device=device)
+            batch_heuristics = (
+                torch.as_tensor(batch.heuristics, dtype=torch.float32, device=device)
+                if batch.heuristics is not None
+                else torch.zeros_like(batch_targets)
+            )
+            batch_heuristic_masks = (
+                torch.as_tensor(batch.heuristic_masks, dtype=torch.float32, device=device)
+                if batch.heuristic_masks is not None
+                else torch.ones_like(batch_masks)
+            )
+            batch_masks = batch_masks * batch_heuristic_masks * group_mask[None, :]
+            batch_decoded_points = (
+                torch.as_tensor(
+                    batch.decoded_reference_points,
+                    dtype=torch.float32,
+                    device=device,
+                )
+                if batch.decoded_reference_points is not None
+                else None
+            )
+            batch_decoded_masks = (
+                torch.as_tensor(
+                    batch.decoded_reference_masks,
+                    dtype=torch.float32,
+                    device=device,
+                )
+                if batch.decoded_reference_masks is not None
+                else None
+            )
+            batch_runtime_context_points = (
+                torch.as_tensor(
+                    batch.runtime_context_points,
+                    dtype=torch.float32,
+                    device=device,
+                )
+                if batch.runtime_context_points is not None
+                else None
+            )
+            batch_runtime_context_masks = (
+                torch.as_tensor(
+                    batch.runtime_context_masks,
+                    dtype=torch.float32,
+                    device=device,
+                )
+                if batch.runtime_context_masks is not None
+                else None
+            )
+            ordered_features = batch_features
+            ordered_raw_features = batch_raw_features
+            ordered_targets = batch_targets
+            ordered_masks = batch_masks
+            ordered_heuristics = batch_heuristics
+            ordered_decoded_points = batch_decoded_points
+            ordered_decoded_masks = batch_decoded_masks
+            ordered_runtime_context_points = batch_runtime_context_points
+            ordered_runtime_context_masks = batch_runtime_context_masks
+            batch_pairs = torch.empty((0, 2), dtype=torch.long, device=device)
+            batch_triples = torch.empty((0, 3), dtype=torch.long, device=device)
+            batch_quads = torch.empty((0, 4), dtype=torch.long, device=device)
+            if stream_temporal_losses:
+                batch_pairs = torch.as_tensor(
+                    _temporal_windows_from_arrays(
+                        batch.subjects,
+                        batch.clips,
+                        batch.center_row_indices,
+                        width=2,
+                    ),
+                    dtype=torch.long,
+                    device=device,
+                )
+                batch_triples = torch.as_tensor(
+                    _temporal_windows_from_arrays(
+                        batch.subjects,
+                        batch.clips,
+                        batch.center_row_indices,
+                        width=3,
+                    ),
+                    dtype=torch.long,
+                    device=device,
+                )
+                batch_quads = torch.as_tensor(
+                    _temporal_windows_from_arrays(
+                        batch.subjects,
+                        batch.clips,
+                        batch.center_row_indices,
+                        width=4,
+                    ),
+                    dtype=torch.long,
+                    device=device,
+                )
+                train_temporal_window_sum += int(
+                    batch_pairs.shape[0] + batch_triples.shape[0] + batch_quads.shape[0],
+                )
+            permutation = torch.randperm(current_batch_size, device=device)
+            batch_features = batch_features[permutation]
+            batch_raw_features = batch_raw_features[permutation]
+            batch_targets = batch_targets[permutation]
+            batch_masks = batch_masks[permutation]
+            batch_heuristics = batch_heuristics[permutation]
+            batch_decoded_points = _optional_tensor_rows(batch_decoded_points, permutation)
+            batch_decoded_masks = _optional_tensor_rows(batch_decoded_masks, permutation)
+            batch_runtime_context_points = _optional_tensor_rows(
+                batch_runtime_context_points,
+                permutation,
+            )
+            batch_runtime_context_masks = _optional_tensor_rows(
+                batch_runtime_context_masks,
+                permutation,
+            )
+            if yaw_augmentation_degrees > 0.0:
+                augmentation = apply_yaw_augmentation(
+                    torch,
+                    raw_features=batch_raw_features,
+                    targets=batch_targets,
+                    heuristics=batch_heuristics,
+                    decoded_reference_points=batch_decoded_points,
+                    runtime_context_points=batch_runtime_context_points,
+                    feature_mean=feature_mean_tensor,
+                    feature_scale=feature_scale_tensor,
+                    indices=yaw_augmentation_indices,
+                    max_degrees=yaw_augmentation_degrees,
+                )
+                batch_features = augmentation.features
+                batch_raw_features = augmentation.raw_features
+                batch_targets = augmentation.targets
+                batch_heuristics = augmentation.heuristics
+                batch_decoded_points = augmentation.decoded_reference_points
+                batch_runtime_context_points = augmentation.runtime_context_points
+            raw_prediction = _apply_residual_gates(
+                torch,
+                model(batch_features),
+                residual_group_gates,
+                target_names,
+            )
+            prediction = _compose_torch_latents(
+                torch,
+                raw_prediction,
+                batch_heuristics,
+                prediction_mode=prediction_mode,
+                residual_scale=residual_scale,
+                target_names=target_names,
+            )
+            latent_loss = _masked_mse(torch, prediction, batch_targets, batch_masks)
+            loss = latent_loss_weight * latent_loss
+            if residual_regularization_weight > 0.0 and prediction_mode == "residual":
+                loss = loss + residual_regularization_weight * _masked_mse(
+                    torch,
+                    raw_prediction,
+                    torch.zeros_like(raw_prediction),
+                    batch_masks,
+                )
+            effective_decoded_weight = decoded_pose_weight + surrogate_position_weight
+            if (
+                fk_target_mode
+                and fk_decoded_pose_weight > 0.0
+                and fk_feature_indices is not None
+                and batch_decoded_points is not None
+                and batch_decoded_masks is not None
+            ):
+                loss = loss + fk_decoded_pose_weight * _fk_decoded_pose_loss(
+                    torch,
+                    prediction,
+                    batch_masks,
+                    batch_raw_features,
+                    decoded_reference_points=batch_decoded_points,
+                    decoded_reference_masks=batch_decoded_masks,
+                    feature_indices=fk_feature_indices,
+                    target_names=target_names,
+                )
+            elif (
+                not fk_target_mode
+                and effective_decoded_weight > 0.0
+                and surrogate_indices is not None
+            ):
+                loss = loss + effective_decoded_weight * _decoded_pose_loss(
+                    torch,
+                    prediction,
+                    batch_targets,
+                    batch_masks,
+                    batch_raw_features,
+                    decoded_reference_points=batch_decoded_points,
+                    decoded_reference_masks=batch_decoded_masks,
+                    runtime_context_points=batch_runtime_context_points,
+                    runtime_context_masks=batch_runtime_context_masks,
+                    runtime_decoder_indices=runtime_decoder_indices,
+                    surrogate_indices=surrogate_indices,
+                    target_names=target_names,
+                    torso_weight=decoded_torso_weight,
+                    shoulder_weight=decoded_shoulder_weight,
+                    elbow_weight=decoded_elbow_weight,
+                    arm_direction_weight=decoded_arm_direction_weight,
+                    stretch_weight=decoded_stretch_weight,
+                    reach_hinge_weight=decoded_reach_hinge_weight,
+                    reach_ratio_limit=reach_ratio_limit,
+                )
+            if temporal_velocity_weight > 0.0 and batch_pairs.numel() > 0:
+                loss = loss + temporal_velocity_weight * _decoded_temporal_motion_loss(
+                    torch,
+                    model,
+                    ordered_features,
+                    ordered_raw_features,
+                    ordered_targets,
+                    ordered_masks,
+                    ordered_heuristics,
+                    batch_pairs,
+                    decoded_reference_points=ordered_decoded_points,
+                    decoded_reference_masks=ordered_decoded_masks,
+                    runtime_context_points=ordered_runtime_context_points,
+                    runtime_context_masks=ordered_runtime_context_masks,
+                    runtime_decoder_indices=runtime_decoder_indices,
+                    order=1,
+                    prediction_mode=prediction_mode,
+                    residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
+                    target_names=target_names,
+                    feature_names=schema.feature_names,
+                    residual_gates=residual_group_gates,
+                    max_windows=effective_temporal_loss_windows,
+                )
+            if not fk_target_mode and pole_velocity_weight > 0.0 and batch_pairs.numel() > 0:
+                loss = loss + pole_velocity_weight * _pole_temporal_motion_loss(
+                    torch,
+                    model,
+                    ordered_features,
+                    targets=ordered_targets,
+                    target_masks=ordered_masks,
+                    heuristics=ordered_heuristics,
+                    windows=batch_pairs,
+                    order=1,
+                    prediction_mode=prediction_mode,
+                    residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
+                    target_names=target_names,
+                    residual_gates=residual_group_gates,
+                    max_windows=effective_temporal_loss_windows,
+                )
+            if not fk_target_mode and pole_excess_jerk_weight > 0.0 and batch_quads.numel() > 0:
+                loss = loss + pole_excess_jerk_weight * _pole_temporal_motion_loss(
+                    torch,
+                    model,
+                    ordered_features,
+                    targets=ordered_targets,
+                    target_masks=ordered_masks,
+                    heuristics=ordered_heuristics,
+                    windows=batch_quads,
+                    order=3,
+                    prediction_mode=prediction_mode,
+                    residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
+                    target_names=target_names,
+                    residual_gates=residual_group_gates,
+                    max_windows=effective_temporal_loss_windows,
+                    loss_mode="excess",
+                    excess_ratio=temporal_excess_ratio,
+                    excess_margin=temporal_excess_margin,
+                )
+            if temporal_acceleration_weight > 0.0 and batch_triples.numel() > 0:
+                loss = loss + temporal_acceleration_weight * _decoded_temporal_motion_loss(
+                    torch,
+                    model,
+                    ordered_features,
+                    ordered_raw_features,
+                    ordered_targets,
+                    ordered_masks,
+                    ordered_heuristics,
+                    batch_triples,
+                    decoded_reference_points=ordered_decoded_points,
+                    decoded_reference_masks=ordered_decoded_masks,
+                    runtime_context_points=ordered_runtime_context_points,
+                    runtime_context_masks=ordered_runtime_context_masks,
+                    runtime_decoder_indices=runtime_decoder_indices,
+                    order=2,
+                    prediction_mode=prediction_mode,
+                    residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
+                    target_names=target_names,
+                    feature_names=schema.feature_names,
+                    residual_gates=residual_group_gates,
+                    max_windows=effective_temporal_loss_windows,
+                )
+            if temporal_jerk_weight > 0.0 and batch_quads.numel() > 0:
+                loss = loss + temporal_jerk_weight * _decoded_temporal_motion_loss(
+                    torch,
+                    model,
+                    ordered_features,
+                    ordered_raw_features,
+                    ordered_targets,
+                    ordered_masks,
+                    ordered_heuristics,
+                    batch_quads,
+                    decoded_reference_points=ordered_decoded_points,
+                    decoded_reference_masks=ordered_decoded_masks,
+                    runtime_context_points=ordered_runtime_context_points,
+                    runtime_context_masks=ordered_runtime_context_masks,
+                    runtime_decoder_indices=runtime_decoder_indices,
+                    order=3,
+                    prediction_mode=prediction_mode,
+                    residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
+                    target_names=target_names,
+                    feature_names=schema.feature_names,
+                    residual_gates=residual_group_gates,
+                    max_windows=effective_temporal_loss_windows,
+                )
+            if temporal_excess_jerk_weight > 0.0 and batch_quads.numel() > 0:
+                loss = loss + temporal_excess_jerk_weight * _decoded_temporal_motion_loss(
+                    torch,
+                    model,
+                    ordered_features,
+                    ordered_raw_features,
+                    ordered_targets,
+                    ordered_masks,
+                    ordered_heuristics,
+                    batch_quads,
+                    decoded_reference_points=ordered_decoded_points,
+                    decoded_reference_masks=ordered_decoded_masks,
+                    runtime_context_points=ordered_runtime_context_points,
+                    runtime_context_masks=ordered_runtime_context_masks,
+                    runtime_decoder_indices=runtime_decoder_indices,
+                    order=3,
+                    prediction_mode=prediction_mode,
+                    residual_scale=residual_scale,
+                    residual_smoothing_alpha=residual_smoothing_alpha,
+                    target_names=target_names,
+                    feature_names=schema.feature_names,
+                    residual_gates=residual_group_gates,
+                    max_windows=effective_temporal_loss_windows,
+                    loss_mode="excess",
+                    excess_ratio=temporal_excess_ratio,
+                    excess_margin=temporal_excess_margin,
+                )
+            train_loss_sum += float(loss.detach().cpu()) * current_batch_size
+            train_latent_sum += float(latent_loss.detach().cpu()) * current_batch_size
+            train_row_count += current_batch_size
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        _epoch_prediction, epoch_history_row = history_row(
+            epoch=epoch_index + 1,
+            train_loss=train_loss_sum / max(1, train_row_count),
+            train_latent_mse=train_latent_sum / max(1, train_row_count),
+            train_temporal_windows=train_temporal_window_sum,
+            epoch_seconds=time.perf_counter() - epoch_start,
+        )
+        tracker.log(epoch_history_row)
+        epochs_completed = epoch_index + 1
+        metric_name, metric_value = _checkpoint_metric_value(epoch_history_row, checkpoint_metric)
+        if metric_value < best_metric_value - early_stopping_min_delta:
+            best_metric_name = metric_name
+            best_metric_value = metric_value
+            best_epoch = epoch_index + 1
+            best_state_dict = _cpu_state_dict(model)
+        if early_stopping_patience > 0 and epoch_index + 1 - best_epoch >= early_stopping_patience:
+            early_stopped = True
+            break
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    train_seconds = time.perf_counter() - start
+    model.load_state_dict(best_state_dict)
+    inference_start = time.perf_counter()
+    with torch.no_grad():
+        validation_raw_tensor = _apply_residual_gates(
+            torch,
+            _predict_torch_model_in_batches(
+                torch,
+                model,
+                x_val,
+                batch_size=batch_size,
+            ),
+            residual_group_gates,
+            target_names,
+        )
+        validation_predictions_tensor = _compose_torch_latents(
+            torch,
+            validation_raw_tensor,
+            h_val,
+            prediction_mode=prediction_mode,
+            residual_scale=residual_scale,
+            target_names=target_names,
+        )
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    inference_seconds = time.perf_counter() - inference_start
+    validation_predictions = validation_predictions_tensor.detach().cpu().numpy()
+    final_loss = float(
+        _masked_mse(torch, validation_predictions_tensor, y_val, effective_m_val).detach().cpu()
+    )
+    extra_metrics = _surrogate_validation_metrics(
+        torch,
+        validation_predictions_tensor,
+        y_val,
+        effective_m_val,
+        raw_x_val,
+        decoded_reference_points=decoded_points_val,
+        decoded_reference_masks=decoded_masks_val,
+        runtime_context_points=runtime_context_points_val,
+        runtime_context_masks=runtime_context_masks_val,
+        runtime_decoder_indices=runtime_decoder_indices,
+        feature_names=schema.feature_names,
+        target_names=target_names,
+        temporal_pairs=validation_pairs,
+        temporal_triples=validation_triples,
+        temporal_quads=validation_quads,
+        temporal_excess_ratio=temporal_excess_ratio,
+        temporal_excess_margin=temporal_excess_margin,
+        reach_ratio_limit=reach_ratio_limit,
+    )
+    torch.save(
+        {
+            "model_name": model_name,
+            "prediction_mode": prediction_mode,
+            "latent_loss_weight": latent_loss_weight,
+            "decoded_pose_weight": decoded_pose_weight,
+            "decoded_torso_weight": decoded_torso_weight,
+            "decoded_shoulder_weight": decoded_shoulder_weight,
+            "decoded_elbow_weight": decoded_elbow_weight,
+            "decoded_arm_direction_weight": decoded_arm_direction_weight,
+            "decoded_stretch_weight": decoded_stretch_weight,
+            "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+            "fk_decoded_pose_weight": fk_decoded_pose_weight,
+            "reach_ratio_limit": reach_ratio_limit,
+            "surrogate_position_weight": surrogate_position_weight,
+            "temporal_velocity_weight": temporal_velocity_weight,
+            "temporal_acceleration_weight": temporal_acceleration_weight,
+            "temporal_jerk_weight": temporal_jerk_weight,
+            "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+            "pole_velocity_weight": pole_velocity_weight,
+            "pole_excess_jerk_weight": pole_excess_jerk_weight,
+            "temporal_loss_windows": effective_temporal_loss_windows,
+            "temporal_excess_ratio": temporal_excess_ratio,
+            "temporal_excess_margin": temporal_excess_margin,
+            "disabled_target_groups": sorted(disabled_target_groups),
+            "decoded_decoder": decoded_decoder,
+            "tracking_space": schema.tracking_space,
+            "stream_training": True,
+            "stream_temporal_losses": stream_temporal_losses,
+            "yaw_augmentation_degrees": yaw_augmentation_degrees,
+            "checkpoint_metric": checkpoint_metric,
+            "best_checkpoint_metric": best_metric_name,
+            "best_checkpoint_value": best_metric_value,
+            "best_epoch": best_epoch,
+            "epochs_completed": epochs_completed,
+            "early_stopped": early_stopped,
+            **tracking_metadata,
+            "model_state_dict": model.state_dict(),
+            "feature_names": list(schema.feature_names),
+            "target_names": list(target_names),
+            "hidden_dim": hidden_dim,
+        },
+        output_path,
+    )
+    tracker.log_artifact(output_path, artifact_path="models")
+    tracker.log_artifact(history_path, artifact_path="history")
+    tracker.close()
+    return {
+        "model": model_name,
+        "device": str(device),
+        "epochs": epochs,
+        "epochs_completed": epochs_completed,
+        "train_seconds": train_seconds,
+        "initial_validation_mse": initial_loss,
+        "final_validation_mse": final_loss,
+        "inference_seconds_per_sample": inference_seconds
+        / max(1, int(validation_dataset.features.shape[0])),
+        "artifact": output_path.as_posix(),
+        "prediction_mode": prediction_mode,
+        "tracking_space": schema.tracking_space,
+        "stream_training": True,
+        "stream_temporal_losses": stream_temporal_losses,
+        "yaw_augmentation_degrees": yaw_augmentation_degrees,
+        "checkpoint_metric": checkpoint_metric,
+        "best_checkpoint_metric": best_metric_name,
+        "best_checkpoint_value": best_metric_value,
+        "best_epoch": best_epoch,
+        "early_stopped": early_stopped,
+        "latent_loss_weight": latent_loss_weight,
+        "decoded_pose_weight": decoded_pose_weight,
+        "decoded_torso_weight": decoded_torso_weight,
+        "decoded_shoulder_weight": decoded_shoulder_weight,
+        "decoded_elbow_weight": decoded_elbow_weight,
+        "decoded_arm_direction_weight": decoded_arm_direction_weight,
+        "decoded_stretch_weight": decoded_stretch_weight,
+        "decoded_reach_hinge_weight": decoded_reach_hinge_weight,
+        "fk_decoded_pose_weight": fk_decoded_pose_weight,
+        "reach_ratio_limit": reach_ratio_limit,
+        "surrogate_position_weight": surrogate_position_weight,
+        "temporal_velocity_weight": temporal_velocity_weight,
+        "temporal_acceleration_weight": temporal_acceleration_weight,
+        "temporal_jerk_weight": temporal_jerk_weight,
+        "temporal_excess_jerk_weight": temporal_excess_jerk_weight,
+        "pole_velocity_weight": pole_velocity_weight,
+        "pole_excess_jerk_weight": pole_excess_jerk_weight,
+        "temporal_loss_windows": effective_temporal_loss_windows,
+        "temporal_excess_ratio": temporal_excess_ratio,
+        "temporal_excess_margin": temporal_excess_margin,
+        "disabled_target_groups": sorted(disabled_target_groups),
+        "decoded_decoder": decoded_decoder,
+        **tracking_metadata,
+        **extra_metrics,
+        **_metric_dict(
+            validation_dataset.targets,
+            validation_predictions,
+            validation_dataset.masks,
             target_names,
         ),
     }
@@ -1557,9 +2927,27 @@ def _make_torch_model(
     )
 
 
+def _predict_torch_model_in_batches(
+    torch: Any,
+    model: Any,
+    features: Any,
+    *,
+    batch_size: int,
+) -> Any:
+    row_count = int(features.shape[0])
+    if row_count <= 0:
+        return torch.empty((0, 0), dtype=features.dtype, device=features.device)
+    chunk_size = max(1, batch_size)
+    chunks = [
+        model(features[start_index : start_index + chunk_size])
+        for start_index in range(0, row_count, chunk_size)
+    ]
+    return torch.cat(chunks, dim=0)
+
+
 @dataclass(frozen=True, slots=True)
 class SurrogateFeatureIndices:
-    head_y: int
+    head: tuple[int, int, int]
     left_hand: tuple[int, int, int]
     right_hand: tuple[int, int, int]
     human_height: int
@@ -1567,6 +2955,190 @@ class SurrogateFeatureIndices:
     upper_arm: int
     lower_arm: int
     arm_length: int
+
+
+@dataclass(frozen=True, slots=True)
+class YawAugmentationIndices:
+    feature_vectors: tuple[tuple[int, int, int], ...]
+    feature_rotation6d: tuple[tuple[int, int, int, int, int, int], ...]
+    target_vectors: tuple[tuple[int, int, int], ...]
+    target_rotation6d: tuple[tuple[int, int, int, int, int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class YawAugmentationBatch:
+    features: Any
+    raw_features: Any
+    targets: Any
+    heuristics: Any
+    decoded_reference_points: Any | None
+    runtime_context_points: Any | None
+
+
+def yaw_augmentation_indices_for_schema(
+    feature_names: Sequence[str],
+    target_names: Sequence[str],
+) -> YawAugmentationIndices:
+    return YawAugmentationIndices(
+        feature_vectors=(
+            *_named_vector_indices(feature_names, "_position"),
+            *_named_vector_indices(feature_names, "_linear_velocity"),
+        ),
+        feature_rotation6d=(
+            *_rotation6d_indices(feature_names, "_rotation6d"),
+            *_rotation6d_indices(feature_names, "_rotation6d_velocity"),
+        ),
+        target_vectors=(
+            *_named_vector_indices(target_names, "_rel"),
+            *_named_vector_indices(target_names, "_pole"),
+        ),
+        target_rotation6d=_rotation6d_indices(target_names, "fk_hips_rotation6d"),
+    )
+
+
+def apply_yaw_augmentation(
+    torch: Any,
+    *,
+    raw_features: Any,
+    targets: Any,
+    heuristics: Any,
+    decoded_reference_points: Any | None,
+    runtime_context_points: Any | None,
+    feature_mean: Any,
+    feature_scale: Any,
+    indices: YawAugmentationIndices,
+    max_degrees: float,
+) -> YawAugmentationBatch:
+    if max_degrees <= 0.0:
+        return YawAugmentationBatch(
+            features=(raw_features - feature_mean[None, :]) / feature_scale[None, :],
+            raw_features=raw_features,
+            targets=targets,
+            heuristics=heuristics,
+            decoded_reference_points=decoded_reference_points,
+            runtime_context_points=runtime_context_points,
+        )
+    random_values = torch.rand(
+        raw_features.shape[0],
+        dtype=raw_features.dtype,
+        device=raw_features.device,
+    )
+    radians = ((random_values * 2) - 1) * (max_degrees * math.pi / 180.0)
+    cosine = torch.cos(radians)
+    sine = torch.sin(radians)
+    augmented_raw_features = raw_features.clone()
+    augmented_targets = targets.clone()
+    augmented_heuristics = heuristics.clone()
+    for vector_indices in indices.feature_vectors:
+        _rotate_xz_columns(augmented_raw_features, vector_indices, cosine, sine)
+    for rotation_indices in indices.feature_rotation6d:
+        _rotate_rotation6d_columns(augmented_raw_features, rotation_indices, cosine, sine)
+    for vector_indices in indices.target_vectors:
+        _rotate_xz_columns(augmented_targets, vector_indices, cosine, sine)
+        _rotate_xz_columns(augmented_heuristics, vector_indices, cosine, sine)
+    for rotation_indices in indices.target_rotation6d:
+        _rotate_rotation6d_columns(augmented_targets, rotation_indices, cosine, sine)
+        _rotate_rotation6d_columns(augmented_heuristics, rotation_indices, cosine, sine)
+    augmented_decoded_points = (
+        _rotated_point_tensor(decoded_reference_points, cosine, sine)
+        if decoded_reference_points is not None
+        else None
+    )
+    augmented_context_points = (
+        _rotated_point_tensor(runtime_context_points, cosine, sine)
+        if runtime_context_points is not None
+        else None
+    )
+    return YawAugmentationBatch(
+        features=(augmented_raw_features - feature_mean[None, :]) / feature_scale[None, :],
+        raw_features=augmented_raw_features,
+        targets=augmented_targets,
+        heuristics=augmented_heuristics,
+        decoded_reference_points=augmented_decoded_points,
+        runtime_context_points=augmented_context_points,
+    )
+
+
+def _named_vector_indices(
+    names: Sequence[str],
+    suffix: str,
+) -> tuple[tuple[int, int, int], ...]:
+    triplets: list[tuple[int, int, int]] = []
+    for name in names:
+        if not name.endswith(f"{suffix}_x"):
+            continue
+        y_name = f"{name[: -len('_x')]}_y"
+        z_name = f"{name[: -len('_x')]}_z"
+        if y_name in names and z_name in names:
+            triplets.append((names.index(name), names.index(y_name), names.index(z_name)))
+    return tuple(triplets)
+
+
+def _rotation6d_indices(
+    names: Sequence[str],
+    suffix: str,
+) -> tuple[tuple[int, int, int, int, int, int], ...]:
+    groups: list[tuple[int, int, int, int, int, int]] = []
+    for name in names:
+        if not name.endswith(f"{suffix}_0"):
+            continue
+        prefix = name[: -len("_0")]
+        candidate = tuple(f"{prefix}_{index}" for index in range(6))
+        if all(component_name in names for component_name in candidate):
+            groups.append(
+                cast(
+                    tuple[int, int, int, int, int, int],
+                    tuple(names.index(item) for item in candidate),
+                )
+            )
+    return tuple(groups)
+
+
+def _rotate_rotation6d_columns(
+    values: Any,
+    indices: tuple[int, int, int, int, int, int],
+    cosine: Any,
+    sine: Any,
+) -> None:
+    _rotate_xz_columns(values, (indices[0], indices[1], indices[2]), cosine, sine)
+    _rotate_xz_columns(values, (indices[3], indices[4], indices[5]), cosine, sine)
+
+
+def _rotate_xz_columns(
+    values: Any,
+    indices: tuple[int, int, int],
+    cosine: Any,
+    sine: Any,
+) -> None:
+    x_index, _y_index, z_index = indices
+    original_x = values[:, x_index].clone()
+    original_z = values[:, z_index].clone()
+    values[:, x_index] = cosine * original_x + sine * original_z
+    values[:, z_index] = -sine * original_x + cosine * original_z
+
+
+def _rotated_point_tensor(points: Any, cosine: Any, sine: Any) -> Any:
+    rotated = points.clone()
+    original_x = points[:, :, 0]
+    original_z = points[:, :, 2]
+    rotated[:, :, 0] = cosine[:, None] * original_x + sine[:, None] * original_z
+    rotated[:, :, 2] = -sine[:, None] * original_x + cosine[:, None] * original_z
+    return rotated
+
+
+def _checkpoint_metric_value(
+    row: Mapping[str, object],
+    preferred_metric: str,
+) -> tuple[str, float]:
+    for metric_name in (preferred_metric, "validation_decoded_position_mse", "validation_mse"):
+        value = row.get(metric_name)
+        if isinstance(value, int | float) and math.isfinite(float(value)):
+            return metric_name, float(value)
+    raise ValueError("Training history row does not contain a finite checkpoint metric")
+
+
+def _cpu_state_dict(model: Any) -> dict[str, Any]:
+    return {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
 
 
 def _is_residual_model(model_name: TorchModelName) -> bool:
@@ -2017,14 +3589,7 @@ def _decoded_pose_terms(
         runtime_context_points,
         runtime_context_masks,
         "head",
-        fallback=torch.stack(
-            (
-                torch.zeros_like(raw_features[:, surrogate_indices.head_y]),
-                raw_features[:, surrogate_indices.head_y],
-                torch.zeros_like(raw_features[:, surrogate_indices.head_y]),
-            ),
-            dim=1,
-        ),
+        fallback=_feature_position(raw_features, surrogate_indices.head),
     )
 
     torso_mask = point_masks[:, 0] * point_masks[:, 1]
@@ -2981,10 +4546,8 @@ def _upper_body_surrogate_points(
     surrogate_indices: SurrogateFeatureIndices,
     target_names: Sequence[str],
 ) -> Any:
-    zeros = torch.zeros_like(latents[:, 0])
-    head_y = raw_features[:, surrogate_indices.head_y]
     human_height = raw_features[:, surrogate_indices.human_height].clamp_min(0.1)
-    head_position = torch.stack((zeros, head_y, zeros), dim=1)
+    head_position = _feature_position(raw_features, surrogate_indices.head)
     chest_position = _surrogate_relative_point(
         torch,
         latents,
@@ -3161,7 +4724,9 @@ def _surrogate_feature_indices(
 ) -> SurrogateFeatureIndices | None:
     center_prefix = "t+00" if "t+00_head_position_y" in feature_names else "t+000"
     required = (
+        f"{center_prefix}_head_position_x",
         f"{center_prefix}_head_position_y",
+        f"{center_prefix}_head_position_z",
         f"{center_prefix}_left_hand_position_x",
         f"{center_prefix}_left_hand_position_y",
         f"{center_prefix}_left_hand_position_z",
@@ -3177,7 +4742,11 @@ def _surrogate_feature_indices(
     if not all(name in feature_names for name in required):
         return None
     return SurrogateFeatureIndices(
-        head_y=feature_names.index(f"{center_prefix}_head_position_y"),
+        head=(
+            feature_names.index(f"{center_prefix}_head_position_x"),
+            feature_names.index(f"{center_prefix}_head_position_y"),
+            feature_names.index(f"{center_prefix}_head_position_z"),
+        ),
         left_hand=(
             feature_names.index(f"{center_prefix}_left_hand_position_x"),
             feature_names.index(f"{center_prefix}_left_hand_position_y"),
@@ -3239,6 +4808,73 @@ def _temporal_windows(dataset: LoadedDataset, mask: np.ndarray, *, width: int) -
     return np.asarray(windows, dtype=np.int64)
 
 
+def _temporal_windows_from_arrays(
+    subjects: np.ndarray,
+    clips: np.ndarray,
+    center_row_indices: np.ndarray,
+    *,
+    width: int,
+) -> np.ndarray:
+    if width < 2:
+        raise ValueError("Temporal windows must have width >= 2")
+    if not (len(subjects) == len(clips) == len(center_row_indices)):
+        raise ValueError("Temporal metadata arrays must have the same length")
+    local_indices = range(len(center_row_indices))
+    sorted_indices = sorted(
+        local_indices,
+        key=lambda index: (
+            str(subjects[index]),
+            str(clips[index]),
+            int(center_row_indices[index]),
+        ),
+    )
+    windows: list[list[int]] = []
+    current_key: tuple[str, str] | None = None
+    current_window: list[int] = []
+    previous_center_index: int | None = None
+    for local_index in sorted_indices:
+        key = (str(subjects[local_index]), str(clips[local_index]))
+        center_index = int(center_row_indices[local_index])
+        if (
+            key != current_key
+            or previous_center_index is None
+            or center_index != previous_center_index + 1
+        ):
+            current_key = key
+            current_window = []
+        current_window.append(int(local_index))
+        if len(current_window) > width:
+            current_window = current_window[-width:]
+        if len(current_window) == width:
+            windows.append(list(current_window))
+        previous_center_index = center_index
+    if not windows:
+        return np.empty((0, width), dtype=np.int64)
+    return np.asarray(windows, dtype=np.int64)
+
+
+def _temporal_weights_enabled(
+    *,
+    temporal_velocity_weight: float,
+    temporal_acceleration_weight: float,
+    temporal_jerk_weight: float,
+    temporal_excess_jerk_weight: float,
+    pole_velocity_weight: float,
+    pole_excess_jerk_weight: float,
+) -> bool:
+    return any(
+        weight > 0.0
+        for weight in (
+            temporal_velocity_weight,
+            temporal_acceleration_weight,
+            temporal_jerk_weight,
+            temporal_excess_jerk_weight,
+            pole_velocity_weight,
+            pole_excess_jerk_weight,
+        )
+    )
+
+
 def _target_index(target_names: Sequence[str], name: str) -> int:
     return target_names.index(name)
 
@@ -3252,6 +4888,291 @@ def _tensor_rows(values: Any, indices: Any, *, device: Any) -> Any:
     row_indices = indices if values.device == indices.device else indices.detach().cpu()
     selected = values[row_indices]
     return selected if selected.device == device else selected.to(device)
+
+
+def _optional_tensor_rows(values: Any | None, indices: Any) -> Any | None:
+    return values[indices] if values is not None else None
+
+
+def _streaming_normalization_stats(
+    dataset_dir: Path,
+    *,
+    schema: SparseWindowSchema,
+    split: str | None,
+    exclude_subjects: set[str] | None,
+    clip_ids: set[str] | None,
+    max_rows: int | None,
+) -> tuple[dict[str, np.ndarray], int]:
+    feature_sum = np.zeros(len(schema.feature_names), dtype=np.float64)
+    feature_square_sum = np.zeros(len(schema.feature_names), dtype=np.float64)
+    row_count = 0
+    for batch in _iter_arrow_record_batches(
+        dataset_dir,
+        columns=("features",),
+        split=split,
+        exclude_subjects=exclude_subjects,
+        clip_ids=clip_ids,
+        batch_size=8192,
+        max_rows=max_rows,
+        seed=0,
+    ):
+        features = _arrow_feature_matrix(batch, feature_count=len(schema.feature_names))
+        row_count += int(features.shape[0])
+        feature_sum += features.sum(axis=0, dtype=np.float64)
+        feature_square_sum += np.square(features, dtype=np.float64).sum(axis=0)
+    if row_count <= 0:
+        raise ValueError("Streaming training found no train rows")
+    mean = feature_sum / float(row_count)
+    variance = np.maximum(feature_square_sum / float(row_count) - mean * mean, 0.0)
+    scale = np.sqrt(variance)
+    scale[scale < 1e-6] = 1.0
+    return {
+        "mean": mean.astype(np.float32),
+        "scale": scale.astype(np.float32),
+    }, row_count
+
+
+def _iter_streaming_torch_batches(
+    dataset_dir: Path,
+    *,
+    schema: SparseWindowSchema,
+    target_mode: TargetMode,
+    split: str | None,
+    exclude_subjects: set[str] | None,
+    clip_ids: set[str] | None,
+    batch_size: int,
+    max_rows: int | None,
+    seed: int,
+) -> Iterable[StreamingTorchBatch]:
+    target_names = schema.fk_target_names if target_mode == "fk" else schema.target_names
+    mask_names = [f"{name}_mask" for name in target_names]
+    heuristic_names = [f"heuristic_{name}" for name in target_names]
+    heuristic_mask_names = [f"heuristic_{name}_mask" for name in target_names]
+    decoded_point_columns = [
+        f"reference_{joint_name}_position_{component}"
+        for joint_name in DECODED_REFERENCE_JOINTS
+        for component in ("x", "y", "z")
+    ]
+    decoded_mask_columns = [
+        f"reference_{joint_name}_valid" for joint_name in DECODED_REFERENCE_JOINTS
+    ]
+    context_point_columns = [
+        f"heuristic_context_{joint_name}_position_{component}"
+        for joint_name in RUNTIME_DECODER_CONTEXT_JOINTS
+        for component in ("x", "y", "z")
+    ]
+    context_mask_columns = [
+        f"heuristic_context_{joint_name}_valid" for joint_name in RUNTIME_DECODER_CONTEXT_JOINTS
+    ]
+    available_columns = _arrow_dataset_columns(dataset_dir)
+    columns = [
+        "subject",
+        "clip",
+        "center_row_index",
+        "timestamp_s",
+        "features",
+        *target_names,
+        *mask_names,
+    ]
+    if target_mode == "chain" and all(
+        name in available_columns for name in (*heuristic_names, *heuristic_mask_names)
+    ):
+        columns.extend((*heuristic_names, *heuristic_mask_names))
+    if all(name in available_columns for name in (*decoded_point_columns, *decoded_mask_columns)):
+        columns.extend((*decoded_point_columns, *decoded_mask_columns))
+    if all(name in available_columns for name in (*context_point_columns, *context_mask_columns)):
+        columns.extend((*context_point_columns, *context_mask_columns))
+    for batch in _iter_arrow_record_batches(
+        dataset_dir,
+        columns=tuple(dict.fromkeys(columns)),
+        split=split,
+        exclude_subjects=exclude_subjects,
+        clip_ids=clip_ids,
+        batch_size=batch_size,
+        max_rows=max_rows,
+        seed=seed,
+    ):
+        features = _arrow_feature_matrix(batch, feature_count=len(schema.feature_names))
+        targets = _arrow_scalar_matrix(batch, target_names)
+        masks = _arrow_scalar_matrix(batch, mask_names)
+        subjects = np.asarray(batch.column("subject").to_pylist(), dtype=str)
+        clips = np.asarray(batch.column("clip").to_pylist(), dtype=str)
+        center_row_indices = np.asarray(
+            batch.column("center_row_index").to_numpy(zero_copy_only=False),
+            dtype=np.int64,
+        )
+        timestamps_s = np.asarray(
+            batch.column("timestamp_s").to_numpy(zero_copy_only=False),
+            dtype=np.float32,
+        )
+        heuristics = (
+            _arrow_scalar_matrix(batch, heuristic_names)
+            if all(name in batch.schema.names for name in heuristic_names)
+            else None
+        )
+        heuristic_masks = (
+            _arrow_scalar_matrix(batch, heuristic_mask_names)
+            if all(name in batch.schema.names for name in heuristic_mask_names)
+            else None
+        )
+        decoded_reference_points = None
+        decoded_reference_masks = None
+        has_decoded_points = all(
+            name in batch.schema.names for name in (*decoded_point_columns, *decoded_mask_columns)
+        )
+        if has_decoded_points:
+            decoded_reference_points = _arrow_scalar_matrix(batch, decoded_point_columns).reshape(
+                batch.num_rows,
+                len(DECODED_REFERENCE_JOINTS),
+                3,
+            )
+            decoded_reference_masks = _arrow_scalar_matrix(batch, decoded_mask_columns)
+        runtime_context_points = None
+        runtime_context_masks = None
+        has_context_points = all(
+            name in batch.schema.names for name in (*context_point_columns, *context_mask_columns)
+        )
+        if has_context_points:
+            runtime_context_points = _arrow_scalar_matrix(batch, context_point_columns).reshape(
+                batch.num_rows,
+                len(RUNTIME_DECODER_CONTEXT_JOINTS),
+                3,
+            )
+            runtime_context_masks = _arrow_scalar_matrix(batch, context_mask_columns)
+        yield StreamingTorchBatch(
+            features=features,
+            targets=targets,
+            masks=masks,
+            subjects=subjects,
+            clips=clips,
+            center_row_indices=center_row_indices,
+            timestamps_s=timestamps_s,
+            heuristics=heuristics,
+            heuristic_masks=heuristic_masks,
+            decoded_reference_points=decoded_reference_points,
+            decoded_reference_masks=decoded_reference_masks,
+            runtime_context_points=runtime_context_points,
+            runtime_context_masks=runtime_context_masks,
+        )
+
+
+def _iter_arrow_record_batches(
+    dataset_dir: Path,
+    *,
+    columns: Sequence[str],
+    split: str | None,
+    exclude_subjects: set[str] | None,
+    clip_ids: set[str] | None,
+    batch_size: int,
+    max_rows: int | None,
+    seed: int,
+) -> Iterable[Any]:
+    ds, _pc = _import_pyarrow_dataset()
+    paths = _sparse_window_parquet_paths(dataset_dir)
+    rng = np.random.default_rng(seed)
+    if len(paths) > 1:
+        paths = [paths[index] for index in rng.permutation(len(paths))]
+    expression = _arrow_filter_expression(
+        ds,
+        split=split,
+        exclude_subjects=exclude_subjects,
+        clip_ids=clip_ids,
+    )
+    remaining_rows = max_rows
+    for path in paths:
+        scanner = ds.dataset(str(path), format="parquet").scanner(
+            columns=list(columns),
+            filter=expression,
+            batch_size=batch_size,
+        )
+        for batch in scanner.to_batches():
+            if batch.num_rows <= 0:
+                continue
+            if remaining_rows is not None:
+                if remaining_rows <= 0:
+                    return
+                if batch.num_rows > remaining_rows:
+                    batch = batch.slice(0, remaining_rows)
+                remaining_rows -= batch.num_rows
+            yield batch
+
+
+def _stream_clip_ids(dataset_dir: Path, *, max_clips: int | None) -> set[str] | None:
+    if max_clips is None or max_clips <= 0:
+        return None
+    paths = _sparse_window_parquet_paths(dataset_dir)
+    scan = pl.scan_parquet(str(paths[0]) if len(paths) == 1 else [str(path) for path in paths])
+    frame = cast(
+        pl.DataFrame,
+        scan.select("clip").unique(maintain_order=True).limit(max_clips).collect(),
+    )
+    return {str(value) for value in frame["clip"].to_list()}
+
+
+def _sparse_window_parquet_paths(dataset_dir: Path) -> list[Path]:
+    windows_path = dataset_dir / "windows.parquet"
+    if windows_path.exists():
+        return [windows_path]
+    shard_dir = dataset_dir / "windows_shards"
+    if shard_dir.exists():
+        paths = sorted(shard_dir.glob("*.parquet"))
+        if paths:
+            return paths
+    raise FileNotFoundError(
+        f"Expected sparse-window dataset at {dataset_dir}; run build_sparse_window_dataset"
+    )
+
+
+def _arrow_dataset_columns(dataset_dir: Path) -> set[str]:
+    ds, _pc = _import_pyarrow_dataset()
+    dataset = ds.dataset(str(_sparse_window_parquet_paths(dataset_dir)[0]), format="parquet")
+    return set(dataset.schema.names)
+
+
+def _arrow_filter_expression(
+    ds: Any,
+    *,
+    split: str | None,
+    exclude_subjects: set[str] | None,
+    clip_ids: set[str] | None,
+) -> Any | None:
+    expression = None
+    if split is not None:
+        expression = ds.field("split") == split
+    if exclude_subjects:
+        subject_expression = ~ds.field("subject").isin(sorted(exclude_subjects))
+        expression = subject_expression if expression is None else expression & subject_expression
+    if clip_ids:
+        clip_expression = ds.field("clip").isin(sorted(clip_ids))
+        expression = clip_expression if expression is None else expression & clip_expression
+    return expression
+
+
+def _arrow_feature_matrix(batch: Any, *, feature_count: int) -> np.ndarray:
+    values = batch.column("features").flatten().to_numpy(zero_copy_only=False)
+    return np.array(values, dtype=np.float32, copy=True).reshape(batch.num_rows, feature_count)
+
+
+def _arrow_scalar_matrix(batch: Any, names: Sequence[str]) -> np.ndarray:
+    if not names:
+        return np.empty((batch.num_rows, 0), dtype=np.float32)
+    return np.array(
+        np.column_stack(
+            [batch.column(name).to_numpy(zero_copy_only=False) for name in names],
+        ),
+        dtype=np.float32,
+        copy=True,
+    )
+
+
+def _import_pyarrow_dataset() -> tuple[Any, Any]:
+    if importlib.util.find_spec("pyarrow") is None:
+        raise RuntimeError(
+            "Streaming Parquet training requires pyarrow; run through `uv run --group ml ...`."
+        )
+    dataset_module = importlib.import_module("pyarrow.dataset")
+    compute_module = importlib.import_module("pyarrow.compute")
+    return dataset_module, compute_module
 
 
 def _create_training_tracker(

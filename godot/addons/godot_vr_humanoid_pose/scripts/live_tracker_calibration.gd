@@ -2,6 +2,8 @@ extends RefCounted
 class_name VRHumanoidLiveTrackerCalibration
 
 const WORLD_UP = Vector3(0.0, 1.0, 0.0)
+const PLAYSPACE_RIGHT = Vector3(1.0, 0.0, 0.0)
+const PLAYSPACE_FORWARD = Vector3(0.0, 0.0, 1.0)
 
 
 func build_calibration(sample: Dictionary, devices: Array) -> Dictionary:
@@ -11,14 +13,9 @@ func build_calibration(sample: Dictionary, devices: Array) -> Dictionary:
 
     var head_position = _tracker_position(head)
     var head_rotation = _tracker_rotation(head)
-    var forward = _horizontal(_rotate_vector(head_rotation, Vector3(0.0, 0.0, -1.0)))
-    if forward.length() <= 0.0001:
-        forward = Vector3(0.0, 0.0, -1.0)
-    forward = forward.normalized()
-    var right = _horizontal(_rotate_vector(head_rotation, Vector3.RIGHT))
-    if right.length() <= 0.0001:
-        right = WORLD_UP.cross(forward)
-    right = right.normalized()
+    var axes = _body_axes_from_tpose_devices(devices, head_position, head_rotation)
+    var right: Vector3 = axes["right"]
+    var forward: Vector3 = axes["forward"]
 
     var generic_trackers = _annotated_generic_trackers(devices, head_position, right, forward)
     var bindings = _infer_role_bindings(generic_trackers)
@@ -48,6 +45,17 @@ func build_calibration(sample: Dictionary, devices: Array) -> Dictionary:
         },
         "role_bindings": _bindings_by_role(bindings),
         "devices": calibration_devices,
+    }
+
+
+func _body_axes_from_tpose_devices(
+    _devices: Array,
+    _head_position: Vector3,
+    _head_rotation: Quaternion
+) -> Dictionary:
+    return {
+        "right": PLAYSPACE_RIGHT,
+        "forward": PLAYSPACE_FORWARD,
     }
 
 
@@ -219,14 +227,6 @@ func _rotation_from_transform(transform) -> Quaternion:
             return value
         return Quaternion(value[0], value[1], value[2], value[3])
     return Quaternion(0.0, 0.0, 0.0, 1.0)
-
-
-func _rotate_vector(rotation: Quaternion, vector: Vector3) -> Vector3:
-    return rotation * vector
-
-
-func _horizontal(vector: Vector3) -> Vector3:
-    return Vector3(vector.x, 0.0, vector.z)
 
 
 func _vector_to_json(vector: Vector3) -> Array:

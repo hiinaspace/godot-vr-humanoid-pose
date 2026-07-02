@@ -186,6 +186,60 @@ def test_tcp_recorder_replies_to_live_estimate_requests(tmp_path) -> None:
     assert summary.frames == 0
 
 
+def test_tcp_recorder_uses_live_estimate_backend(tmp_path) -> None:
+    writer = LiveCaptureParquetWriter(tmp_path, session_id="estimate-backend")
+    port = _free_tcp_port()
+    result: dict[str, object] = {}
+    backend = _FakeLiveBackend()
+    request = _frame_message(frame_index=7, timestamp_seconds=1.0)
+    request["type"] = "estimate_request"
+    request["request_id"] = 42
+    request.pop("estimated_frame")
+    reset = {
+        "format": CAPTURE_FORMAT,
+        "type": "reset_estimator",
+        "session_id": "test-session",
+        "request_id": 43,
+    }
+
+    def run_server() -> None:
+        result["summary"] = run_tcp_recorder(
+            host="127.0.0.1",
+            port=port,
+            writer=writer,
+            estimator_backend=backend,
+            stop_after_client=True,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    with socket.create_connection(("127.0.0.1", port), timeout=5.0) as client:
+        with client.makefile("r", encoding="utf-8") as reader:
+            client.sendall((json.dumps(request) + "\n").encode())
+            response = json.loads(reader.readline())
+            client.sendall((json.dumps(reset) + "\n").encode())
+            reset_response = json.loads(reader.readline())
+
+    thread.join(timeout=5.0)
+
+    assert response["type"] == "estimate_response"
+    assert response["estimator"] == "fake_live_backend"
+    assert response["estimated_frame"]["skeleton_profile"] == "fake_profile"
+    assert reset_response["type"] == "estimator_reset"
+    assert backend.requests == 1
+    assert backend.resets == 1
+    assert backend.closed
+    summary = cast(LiveCaptureSummary, result["summary"])
+    assert summary.frames == 0
+    raw_messages = [
+        json.loads(line)
+        for line in (summary.session_dir / "raw_messages.ndjson")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [message["type"] for message in raw_messages] == ["estimate_request", "reset_estimator"]
+
+
 def test_tcp_recorder_enriches_recorded_frames_with_python_estimates(tmp_path) -> None:
     writer = LiveCaptureParquetWriter(tmp_path, session_id="estimate-frame")
     port = _free_tcp_port()
@@ -312,3 +366,41 @@ def _free_tcp_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
+
+
+class _FakeLiveBackend:
+    name = "fake_live_backend"
+
+    def __init__(self) -> None:
+        self.requests = 0
+        self.resets = 0
+        self.closed = False
+
+    def estimate_from_message(self, message) -> dict[str, object]:
+        self.requests += 1
+        identity = [0.0, 0.0, 0.0, 1.0]
+        timestamp_seconds = float(message["timestamp_seconds"])
+        return {
+            "timestamp_seconds": timestamp_seconds,
+            "root": {"position": [0.0, 1.0, 0.0], "rotation": identity},
+            "skeleton_profile": "fake_profile",
+            "debug_bones": [["hips", "head"]],
+            "joints": {
+                "hips": {
+                    "transform": {"position": [0.0, 1.0, 0.0], "rotation": identity},
+                    "estimated": True,
+                    "confidence": 1.0,
+                },
+                "head": {
+                    "transform": {"position": [0.0, 1.6, 0.0], "rotation": identity},
+                    "estimated": True,
+                    "confidence": 1.0,
+                },
+            },
+        }
+
+    def reset(self) -> None:
+        self.resets += 1
+
+    def close(self) -> None:
+        self.closed = True

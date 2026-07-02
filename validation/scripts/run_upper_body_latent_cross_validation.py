@@ -46,6 +46,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "torch_linear",
             "torch_mlp",
             "torch_tcn",
+            "torch_gru",
             "xgboost",
         ),
         default=("constant", "torch_linear", "torch_mlp", "xgboost"),
@@ -56,6 +57,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--yaw-augmentation-degrees", type=float, default=0.0)
+    parser.add_argument("--checkpoint-metric", default="validation_decoded_position_mse")
+    parser.add_argument("--early-stopping-patience", type=int, default=0)
+    parser.add_argument("--early-stopping-min-delta", type=float, default=0.0)
     parser.add_argument(
         "--target-mode",
         choices=("chain", "fk"),
@@ -106,7 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--validation-model",
-        choices=("torch_linear", "torch_mlp", "torch_tcn"),
+        choices=("torch_linear", "torch_mlp", "torch_tcn", "torch_gru"),
         default="torch_mlp",
         help="Torch artifact to use for optional downstream cached validation.",
     )
@@ -146,6 +151,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         weight_decay=args.weight_decay,
         hidden_dim=max(8, args.hidden_dim),
         seed=args.seed,
+        yaw_augmentation_degrees=max(0.0, args.yaw_augmentation_degrees),
+        checkpoint_metric=args.checkpoint_metric,
+        early_stopping_patience=max(0, args.early_stopping_patience),
+        early_stopping_min_delta=max(0.0, args.early_stopping_min_delta),
         target_mode=cast(TargetMode, args.target_mode),
         allow_cpu=args.allow_cpu,
         tracking_backend=cast(TrackingBackend, args.tracking_backend),
@@ -195,6 +204,10 @@ def run_upper_body_latent_cross_validation(
     weight_decay: float = 1e-4,
     hidden_dim: int = 256,
     seed: int = 0,
+    yaw_augmentation_degrees: float = 0.0,
+    checkpoint_metric: str = "validation_decoded_position_mse",
+    early_stopping_patience: int = 0,
+    early_stopping_min_delta: float = 0.0,
     target_mode: TargetMode = "chain",
     allow_cpu: bool = False,
     tracking_backend: TrackingBackend = "mlflow",
@@ -253,6 +266,10 @@ def run_upper_body_latent_cross_validation(
             weight_decay=weight_decay,
             hidden_dim=hidden_dim,
             seed=seed + fold_index,
+            yaw_augmentation_degrees=yaw_augmentation_degrees,
+            checkpoint_metric=checkpoint_metric,
+            early_stopping_patience=early_stopping_patience,
+            early_stopping_min_delta=early_stopping_min_delta,
             target_mode=target_mode,
             allow_cpu=allow_cpu,
             tracking_backend=tracking_backend,
@@ -315,6 +332,10 @@ def run_upper_body_latent_cross_validation(
             "models": list(model_names),
             "total_seconds": time.perf_counter() - start,
             "target_mode": target_mode,
+            "yaw_augmentation_degrees": yaw_augmentation_degrees,
+            "checkpoint_metric": checkpoint_metric,
+            "early_stopping_patience": early_stopping_patience,
+            "early_stopping_min_delta": early_stopping_min_delta,
             "tracking_backend": tracking_backend,
             "mlflow_tracking_uri": mlflow_tracking_uri,
             "mlflow_artifact_root": mlflow_artifact_root.as_posix(),

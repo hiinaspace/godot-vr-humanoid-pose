@@ -9,7 +9,7 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class UpperBodyFkFeatureIndices:
-    head_y: int
+    head: tuple[int, int, int]
     human_height: int
     head_to_neck: int
     neck_to_chest: int
@@ -24,7 +24,9 @@ def upper_body_fk_feature_indices(
 ) -> UpperBodyFkFeatureIndices | None:
     center_prefix = "t+00" if "t+00_head_position_y" in feature_names else "t+000"
     required = (
+        f"{center_prefix}_head_position_x",
         f"{center_prefix}_head_position_y",
+        f"{center_prefix}_head_position_z",
         "calibration_human_height_m",
         "calibration_head_to_neck_m",
         "calibration_neck_to_chest_m",
@@ -36,7 +38,11 @@ def upper_body_fk_feature_indices(
     if any(name not in feature_names for name in required):
         return None
     return UpperBodyFkFeatureIndices(
-        head_y=feature_names.index(f"{center_prefix}_head_position_y"),
+        head=(
+            feature_names.index(f"{center_prefix}_head_position_x"),
+            feature_names.index(f"{center_prefix}_head_position_y"),
+            feature_names.index(f"{center_prefix}_head_position_z"),
+        ),
         human_height=feature_names.index("calibration_human_height_m"),
         head_to_neck=feature_names.index("calibration_head_to_neck_m"),
         neck_to_chest=feature_names.index("calibration_neck_to_chest_m"),
@@ -59,8 +65,14 @@ def decode_upper_body_fk_points(
 
     dtype = targets.dtype
     device = targets.device
-    zeros = torch.zeros_like(raw_features[:, feature_indices.head_y])
-    head_origin = torch.stack((zeros, raw_features[:, feature_indices.head_y], zeros), dim=1)
+    head_origin = raw_features[
+        :,
+        [
+            feature_indices.head[0],
+            feature_indices.head[1],
+            feature_indices.head[2],
+        ],
+    ]
     human_height = raw_features[:, feature_indices.human_height].clamp_min(0.1)
     hips = (
         head_origin + _vector_targets(targets, target_names, "fk_hips_rel") * human_height[:, None]

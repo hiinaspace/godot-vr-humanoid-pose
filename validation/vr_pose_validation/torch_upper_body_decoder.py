@@ -19,7 +19,7 @@ WORLD_RIGHT = (1.0, 0.0, 0.0)
 
 @dataclass(frozen=True, slots=True)
 class RuntimeDecoderFeatureIndices:
-    head_y: int
+    head: tuple[int, int, int]
     left_hand: tuple[int, int, int]
     right_hand: tuple[int, int, int]
     human_height: int
@@ -37,7 +37,9 @@ def runtime_decoder_feature_indices(
     except ValueError:
         return None
     required = (
+        f"{center_prefix}_head_position_x",
         f"{center_prefix}_head_position_y",
+        f"{center_prefix}_head_position_z",
         f"{center_prefix}_left_hand_position_x",
         f"{center_prefix}_left_hand_position_y",
         f"{center_prefix}_left_hand_position_z",
@@ -53,7 +55,11 @@ def runtime_decoder_feature_indices(
     if any(name not in feature_names for name in required):
         return None
     return RuntimeDecoderFeatureIndices(
-        head_y=feature_names.index(f"{center_prefix}_head_position_y"),
+        head=(
+            feature_names.index(f"{center_prefix}_head_position_x"),
+            feature_names.index(f"{center_prefix}_head_position_y"),
+            feature_names.index(f"{center_prefix}_head_position_z"),
+        ),
         left_hand=(
             feature_names.index(f"{center_prefix}_left_hand_position_x"),
             feature_names.index(f"{center_prefix}_left_hand_position_y"),
@@ -274,8 +280,8 @@ def _context_point(
 def _head_from_features(
     torch: Any, raw_features: Any, indices: RuntimeDecoderFeatureIndices
 ) -> Any:
-    zeros = torch.zeros_like(raw_features[:, indices.head_y])
-    return torch.stack((zeros, raw_features[:, indices.head_y], zeros), dim=1)
+    del torch
+    return _feature_point(raw_features, indices.head)
 
 
 def _feature_point(raw_features: Any, indices: tuple[int, int, int]) -> Any:

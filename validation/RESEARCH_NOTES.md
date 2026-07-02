@@ -7,13 +7,22 @@ CMU/Godot humanoid path.
 
 ## Project Constraints
 
-- Runtime target is a Godot humanoid skeleton, not SMPL. SMPL papers are useful
-  for representation and training ideas, but a direct SMPL output head would
-  need retargeting before it helps the plugin.
+- Runtime target is a Godot humanoid skeleton, not SMPL. SMPL papers and body
+  formats are useful for representation and interchange ideas, but a direct
+  SMPL output head would need retargeting before it helps the plugin.
 - Commercial availability matters. CMU raw mocap and our own VR capture data
-  are preferred training/evaluation sources. AMASS, SMPL, DMPL, Human Body
-  Prior, and pretrained weights built from them should be treated as restricted
-  research references unless their licenses explicitly allow the intended use.
+  are preferred training/evaluation sources. AMASS, DMPL, Human Body Prior, and
+  pretrained weights built from them should be treated as restricted research
+  references unless their licenses explicitly allow the intended use.
+- Do not collapse all SMPL-family assets into one license bucket. Official
+  `SMPL-Body` and `SMPL-X Body` exports are CC BY 4.0, but the full
+  SMPL/SMPL-X model/software downloads remain under non-commercial research
+  licenses. A transient SMPL-body interchange layer may be acceptable; training
+  commercial-bound models with the full model/software still needs review.
+- SparsePoser's public Xsens dataset is much closer to VR usage than CMU, but
+  its license metadata is inconsistent between Zenodo and the GitHub repo. Use
+  it for local research/evaluation until training-artifact redistribution is
+  explicitly reviewed.
 - The immediate product case is 3-point VR tracking: HMD plus left/right hands.
   Extra trackers in live capture are useful as withheld ground truth, not as
   required estimator inputs.
@@ -23,12 +32,107 @@ CMU/Godot humanoid path.
 | Reference | Useful idea | Local cache | Public URL |
 | --- | --- | --- | --- |
 | AvatarPoser, ECCV 2022 | Transformer over head/hand pose windows; separate global orientation stabilization; post-network arm IK to recover hand alignment. | [paper text](../.cache/references/papers/avatarposer_2207.13784.txt), [repo README](../.cache/references/AvatarPoser/README.md), [license](../.cache/references/AvatarPoser/LICENSE) | https://github.com/eth-siplab/AvatarPoser |
+| AvatarJLM, ICCV 2023 | Two-stage sparse VR model: initial pose plus joint-level spatiotemporal tokens for alternating spatial/temporal Transformer blocks; useful reference for moving beyond low-dimensional latents. | n/a | https://arxiv.org/abs/2308.08855, https://github.com/zxz267/AvatarJLM |
 | EgoPoser, ECCV 2024 | Sparse/intermittent hand tracking, global motion decomposition, 80-frame windows, SlowFast temporal fusion, FoV masking. | [paper text](../.cache/references/papers/egoposer_2308.06493.txt), [repo README](../.cache/references/EgoPoser/README.md), [network](../.cache/references/EgoPoser/networks/egoposer.py), [training config](../.cache/references/EgoPoser/options/train_egoposer.yaml) | https://github.com/eth-siplab/EgoPoser, https://arxiv.org/abs/2308.06493 |
+| HMD-Poser, CVPR 2024 | Scalable sparse-observation model for HMD plus optional IMUs; shape estimation and real-captured free-dancing dataset are useful for the synthetic-vs-real gap. | n/a | https://arxiv.org/abs/2403.03561, https://pico-ai-team.github.io/hmd-poser |
+| LGSIK-Poser, AI 2025 | HMD/controller plus optional IMU inputs; grouped LSTMs, skeleton-aware graph reasoning, partition IK refinement, anthropometric priors, and multi-scale velocity loss. Strong current architecture reference. | [paper text](../.cache/references/papers/lgsik-poser_ai2025_6_180.txt), [repo](../.cache/references/LGSIK-Poser) | https://www.mdpi.com/2673-2688/6/8/180, https://github.com/Lucifer-G0/LGSIK-Poser |
+| SSR-HMR, Electronics 2025 | Sparse-node model using root-centered dual quaternions, spatiotemporal graph convolution, torso adjustment, pose optimization, and multi-scale velocity loss. Useful graph/representation reference, but six-DoF tracker focused. | [repo](../.cache/references/SSR-HMR) | https://www.mdpi.com/2079-9292/14/18/3664, https://github.com/Lucifer-G0/SSR-HMR |
+| SparsePoser, TOG 2023 | Six-6DoF-tracker VR reconstruction; convolutional skeleton autoencoder plus learned limb IK; includes public Xsens BVH train/eval data and Unity live-calibration flow. | [repo](../.cache/references/SparsePoser), [data zip](../.cache/sparseposer/data.zip) | https://upc-virvig.github.io/SparsePoser/, https://github.com/UPC-ViRVIG/SparsePoser |
 | MANIKIN, ECCV 2024 | Neural-analytic IK: predict base joints, foot poses, and limb swivel angles, then solve limbs analytically to match end effectors. | [paper text](../.cache/references/papers/manikin_eccv2024_00194.txt), [paper PDF](../.cache/references/papers/manikin_eccv2024_00194.pdf) | https://static.siplab.org/papers/eccv2024-manikin.pdf |
+| DragPoser, CGF 2025 | Structured latent-space optimization with dynamic hard constraints and a temporal predictor; useful for live optional tracker constraints and IK correction philosophy. | n/a | https://arxiv.org/abs/2406.14567, https://upc-virvig.github.io/DragPoser |
 | Garment Inertial Poser, IJCAI 2025 | Loose sensor modeling: simulate/synthesize garment-mounted IMU signals, condition pose prediction on loose IMU data and garment parameters, and evaluate simulated/synthetic/real data separately. | n/a | https://siplab.org/projects/GarmentInertialPoser, https://www.ijcai.org/proceedings/2025/135 |
 | Garment Inertial Denoiser, arXiv 2026 | Treat loose sensor corruption as a front-end denoising problem before pose estimation: location-specific denoising, cross-sensor fusion, then general pose prediction. | n/a | https://arxiv.org/abs/2601.01360 |
 | VRArmIK, 2018 | Deterministic shoulder/elbow heuristics for 3-point VR arms: shoulder pose, elbow angle, hand-rotation influence, stretch handling. | [repo README](../.cache/references/VRArmIK/README.md), [arm solver](../.cache/references/VRArmIK/Assets/Plugins/VRArmIK/Scripts/VRArmIK.cs), [license](../.cache/references/VRArmIK/LICENSE) | https://github.com/dabeschte/VRArmIK, https://dabeschte.github.io/paper/2018/12/01/vrarmik.html |
 | Existing data strategy | Separates CMU gait priors, in-distribution VR capture, augmentation, and plausibility metrics. | [DATA_STRATEGY.md](DATA_STRATEGY.md) | n/a |
+
+## SparsePoser/Xsens Dataset Spike
+
+SparsePoser is the first non-AMASS public dataset found so far that is both
+close to our target usage and immediately parseable. The downloaded archive is
+`.cache/sparseposer/data.zip` from Zenodo record `8427980`.
+
+Inventory:
+
+- Zip size: `573,126,833` bytes.
+- MD5: `c9f08cf985e2b3bac324c0a4e17d4fbc`.
+- Uncompressed size: `1,438,096,348` bytes.
+- Files: `117` BVH clips, `106` under `data/xsens/train` and `11` under
+  `data/xsens/eval`.
+- Duration: about `9.24` train hours and `0.58` eval hours at 60 Hz.
+- Canonical Parquet cache: `2,122,704` frames in `117` clips, about
+  `1.57 GB` on disk with Zstandard compression.
+- Cache build profile on this machine: about `259 s` total, with `247 s` in FK,
+  `5.4 s` parsing, and `6.7 s` Parquet writing.
+- Subjects: `S01` through `S09`, plus named eval clips such as `game_1`,
+  `squat_1`, and `body_directions_1`.
+- Skeleton: 22 named joints with meter-scale offsets, root `Hips`, root
+  channels `Xposition Yposition Zposition Yrotation Xrotation Zrotation`, and
+  local joint channels `Yrotation Xrotation Zrotation`.
+
+Usefulness:
+
+- The data is Xsens Awinda motion captured while actors performed VR-relevant
+  actions, including VR gaming, sitting, warmups, exercise, and dancing. This is
+  more in-distribution than CMU for social-VR body inference.
+- The reference six sparse joints are root/pelvis, left foot, right foot, head,
+  left hand, and right hand. We can derive our 3-point setting by dropping root
+  and feet, then use those withheld joints as optional-tracker labels and
+  lower-body diagnostics.
+- The mirrored clips are already included, so subject-held-out splits must treat
+  original and `_mirror` clips as a coupled unit.
+- The BVH format is easier to normalize into our Parquet cache than AMASS/SMPL,
+  but the repo depends on `upc-pymotion`; importing only the format and math
+  behavior is preferable to depending on its full training stack.
+
+License/status caveats:
+
+- SparsePoser code is MIT.
+- The repo's `LICENSE_data` says model weights and data are CC BY-SA 4.0.
+- Zenodo metadata for record `8427980` currently reports `cc-by-4.0`.
+- Until that mismatch is resolved, treat this corpus as allowed for local
+  research/evaluation and uncertain for redistributed trained weights or
+  commercial-bound model artifacts.
+
+Importer status:
+
+1. The fixed-skeleton BVH reader is implemented in
+   `validation.vr_pose_validation.sparseposer_bvh` without a runtime
+   `upc-pymotion` dependency.
+2. `validation.scripts.build_sparseposer_parquet_cache` exports the Xsens BVH
+   files into the same canonical wide-Parquet pose-cache schema as CMU, with
+   `dataset=sparseposer_xsens` and `dataset_split=train|eval`.
+3. The full train/eval cache builds correctly, but FK remains Python-loop bound.
+   Optimize this path before using SparsePoser/Xsens as a frequent cache
+   rebuild target.
+4. The official SparsePoser code can be run in an ignored reference checkout.
+   Its generated BVH outputs can be converted back into our canonical cache with
+   `--input-dir`, then compared against the reference cache with
+   `validation.scripts.run_pose_cache_comparison`.
+5. Keep the default training split license-gated: enable local experiments, but
+   do not mix this data into committed model artifacts until the license policy
+   is settled.
+
+SparsePoser weights benchmark:
+
+- On the official 11-clip Xsens eval split, the released SparsePoser weights
+  report about `15 mm` MPJPE in our canonical cache comparison. Their own
+  eval script reports the same order of magnitude: about `15.0 mm` MPJPE and
+  `20.9 mm` end-effector error averaged over the 11 eval files.
+- On the same canonicalized Xsens eval cache, our Basis-style 3-point estimator
+  is much worse on GT matching: about `288 mm` mean reference error, `90 mm`
+  upper-body error, `138 mm` shoulder error, and `137 mm` elbow error. This is
+  not surprising: SparsePoser uses six tracked nodes, while the Basis-style
+  estimator is intentionally constrained to HMD plus hands.
+- The current CMU-trained GRU upper-body model only slightly improves shoulder
+  and elbow error over the Basis baseline on Xsens eval, and worsens spine-axis
+  and plausibility metrics. Treat that as distribution-shift evidence rather
+  than a model-quality conclusion.
+- Running SparsePoser weights directly on CMU remains a separate adapter task.
+  Their runtime path expects 64-frame windows of root, feet, head, and hand
+  6DoF tracker poses in the fixed Xsens skeleton space. Our current adapter maps
+  SparsePoser BVH output into canonical Godot-style joints; CMU-to-SparsePoser
+  input retargeting is the opposite direction and needs a careful coordinate,
+  scale, and orientation check.
 
 ## Input Representation
 
@@ -38,8 +142,30 @@ angular velocity, global positions, and linear velocity for head, left hand, and
 right hand. EgoPoser's default config uses `input_dim: 60`, `num_input: 3`, and
 `window_size: 80`; AvatarPoser uses 40-frame chunks.
 
-For this repo, a useful exporter would produce Parquet or tensor windows from
-the existing CMU cache with:
+LGSIK-Poser and HMD-Poser reinforce this input shape. LGSIK keeps 6D rotation,
+angular velocity, position, and linear velocity for sparse VR devices, adds IMU
+acceleration when IMUs exist, and includes head-relative cues for hand motion.
+The released preprocessing code materializes a 135-wide feature vector made from
+global 6D rotations and relative rotation deltas for six sparse joints, global
+positions and finite differences for head and hands, head-relative hand rotation
+and position plus their deltas, and three acceleration channels for pelvis/knee
+IMU-style inputs. It then zeroes unavailable channel ranges to simulate HMD-only,
+HMD+2IMU, and HMD+3IMU modes.
+
+The current sparse-window exporter already emits HMD/left-hand/right-hand
+position, 6D rotation, finite-difference linear velocity, finite-difference
+6D-rotation velocity, validity masks, and calibration features. Two important
+caveats remain:
+
+- `rotation6d_velocity` is a model-friendly finite difference, not true angular
+  velocity. Live VR trackers can provide physical angular velocity; the capture
+  schema should preserve it separately when available.
+- CMU-derived synthetic trackers get velocities from differentiated poses. Live
+  tracker velocities will include sensor filtering, prediction, and strap
+  motion, so synthetic corruption/noise should include velocity channels too.
+
+For this repo, the durable exporter surface should produce Parquet or tensor
+windows from the existing CMU cache with:
 
 - HMD, left-hand, and right-hand position.
 - HMD, left-hand, and right-hand orientation in a continuous representation,
@@ -140,6 +266,74 @@ Implementation implication:
   loss instead of only matching reference jerk direction and magnitude.
 - Metrics should include hand target error, elbow position error, elbow swivel
   error, elbow side-flip rate, and upper-body MPJPE.
+
+## Learned Temporal-Skeleton Architecture
+
+The project has moved from "classical Basis port plus small residuals" toward a
+full learned pose model with analytic correction at runtime. The strongest
+nearby references now suggest the following shape:
+
+- Use a causal sequence model over sparse tracker windows. GRU is a reasonable
+  local baseline, but LGSIK-Poser uses grouped unidirectional LSTMs and
+  HMD-Poser also uses recurrent temporal modeling before spatial reasoning.
+- Keep direct sparse input skip connections into later pose or IK refinement
+  layers. LGSIK-Poser feeds raw sparse end-effector cues into partition MLPs;
+  this matches our need to preserve controller alignment instead of asking the
+  network to remember it through a hidden state.
+- Add skeleton-aware spatial structure. Options in increasing complexity:
+  per-region heads, masked group graph over torso/head/arms/legs/shape, or
+  joint-level tokens with alternating spatial/temporal attention as in
+  AvatarJLM.
+- LGSIK's released model is a practical template for a first grouped graph:
+  eight dynamic groups plus one shape group are embedded independently, each
+  group gets a unidirectional LSTM, a masked skeleton convolution fuses nine
+  groups down to six anatomical partitions, then another set of partition LSTMs
+  and MLP heads predicts normalized 6D joint rotations. The heads concatenate
+  partition features with raw sparse input channels, giving the model direct
+  end-effector access instead of forcing all controller alignment through the
+  recurrent state.
+- Keep anthropometric calibration as first-class model input. LGSIK-Poser uses
+  height and limb lengths for shape; SSR-HMR feeds offsets/skeleton structure
+  into pose refinement. For Godot, this should mean avatar/user height,
+  shoulder width, arm lengths, leg lengths, and controller grip offsets.
+- Train decoded geometry and temporal behavior, not only latent coordinates.
+  LGSIK-Poser and SSR-HMR both use joint position, sparse/end-effector position,
+  and multi-scale velocity losses; SSR-HMR reports that FK losses can be
+  unstable in the generator stage but uses FK positions in pose optimization.
+- LGSIK's loss stack uses root orientation, local rotation, global rotation,
+  joint position, sparse root/hand position, shape consistency, and multi-scale
+  velocity over intervals 1, 3, and 5. Its paper reports AdamW, 40-frame windows,
+  stride 20 for training segmentation, batch size 64, and 150 epochs; the public
+  config differs in some training-loop details, so treat those as defaults to
+  inspect rather than canonical paper values.
+- SparsePoser's released code uses 64-frame windows, 16-frame stride, skeleton
+  convolution/unpool layers over root-space dual quaternions, a static encoder
+  for offsets, and a separate learned IK module for limb end-effectors. SSR-HMR
+  keeps that two-stage shape but adds torso-first refinement, hierarchical limb
+  adjustment, root-centered dual-quaternion features, and multi-scale velocity
+  loss. These are stronger evidence for a graph/sequence model plus IK
+  refinement than for continuing to hand-design low-dimensional latents.
+- Treat smoothing as a runtime prior with a measured latency budget. Our GRU
+  results currently improve low-frequency elbow/torso position but add
+  high-frequency error; EMA reduces that noise without losing most positional
+  gain. A learned model should still train on temporal losses, but output
+  filters remain a practical deployment control.
+
+Near-term architecture implication:
+
+1. Keep the current GRU/TCN/MLP ladder as the baseline bench.
+2. Add an LSTM model for parity with LGSIK/HMD-Poser.
+3. Preserve native live tracker linear/angular velocity when available, while
+   keeping finite-difference velocity for CMU-derived synthetic trackers.
+4. Add a skeleton-aware grouped model before trying a full Transformer:
+   per-group temporal encoders for torso, head, left arm, right arm, lower body,
+   and calibration/shape; masked message passing across those groups; then
+   region-specific heads.
+5. Keep analytic two-bone or IK correction for hands as a hard postcondition,
+   but train the model with the correction in the loop.
+6. Preserve the graph path as Godot-humanoid native. Avoid making SMPL a runtime
+   dependency; use SMPL/AMASS papers for architecture and metrics only unless
+   licensing is resolved.
 
 ## Lower Body, Feet, And Contact
 

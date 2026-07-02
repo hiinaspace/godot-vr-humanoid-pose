@@ -74,6 +74,7 @@ DEFAULT_CLEAN_ACTIVITY_CLASSES: tuple[ActivityClass, ...] = (
 EXCLUDED_TAGS = frozenset(("data_issue", "parse_issue", "inverted_segment"))
 TARGET_SCHEMA = "upper_body_chain_v1"
 FK_TARGET_SCHEMA = "upper_body_fk_v1"
+type TrackingSpace = Literal["head_yaw", "calibration_yaw"]
 TARGET_NAMES = (
     "chest_rel_x",
     "chest_rel_y",
@@ -202,6 +203,28 @@ RUNTIME_DECODER_CONTEXT_JOINTS = (
 
 
 @dataclass(frozen=True, slots=True)
+class Basis3:
+    right: Vector3
+    up: Vector3
+    forward: Vector3
+
+
+IDENTITY_BASIS = Basis3(
+    right=(1.0, 0.0, 0.0),
+    up=(0.0, 1.0, 0.0),
+    forward=(0.0, 0.0, 1.0),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TrackingFrame:
+    """Clip-local tracking frame used to encode learned upper-body latents."""
+
+    origin: Vector3
+    basis: Basis3
+
+
+@dataclass(frozen=True, slots=True)
 class SparseWindowConfig:
     """Configuration for causal sparse-tracker ML windows."""
 
@@ -211,6 +234,7 @@ class SparseWindowConfig:
     holdout_folds: int = 5
     environment_splits: tuple[EnvironmentSplit, ...] = ("flat",)
     activity_classes: tuple[ActivityClass, ...] = DEFAULT_CLEAN_ACTIVITY_CLASSES
+    tracking_space: TrackingSpace = "calibration_yaw"
     workers: int = 1
     shard_rows: int = 0
 
@@ -227,9 +251,11 @@ class SparseWindowExportSummary:
     window_size: int
     stride: int
     estimator_name: str
+    tracking_space: str
     workers: int
     shards: int
     total_seconds: float
+    phase_seconds: dict[str, float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +274,7 @@ class UpperBodyFkTargets:
 class UpperBodyLatentPrediction:
     values: Mapping[str, float]
     masks: Mapping[str, float]
+    tracking_frame: TrackingFrame | None = None
 
 
 class LatentUpperBodyProvider(Protocol):
@@ -299,21 +326,30 @@ class TorchUpperBodyLatentProvider:
     _scale: list[float] = field(default_factory=list, init=False)
     _target_names: list[str] = field(default_factory=list, init=False)
     _prediction_mode: str = field(default="absolute", init=False)
+    _tracking_space: TrackingSpace = field(default="head_yaw", init=False)
+    _tracking_frame: TrackingFrame | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         torch = _import_torch()
         self._torch = torch
         self._device = _torch_device(torch, allow_cpu=self.allow_cpu)
         artifact = torch.load(self.artifact_path, map_location=self._device, weights_only=False)
+        feature_names = [str(name) for name in artifact["feature_names"]]
+        artifact_window_size = window_size_from_feature_names(feature_names)
+        if artifact_window_size is not None:
+            self.window_size = artifact_window_size
         self._target_names = [str(name) for name in artifact["target_names"]]
         self._prediction_mode = str(artifact.get("prediction_mode", "absolute"))
+        self._tracking_space = _tracking_space_from_value(
+            str(artifact.get("tracking_space", "head_yaw"))
+        )
         self._model = _make_torch_provider_model(
             torch,
             model_name=str(artifact["model_name"]),
-            input_dim=len(artifact["feature_names"]),
+            input_dim=len(feature_names),
             output_dim=len(self._target_names),
             hidden_dim=int(artifact.get("hidden_dim", 256)),
-            feature_names=[str(name) for name in artifact["feature_names"]],
+            feature_names=feature_names,
         ).to(self._device)
         self._model.load_state_dict(artifact["model_state_dict"])
         self._model.eval()
@@ -329,12 +365,23 @@ class TorchUpperBodyLatentProvider:
     ) -> UpperBodyLatentPrediction:
         del grounding
         self._history.append(sample)
+        if self._tracking_frame is None:
+            self._tracking_frame = tracking_frame_for_sample(
+                sample,
+                tracking_space=self._tracking_space,
+            )
         if len(self._history) > self.window_size:
             self._history = self._history[-self.window_size :]
+        current_tracking_frame = tracking_frame_for_sample(
+            sample,
+            tracking_space=self._tracking_space,
+            calibration_frame=self._tracking_frame,
+        )
         if len(self._history) < self.window_size:
             return UpperBodyLatentPrediction(
                 values={name: 0.0 for name in self._target_names},
                 masks={name: 0.0 for name in self._target_names},
+                tracking_frame=current_tracking_frame,
             )
 
         features = sparse_window_features(
@@ -342,6 +389,8 @@ class TorchUpperBodyLatentProvider:
             len(self._history) - 1,
             self.window_size,
             calibration=calibration,
+            tracking_space=self._tracking_space,
+            tracking_frame=current_tracking_frame,
         )
         normalized = [
             (value - mean) / scale
@@ -356,10 +405,12 @@ class TorchUpperBodyLatentProvider:
         return UpperBodyLatentPrediction(
             values=values,
             masks={name: 1.0 for name in self._target_names},
+            tracking_frame=current_tracking_frame,
         )
 
     def reset(self) -> None:
         self._history.clear()
+        self._tracking_frame = None
 
     @property
     def prediction_mode(self) -> str:
@@ -397,7 +448,11 @@ class EmaUpperBodyLatentProvider:
             values[name] = smoothed
             if mask >= self.min_mask:
                 self._previous_values[name] = smoothed
-        return UpperBodyLatentPrediction(values=values, masks=prediction.masks)
+        return UpperBodyLatentPrediction(
+            values=values,
+            masks=prediction.masks,
+            tracking_frame=prediction.tracking_frame,
+        )
 
     def reset(self) -> None:
         self._previous_values.clear()
@@ -458,6 +513,7 @@ def build_sparse_window_dataset(
 
     effective_config = config or SparseWindowConfig()
     start = perf_counter()
+    list_start = perf_counter()
     paths = list_clip_cache_files(cache_dir, subjects or None)
     paths = filter_clip_cache_files_by_environment(
         paths,
@@ -466,6 +522,7 @@ def build_sparse_window_dataset(
     )
     if max_clips is not None:
         paths = paths[:max_clips]
+    phase_seconds: dict[str, float] = {"list_filter_seconds": perf_counter() - list_start}
 
     feature_names = feature_schema(effective_config.window_size)
     workers = max(1, effective_config.workers)
@@ -488,34 +545,55 @@ def build_sparse_window_dataset(
     if shard_dir.exists():
         shutil.rmtree(shard_dir)
 
-    for clip_rows in _iter_clip_window_rows(paths, effective_config, feature_names):
+    for clip_rows, clip_phase_seconds in _iter_clip_window_rows(
+        paths,
+        effective_config,
+        feature_names,
+    ):
+        _accumulate_phase_seconds(phase_seconds, clip_phase_seconds)
         if clip_rows:
             clips_exported += 1
             total_windows += len(clip_rows)
             if shard_rows > 0:
                 pending_rows.extend(clip_rows)
                 if len(pending_rows) >= shard_rows:
+                    write_start = perf_counter()
                     shards += _write_window_shard(
                         shard_dir,
                         pending_rows,
                         shard_index=shards,
+                    )
+                    phase_seconds["write_seconds"] = (
+                        phase_seconds.get("write_seconds", 0.0) + perf_counter() - write_start
                     )
                     pending_rows.clear()
             else:
                 rows.extend(clip_rows)
 
     if shard_rows > 0 and pending_rows:
+        write_start = perf_counter()
         shards += _write_window_shard(shard_dir, pending_rows, shard_index=shards)
+        phase_seconds["write_seconds"] = (
+            phase_seconds.get("write_seconds", 0.0) + perf_counter() - write_start
+        )
         pending_rows.clear()
 
     windows_path = output_dir / "windows.parquet"
     if shard_rows <= 0 and rows:
+        write_start = perf_counter()
         _window_rows_frame(rows).write_parquet(windows_path, compression="zstd")
+        phase_seconds["write_seconds"] = (
+            phase_seconds.get("write_seconds", 0.0) + perf_counter() - write_start
+        )
     elif total_windows == 0:
         if shard_dir.exists():
             shutil.rmtree(shard_dir)
         shards = 0
+        write_start = perf_counter()
         _empty_windows_frame(feature_names).write_parquet(windows_path, compression="zstd")
+        phase_seconds["write_seconds"] = (
+            phase_seconds.get("write_seconds", 0.0) + perf_counter() - write_start
+        )
     else:
         if windows_path.exists():
             windows_path.unlink()
@@ -550,9 +628,11 @@ def build_sparse_window_dataset(
         window_size=effective_config.window_size,
         stride=effective_config.stride,
         estimator_name=effective_config.estimator_name,
+        tracking_space=effective_config.tracking_space,
         workers=workers,
         shards=shards,
         total_seconds=perf_counter() - start,
+        phase_seconds={key: round(value, 6) for key, value in sorted(phase_seconds.items())},
     )
     (output_dir / "manifest.json").write_text(
         json.dumps(asdict(summary), indent=2, sort_keys=True) + "\n",
@@ -565,7 +645,7 @@ def _iter_clip_window_rows(
     paths: Sequence[Path],
     config: SparseWindowConfig,
     feature_names: Sequence[str],
-) -> Iterable[list[dict[str, object]]]:
+) -> Iterable[tuple[list[dict[str, object]], dict[str, float]]]:
     workers = max(1, config.workers)
     if workers == 1:
         for path in paths:
@@ -576,7 +656,8 @@ def _iter_clip_window_rows(
     jobs = [(path, config, feature_name_tuple) for path in paths]
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures: dict[
-            Future[list[dict[str, object]]], tuple[Path, SparseWindowConfig, tuple[str, ...]]
+            Future[tuple[list[dict[str, object]], dict[str, float]]],
+            tuple[Path, SparseWindowConfig, tuple[str, ...]],
         ] = {}
         job_iter = iter(jobs)
         for _ in range(workers):
@@ -600,9 +681,17 @@ def _iter_clip_window_rows(
 
 def _export_clip_windows_job(
     job: tuple[Path, SparseWindowConfig, tuple[str, ...]],
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], dict[str, float]]:
     path, config, feature_names = job
     return _export_clip_windows(path, config, feature_names)
+
+
+def _accumulate_phase_seconds(
+    totals: dict[str, float],
+    seconds: Mapping[str, float],
+) -> None:
+    for name, value in seconds.items():
+        totals[name] = totals.get(name, 0.0) + float(value)
 
 
 def _write_window_shard(
@@ -657,18 +746,55 @@ def read_sparse_window_dataframe(
     *,
     max_rows: int | None = None,
     max_clips: int | None = None,
+    split: str | None = None,
+    subjects: set[str] | None = None,
+    exclude_subjects: set[str] | None = None,
+    clip_ids: set[str] | None = None,
 ) -> pl.DataFrame:
     windows_path = dataset_dir / "windows.parquet"
     if windows_path.exists():
         scan = pl.scan_parquet(windows_path)
+        scan = _filter_sparse_window_scan(
+            scan,
+            split=split,
+            subjects=subjects,
+            exclude_subjects=exclude_subjects,
+            clip_ids=clip_ids,
+        )
         return _collect_sparse_window_scan(scan, max_rows=max_rows, max_clips=max_clips)
     shard_dir = dataset_dir / "windows_shards"
     if shard_dir.exists():
         scan = pl.scan_parquet(str(shard_dir / "*.parquet"))
+        scan = _filter_sparse_window_scan(
+            scan,
+            split=split,
+            subjects=subjects,
+            exclude_subjects=exclude_subjects,
+            clip_ids=clip_ids,
+        )
         return _collect_sparse_window_scan(scan, max_rows=max_rows, max_clips=max_clips)
     raise FileNotFoundError(
         f"Expected sparse-window dataset at {dataset_dir}; run build_sparse_window_dataset"
     )
+
+
+def _filter_sparse_window_scan(
+    scan: pl.LazyFrame,
+    *,
+    split: str | None,
+    subjects: set[str] | None,
+    exclude_subjects: set[str] | None,
+    clip_ids: set[str] | None,
+) -> pl.LazyFrame:
+    if split is not None:
+        scan = scan.filter(pl.col("split") == split)
+    if subjects:
+        scan = scan.filter(pl.col("subject").is_in(sorted(subjects)))
+    if exclude_subjects:
+        scan = scan.filter(~pl.col("subject").is_in(sorted(exclude_subjects)))
+    if clip_ids:
+        scan = scan.filter(pl.col("clip").is_in(sorted(clip_ids)))
+    return scan
 
 
 def _collect_sparse_window_scan(
@@ -707,6 +833,15 @@ def feature_schema(window_size: int) -> list[str]:
     return names
 
 
+def window_size_from_feature_names(feature_names: Sequence[str]) -> int | None:
+    prefixes = {
+        name.split("_", maxsplit=1)[0]
+        for name in feature_names
+        if name.startswith("t") and "_position_" in name
+    }
+    return len(prefixes) if prefixes else None
+
+
 def split_for_subject(subject: str, holdout_folds: int) -> Literal["train", "validation"]:
     folds = max(2, holdout_folds)
     digest = sha1(subject.encode("utf-8")).digest()
@@ -717,6 +852,7 @@ def split_for_subject(subject: str, holdout_folds: int) -> Literal["train", "val
 def extract_upper_body_latents(
     joints: Mapping[str, Transform],
     calibration: AvatarCalibration | None = None,
+    tracking_frame: TrackingFrame | None = None,
 ) -> UpperBodyLatents:
     values = {name: 0.0 for name in TARGET_NAMES}
     masks = {name: 0.0 for name in TARGET_NAMES}
@@ -726,8 +862,7 @@ def extract_upper_body_latents(
 
     effective_calibration = calibration or AvatarCalibration()
     height = max(0.1, effective_calibration.human_height_m)
-    head_basis = yaw_basis_from_rotation(head.rotation)
-    head_position = head.position
+    frame = tracking_frame or tracking_frame_for_joints(joints)
 
     chest = joints.get("chest")
     neck = joints.get("neck") or _synthetic_neck_transform(joints)
@@ -736,8 +871,8 @@ def extract_upper_body_latents(
             continue
         rel = _head_relative_position(
             transform.position,
-            origin=head_position,
-            basis=head_basis,
+            origin=frame.origin,
+            basis=frame.basis,
             height_m=height,
         )
         for component, value in zip(("x", "y", "z"), rel, strict=True):
@@ -751,8 +886,8 @@ def extract_upper_body_latents(
         if shoulder is not None:
             rel = _head_relative_position(
                 shoulder.position,
-                origin=head_position,
-                basis=head_basis,
+                origin=frame.origin,
+                basis=frame.basis,
                 height_m=height,
             )
             for component, value in zip(("x", "y", "z"), rel, strict=True):
@@ -768,7 +903,7 @@ def extract_upper_body_latents(
             shoulder=shoulder.position,
             elbow=elbow.position,
             hand=hand.position,
-            basis=head_basis,
+            basis=frame.basis,
             min_distance_m=max(0.025, 0.12 * _upper_arm_length(effective_calibration)),
         )
         for component, value in zip(("x", "y", "z"), pole, strict=True):
@@ -782,6 +917,7 @@ def extract_upper_body_latents(
 def extract_upper_body_fk_targets(
     joints: Mapping[str, Transform],
     calibration: AvatarCalibration | None = None,
+    tracking_frame: TrackingFrame | None = None,
 ) -> UpperBodyFkTargets:
     """Extract AvatarPoser-style global plus local rotation targets.
 
@@ -800,11 +936,11 @@ def extract_upper_body_fk_targets(
 
     effective_calibration = calibration or AvatarCalibration()
     height = max(0.1, effective_calibration.human_height_m)
-    head_basis = yaw_basis_from_rotation(head.rotation)
+    frame = tracking_frame or tracking_frame_for_joints(joints)
     hips_rel = _head_relative_position(
         hips.position,
-        origin=head.position,
-        basis=head_basis,
+        origin=frame.origin,
+        basis=frame.basis,
         height_m=height,
     )
     _set_vector_target(values, masks, "fk_hips_rel", hips_rel)
@@ -812,7 +948,7 @@ def extract_upper_body_fk_targets(
         values,
         masks,
         "fk_hips_rotation6d",
-        rotation6d(hips.rotation, basis=head_basis),
+        rotation6d(hips.rotation, basis=frame.basis),
     )
 
     for joint_name, parent_name in FK_CHAIN_PARENTS.items():
@@ -830,20 +966,6 @@ def extract_upper_body_fk_targets(
     return UpperBodyFkTargets(values=values, masks=masks)
 
 
-@dataclass(frozen=True, slots=True)
-class Basis3:
-    right: Vector3
-    up: Vector3
-    forward: Vector3
-
-
-IDENTITY_BASIS = Basis3(
-    right=(1.0, 0.0, 0.0),
-    up=(0.0, 1.0, 0.0),
-    forward=(0.0, 0.0, 1.0),
-)
-
-
 def yaw_basis_from_rotation(rotation: tuple[float, float, float, float]) -> Basis3:
     forward = normalize(horizontal(rotate_vector(rotation, WORLD_FORWARD)), WORLD_FORWARD)
     right = normalize(cross(WORLD_UP, forward), (1.0, 0.0, 0.0))
@@ -856,6 +978,55 @@ def basis_from_rotation(rotation: tuple[float, float, float, float]) -> Basis3:
     right = normalize(cross(up, forward), (1.0, 0.0, 0.0))
     up = normalize(cross(forward, right), WORLD_UP)
     return Basis3(right=right, up=up, forward=forward)
+
+
+def tracking_frame_for_sample(
+    sample: TrackedPoseSample,
+    *,
+    tracking_space: TrackingSpace = "head_yaw",
+    calibration_frame: TrackingFrame | None = None,
+) -> TrackingFrame:
+    basis = (
+        calibration_frame.basis
+        if tracking_space == "calibration_yaw" and calibration_frame is not None
+        else yaw_basis_from_rotation(sample.hmd.transform.rotation)
+    )
+    return TrackingFrame(origin=sample.hmd.transform.position, basis=basis)
+
+
+def tracking_frame_for_joints(
+    joints: Mapping[str, Transform],
+    *,
+    tracking_space: TrackingSpace = "head_yaw",
+    calibration_frame: TrackingFrame | None = None,
+) -> TrackingFrame:
+    head = joints.get("head")
+    if head is None:
+        return calibration_frame or TrackingFrame(origin=(0.0, 0.0, 0.0), basis=IDENTITY_BASIS)
+    basis = (
+        calibration_frame.basis
+        if tracking_space == "calibration_yaw" and calibration_frame is not None
+        else yaw_basis_from_rotation(head.rotation)
+    )
+    return TrackingFrame(origin=head.position, basis=basis)
+
+
+def _tracking_space_from_value(value: str) -> TrackingSpace:
+    if value == "calibration_yaw":
+        return "calibration_yaw"
+    return "head_yaw"
+
+
+def _runtime_decode_tracking_frame(
+    prediction: UpperBodyLatentPrediction,
+    head: Transform,
+) -> TrackingFrame:
+    if prediction.tracking_frame is None:
+        return TrackingFrame(
+            origin=head.position,
+            basis=yaw_basis_from_rotation(head.rotation),
+        )
+    return TrackingFrame(origin=head.position, basis=prediction.tracking_frame.basis)
 
 
 def vector_to_basis(vector: Vector3, basis: Basis3) -> Vector3:
@@ -1030,6 +1201,14 @@ def local_position(position: Vector3, *, origin: Vector3, basis: Basis3) -> Vect
     return (dot(delta, basis.right), position[1], dot(delta, basis.forward))
 
 
+def _basis_position(position: Vector3, basis: Basis3) -> Vector3:
+    return (dot(position, basis.right), position[1], dot(position, basis.forward))
+
+
+def _relative_cached_position(position: Vector3, origin: Vector3) -> Vector3:
+    return (position[0] - origin[0], position[1], position[2] - origin[2])
+
+
 def rotation6d(rotation: tuple[float, float, float, float], *, basis: Basis3) -> tuple[float, ...]:
     forward = vector_to_basis(rotate_vector(rotation, WORLD_FORWARD), basis)
     up = vector_to_basis(rotate_vector(rotation, WORLD_UP), basis)
@@ -1081,16 +1260,15 @@ def apply_upper_body_latents(
         return HumanoidPoseFrame(
             timestamp_seconds=pose.timestamp_seconds, root=pose.root, joints=joints
         )
-    head_basis = yaw_basis_from_rotation(head_joint.transform.rotation)
-    head_position = head_joint.transform.position
+    tracking_frame = _runtime_decode_tracking_frame(prediction, head_joint.transform)
     height_m = max(0.1, calibration.human_height_m)
 
     for joint_name in ("chest", "neck", "left_shoulder", "right_shoulder"):
         if _relative_position_enabled(values, masks, joint_name, min_mask):
             position = _world_from_head_relative(
                 _relative_position_values(values, joint_name),
-                origin=head_position,
-                basis=head_basis,
+                origin=tracking_frame.origin,
+                basis=tracking_frame.basis,
                 height_m=height_m,
             )
             old_joint = joints.get(joint_name, JointPose(Transform()))
@@ -1100,7 +1278,7 @@ def apply_upper_body_latents(
                 estimated=True,
             )
 
-    chest_rotation = _derived_chest_rotation(joints, fallback_basis=head_basis)
+    chest_rotation = _derived_chest_rotation(joints, fallback_basis=tracking_frame.basis)
     if chest_rotation is not None:
         for joint_name in ("spine", "chest", "neck"):
             if joint_name in joints:
@@ -1129,7 +1307,7 @@ def apply_upper_body_latents(
                     values.get(f"{side}_elbow_pole_y", -1.0),
                     values.get(f"{side}_elbow_pole_z", 0.0),
                 ),
-                head_basis,
+                tracking_frame.basis,
             )
             elbow_position = solve_two_bone_midpoint(
                 root=joints[shoulder_name].transform.position,
@@ -1172,20 +1350,23 @@ def apply_upper_body_fk_latents(
             timestamp_seconds=pose.timestamp_seconds, root=pose.root, joints=joints
         )
 
-    head_basis = yaw_basis_from_rotation(head_joint.transform.rotation)
+    tracking_frame = _runtime_decode_tracking_frame(prediction, head_joint.transform)
     height_m = max(0.1, calibration.human_height_m)
-    head_position = head_joint.transform.position
     lengths = _fk_runtime_lengths(calibration)
     positions: dict[str, Vector3] = {
         "hips": _world_from_head_relative(
             _fk_vector_values(values, "fk_hips_rel"),
-            origin=head_position,
-            basis=head_basis,
+            origin=tracking_frame.origin,
+            basis=tracking_frame.basis,
             height_m=height_m,
         )
     }
     rotations: dict[str, Quaternion] = {
-        "hips": _rotation6d_quaternion(values, "fk_hips_rotation6d", basis=head_basis)
+        "hips": _rotation6d_quaternion(
+            values,
+            "fk_hips_rotation6d",
+            basis=tracking_frame.basis,
+        )
     }
 
     _set_fk_joint(joints, "hips", positions["hips"], rotations["hips"])
@@ -1227,7 +1408,10 @@ def apply_upper_body_fk_latents(
     )
     if decoded_head is not None and "chest" in positions:
         chest_position = positions["chest"]
-        neck_position = add(chest_position, scale(subtract(head_position, chest_position), 0.7))
+        neck_position = add(
+            chest_position,
+            scale(subtract(decoded_head.position, chest_position), 0.7),
+        )
         _set_fk_joint(joints, "neck", neck_position, decoded_head.rotation)
 
     half_shoulder_width = 0.5 * lengths["shoulder_width"]
@@ -1498,48 +1682,108 @@ def _export_clip_windows(
     path: Path,
     config: SparseWindowConfig,
     feature_names: Sequence[str],
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], dict[str, float]]:
+    timings: dict[str, float] = {}
+    read_start = perf_counter()
     cached_frames = list(iter_cached_pose_frames(path))
+    timings["read_cache_seconds"] = perf_counter() - read_start
     if len(cached_frames) < config.window_size:
-        return []
+        return [], timings
     first_frame = cached_frames[0]
     if not _clean_clip(first_frame):
-        return []
+        return [], timings
 
+    setup_start = perf_counter()
     reference_frames = [frame.joints for frame in cached_frames]
     floor_height = infer_reference_floor_height(reference_frames)
     calibration = calibration_from_reference_frames(reference_frames, floor_height_m=floor_height)
     grounding = GroundingContext(floor_height_m=floor_height)
     samples = [_tracked_sample_from_cached_frame(frame) for frame in cached_frames]
+    calibration_frame = tracking_frame_for_sample(
+        samples[0],
+        tracking_space=config.tracking_space,
+    )
+    feature_cache = (
+        precompute_sparse_tracker_features(samples, calibration_frame.basis)
+        if config.tracking_space == "calibration_yaw"
+        else None
+    )
+    timings["setup_seconds"] = perf_counter() - setup_start
+
+    estimate_start = perf_counter()
     estimated_poses = _estimated_poses(
         samples,
         calibration=calibration,
         grounding=grounding,
         estimator_name=config.estimator_name,
     )
+    timings["estimate_seconds"] = perf_counter() - estimate_start
+
+    target_start = perf_counter()
     target_latents = [
-        extract_upper_body_latents(frame.joints, calibration) for frame in cached_frames
+        extract_upper_body_latents(
+            frame.joints,
+            calibration,
+            tracking_frame=tracking_frame_for_joints(
+                frame.joints,
+                tracking_space=config.tracking_space,
+                calibration_frame=calibration_frame,
+            ),
+        )
+        for frame in cached_frames
     ]
     fk_targets = [
-        extract_upper_body_fk_targets(frame.joints, calibration) for frame in cached_frames
+        extract_upper_body_fk_targets(
+            frame.joints,
+            calibration,
+            tracking_frame=tracking_frame_for_joints(
+                frame.joints,
+                tracking_space=config.tracking_space,
+                calibration_frame=calibration_frame,
+            ),
+        )
+        for frame in cached_frames
     ]
     heuristic_latents = [
-        extract_upper_body_latents(pose_joints(pose), calibration) for pose in estimated_poses
+        extract_upper_body_latents(
+            pose_joints(pose),
+            calibration,
+            tracking_frame=tracking_frame_for_joints(
+                pose_joints(pose),
+                tracking_space=config.tracking_space,
+                calibration_frame=calibration_frame,
+            ),
+        )
+        for pose in estimated_poses
     ]
+    timings["target_seconds"] = perf_counter() - target_start
 
+    row_start = perf_counter()
     rows: list[dict[str, object]] = []
     for center_index in range(config.window_size - 1, len(cached_frames), config.stride):
-        feature_vector = sparse_window_features(
-            samples,
-            center_index,
-            config.window_size,
-            calibration=calibration,
+        center_tracking_frame = tracking_frame_for_sample(
+            samples[center_index],
+            tracking_space=config.tracking_space,
+            calibration_frame=calibration_frame,
         )
+        if feature_cache is None:
+            feature_vector = sparse_window_features(
+                samples,
+                center_index,
+                config.window_size,
+                calibration=calibration,
+                tracking_space=config.tracking_space,
+                tracking_frame=center_tracking_frame,
+            )
+        else:
+            feature_vector = sparse_window_features_from_cache(
+                feature_cache,
+                center_index,
+                config.window_size,
+                calibration=calibration,
+            )
         if len(feature_vector) != len(feature_names):
             raise ValueError("Feature vector length does not match feature schema")
-        center_sample = samples[center_index]
-        center_basis = yaw_basis_from_rotation(center_sample.hmd.transform.rotation)
-        center_origin = center_sample.hmd.transform.position
         row: dict[str, object] = {
             "subject": first_frame.subject,
             "clip": first_frame.clip,
@@ -1558,22 +1802,22 @@ def _export_clip_windows(
             row,
             prefix="reference",
             joints=cached_frames[center_index].joints,
-            origin=center_origin,
-            basis=center_basis,
+            origin=center_tracking_frame.origin,
+            basis=center_tracking_frame.basis,
         )
         _add_decoded_reference_points(
             row,
             prefix="heuristic",
             joints=pose_joints(estimated_poses[center_index]),
-            origin=center_origin,
-            basis=center_basis,
+            origin=center_tracking_frame.origin,
+            basis=center_tracking_frame.basis,
         )
         _add_runtime_decoder_context_points(
             row,
             prefix="heuristic_context",
             joints=pose_joints(estimated_poses[center_index]),
-            origin=center_origin,
-            basis=center_basis,
+            origin=center_tracking_frame.origin,
+            basis=center_tracking_frame.basis,
         )
         for name in TARGET_NAMES:
             row[name] = target.values[name]
@@ -1585,7 +1829,8 @@ def _export_clip_windows(
             row[name] = fk_target.values[name]
             row[f"{name}_mask"] = fk_target.masks[name]
         rows.append(row)
-    return rows
+    timings["row_seconds"] = perf_counter() - row_start
+    return rows, timings
 
 
 def _add_decoded_reference_points(
@@ -1645,16 +1890,101 @@ def _synthetic_neck_transform(joints: Mapping[str, Transform]) -> Transform | No
     )
 
 
+@dataclass(frozen=True, slots=True)
+class SparseTrackerFeatureCache:
+    timestamps: tuple[float, ...]
+    center_origin_positions: tuple[Vector3, ...]
+    positions: Mapping[TrackerRole, tuple[Vector3, ...]]
+    rotations: Mapping[TrackerRole, tuple[tuple[float, ...], ...]]
+    valid: Mapping[TrackerRole, tuple[float, ...]]
+
+
+def precompute_sparse_tracker_features(
+    samples: Sequence[TrackedPoseSample],
+    basis: Basis3,
+) -> SparseTrackerFeatureCache:
+    positions: dict[TrackerRole, list[Vector3]] = {role: [] for role in TRACKER_ROLES}
+    rotations: dict[TrackerRole, list[tuple[float, ...]]] = {role: [] for role in TRACKER_ROLES}
+    valid: dict[TrackerRole, list[float]] = {role: [] for role in TRACKER_ROLES}
+    timestamps: list[float] = []
+    center_origin_positions: list[Vector3] = []
+    for sample in samples:
+        timestamps.append(sample.timestamp_seconds)
+        center_origin_positions.append(_basis_position(sample.hmd.transform.position, basis))
+        for role in TRACKER_ROLES:
+            state = _state_for_role(sample, role)
+            positions[role].append(_basis_position(state.transform.position, basis))
+            rotations[role].append(rotation6d(state.transform.rotation, basis=basis))
+            valid[role].append(1.0 if state.valid else 0.0)
+    return SparseTrackerFeatureCache(
+        timestamps=tuple(timestamps),
+        center_origin_positions=tuple(center_origin_positions),
+        positions={role: tuple(values) for role, values in positions.items()},
+        rotations={role: tuple(values) for role, values in rotations.items()},
+        valid={role: tuple(values) for role, values in valid.items()},
+    )
+
+
+def sparse_window_features_from_cache(
+    cache: SparseTrackerFeatureCache,
+    center_index: int,
+    window_size: int,
+    *,
+    calibration: AvatarCalibration | None = None,
+) -> list[float]:
+    start_index = center_index - window_size + 1
+    if start_index < 0:
+        raise ValueError("Sparse windows are causal and require a complete history")
+    center_origin = cache.center_origin_positions[center_index]
+    features: list[float] = []
+    previous_by_role: dict[TrackerRole, tuple[Vector3, tuple[float, ...], float]] = {}
+    for sample_index in range(start_index, center_index + 1):
+        timestamp = cache.timestamps[sample_index]
+        for role in TRACKER_ROLES:
+            position = _relative_cached_position(
+                cache.positions[role][sample_index],
+                center_origin,
+            )
+            rotation = cache.rotations[role][sample_index]
+            previous = previous_by_role.get(role)
+            if previous is None:
+                linear_velocity = (0.0, 0.0, 0.0)
+                rotation_velocity = (0.0,) * 6
+            else:
+                previous_position, previous_rotation, previous_timestamp = previous
+                dt = max(1e-6, timestamp - previous_timestamp)
+                linear_velocity = tuple(
+                    (position[index] - previous_position[index]) / dt for index in range(3)
+                )
+                rotation_velocity = tuple(
+                    (rotation[index] - previous_rotation[index]) / dt for index in range(6)
+                )
+            features.extend(position)
+            features.extend(rotation)
+            features.extend(linear_velocity)
+            features.extend(rotation_velocity)
+            features.append(cache.valid[role][sample_index])
+            previous_by_role[role] = (position, rotation, timestamp)
+    features.extend(calibration_feature_values(calibration))
+    return [float(value) if isfinite(float(value)) else 0.0 for value in features]
+
+
 def sparse_window_features(
     samples: Sequence[TrackedPoseSample],
     center_index: int,
     window_size: int,
     *,
     calibration: AvatarCalibration | None = None,
+    tracking_space: TrackingSpace = "head_yaw",
+    tracking_frame: TrackingFrame | None = None,
 ) -> list[float]:
     center_sample = samples[center_index]
-    basis = yaw_basis_from_rotation(center_sample.hmd.transform.rotation)
-    origin = center_sample.hmd.transform.position
+    frame = tracking_frame or tracking_frame_for_sample(
+        center_sample,
+        tracking_space=tracking_space,
+    )
+    basis = frame.basis
+    origin = frame.origin
     start_index = center_index - window_size + 1
     if start_index < 0:
         raise ValueError("Sparse windows are causal and require a complete history")

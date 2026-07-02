@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from collections.abc import Mapping
 from typing import cast
 
@@ -63,7 +64,7 @@ def test_torch_linear_smoke_reduces_synthetic_validation_loss(tmp_path) -> None:
 
 def test_torch_mlp_saves_absolute_chain_artifact(tmp_path) -> None:
     pytest.importorskip("numpy")
-    pytest.importorskip("torch")
+    torch = pytest.importorskip("torch")
 
     from validation.scripts.train_upper_body_latents import train_upper_body_latents
 
@@ -86,6 +87,13 @@ def test_torch_mlp_saves_absolute_chain_artifact(tmp_path) -> None:
 
     assert leaderboard["torch_mlp"]["prediction_mode"] == "absolute"
     assert (tmp_path / "models" / "torch_mlp.pt").exists()
+    artifact = torch.load(tmp_path / "models" / "torch_mlp.pt", map_location="cpu")
+    assert artifact["best_checkpoint_metric"] in (
+        "validation_decoded_position_mse",
+        "validation_mse",
+    )
+    assert artifact["best_epoch"] <= 2
+    assert leaderboard["torch_mlp"]["best_epoch"] == artifact["best_epoch"]
     history_path = tmp_path / "models" / "torch_mlp_history.jsonl"
     assert leaderboard["torch_mlp"]["history_path"] == history_path.as_posix()
     assert history_path.exists()
@@ -123,6 +131,200 @@ def test_torch_tcn_saves_absolute_chain_artifact(tmp_path) -> None:
     assert leaderboard["torch_tcn"]["prediction_mode"] == "absolute"
     assert (tmp_path / "models" / "torch_tcn.pt").exists()
     assert (tmp_path / "models" / "torch_tcn_history.jsonl").exists()
+
+
+def test_torch_gru_saves_absolute_chain_artifact(tmp_path) -> None:
+    pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import train_upper_body_latents
+
+    dataset_dir = _write_synthetic_dataset(
+        tmp_path,
+        feature_names=feature_schema(3),
+        clip_mod=1,
+        row_count=32,
+    )
+    report = train_upper_body_latents(
+        dataset_dir=dataset_dir,
+        output_dir=tmp_path / "models",
+        model_names=("torch_gru",),
+        epochs=2,
+        batch_size=16,
+        learning_rate=1e-2,
+        weight_decay=0.0,
+        hidden_dim=16,
+        allow_cpu=True,
+        seed=6,
+        tracking_backend="jsonl",
+    )
+    leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
+    leaderboard = {row["model"]: row for row in leaderboard_rows}
+
+    assert leaderboard["torch_gru"]["prediction_mode"] == "absolute"
+    assert (tmp_path / "models" / "torch_gru.pt").exists()
+    assert (tmp_path / "models" / "torch_gru_history.jsonl").exists()
+
+
+def test_streaming_torch_training_reads_parquet_batches(tmp_path) -> None:
+    pytest.importorskip("numpy")
+    pytest.importorskip("pyarrow")
+    torch = pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import train_upper_body_latents
+
+    dataset_dir = _write_synthetic_dataset(
+        tmp_path,
+        feature_names=feature_schema(3),
+        row_count=48,
+    )
+    report = train_upper_body_latents(
+        dataset_dir=dataset_dir,
+        output_dir=tmp_path / "models",
+        model_names=("torch_mlp",),
+        epochs=2,
+        batch_size=12,
+        learning_rate=1e-2,
+        weight_decay=0.0,
+        hidden_dim=16,
+        allow_cpu=True,
+        seed=4,
+        stream_training=True,
+        stream_validation_rows=16,
+        tracking_backend="jsonl",
+    )
+    leaderboard_rows = cast(list[dict[str, object]], report["leaderboard"])
+    leaderboard = {row["model"]: row for row in leaderboard_rows}
+    artifact = torch.load(tmp_path / "models" / "torch_mlp.pt", map_location="cpu")
+
+    assert report["stream_training"] is True
+    assert leaderboard["torch_mlp"]["stream_training"] is True
+    assert leaderboard["torch_mlp"]["epochs_completed"] == 2
+    assert artifact["stream_training"] is True
+    assert report["stream_temporal_losses"] is False
+
+
+def test_stream_temporal_windows_stay_inside_contiguous_clip_runs() -> None:
+    pytest.importorskip("numpy")
+
+    from validation.scripts.train_upper_body_latents import _temporal_windows_from_arrays
+
+    windows = _temporal_windows_from_arrays(
+        subjects=pl.Series(["00", "00", "00", "00", "00", "00", "01"]).to_numpy(),
+        clips=pl.Series(["a", "a", "a", "a", "b", "a", "a"]).to_numpy(),
+        center_row_indices=pl.Series([0, 1, 4, 5, 2, 2, 3]).to_numpy(),
+        width=2,
+    )
+
+    assert windows.tolist() == [[0, 1], [1, 5], [2, 3]]
+
+
+def test_streaming_torch_training_applies_batch_local_temporal_losses(tmp_path) -> None:
+    pytest.importorskip("numpy")
+    pytest.importorskip("pyarrow")
+    torch = pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import train_upper_body_latents
+
+    dataset_dir = _write_synthetic_dataset(
+        tmp_path,
+        feature_names=feature_schema(3),
+        row_count=48,
+        clip_mod=1,
+        subject_mod=1,
+    )
+    report = train_upper_body_latents(
+        dataset_dir=dataset_dir,
+        output_dir=tmp_path / "models_temporal",
+        model_names=("torch_mlp",),
+        epochs=1,
+        batch_size=24,
+        learning_rate=1e-2,
+        weight_decay=0.0,
+        hidden_dim=16,
+        allow_cpu=True,
+        seed=5,
+        stream_training=True,
+        stream_validation_rows=16,
+        temporal_velocity_weight=0.01,
+        temporal_acceleration_weight=0.01,
+        temporal_excess_jerk_weight=0.01,
+        pole_velocity_weight=0.01,
+        pole_excess_jerk_weight=0.01,
+        temporal_loss_windows=4,
+        tracking_backend="jsonl",
+    )
+    history_path = tmp_path / "models_temporal" / "torch_mlp_history.jsonl"
+    history_rows = [
+        json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()
+    ]
+    artifact = torch.load(tmp_path / "models_temporal" / "torch_mlp.pt", map_location="cpu")
+
+    assert report["stream_temporal_losses"] is True
+    assert history_rows[1]["train_temporal_windows"] > 0
+    assert artifact["stream_temporal_losses"] is True
+
+
+def test_yaw_augmentation_rotates_training_tensors_coherently() -> None:
+    torch = pytest.importorskip("torch")
+
+    from validation.scripts.train_upper_body_latents import (
+        apply_yaw_augmentation,
+        yaw_augmentation_indices_for_schema,
+    )
+
+    feature_names = feature_schema(1)
+    head_position_z = feature_names.index("t+00_head_position_z")
+    head_forward_z = feature_names.index("t+00_head_rotation6d_2")
+    head_up_y = feature_names.index("t+00_head_rotation6d_4")
+    target_names = list(TARGET_NAMES)
+    chest_z = target_names.index("chest_rel_z")
+    pole_z = target_names.index("left_elbow_pole_z")
+    raw_features = torch.zeros((1, len(feature_names)), dtype=torch.float32)
+    raw_features[:, head_position_z] = 1.0
+    raw_features[:, head_forward_z] = 1.0
+    raw_features[:, head_up_y] = 1.0
+    targets = torch.zeros((1, len(target_names)), dtype=torch.float32)
+    targets[:, chest_z] = 1.0
+    targets[:, pole_z] = 1.0
+    decoded_points = torch.zeros((1, len(DECODED_REFERENCE_JOINTS), 3), dtype=torch.float32)
+    decoded_points[:, 0, 2] = 1.0
+    torch.manual_seed(4)
+
+    augmented = apply_yaw_augmentation(
+        torch,
+        raw_features=raw_features,
+        targets=targets,
+        heuristics=targets.clone(),
+        decoded_reference_points=decoded_points,
+        runtime_context_points=decoded_points.clone(),
+        feature_mean=torch.zeros(len(feature_names), dtype=torch.float32),
+        feature_scale=torch.ones(len(feature_names), dtype=torch.float32),
+        indices=yaw_augmentation_indices_for_schema(feature_names, target_names),
+        max_degrees=180.0,
+    )
+
+    head_xz = augmented.raw_features[
+        0,
+        [
+            feature_names.index("t+00_head_position_x"),
+            feature_names.index("t+00_head_position_z"),
+        ],
+    ]
+    assert torch.linalg.vector_norm(head_xz).item() == pytest.approx(1.0, abs=1e-6)
+    assert float(augmented.targets[0, target_names.index("chest_rel_x")]) == pytest.approx(
+        float(head_xz[0]),
+    )
+    assert float(augmented.targets[0, target_names.index("chest_rel_z")]) == pytest.approx(
+        float(head_xz[1]),
+    )
+    assert float(augmented.targets[0, target_names.index("left_elbow_pole_x")]) == pytest.approx(
+        float(head_xz[0]),
+    )
+    assert augmented.decoded_reference_points is not None
+    assert float(augmented.decoded_reference_points[0, 0, 0]) == pytest.approx(float(head_xz[0]))
+    assert float(augmented.decoded_reference_points[0, 0, 2]) == pytest.approx(float(head_xz[1]))
+    assert float(augmented.raw_features[0, head_up_y]) == pytest.approx(1.0)
 
 
 def test_torch_fk_mode_trains_against_fk_targets(tmp_path) -> None:
@@ -219,7 +421,9 @@ def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
     )
 
     feature_names = [
+        "t+00_head_position_x",
         "t+00_head_position_y",
+        "t+00_head_position_z",
         "t+00_left_hand_position_x",
         "t+00_left_hand_position_y",
         "t+00_left_hand_position_z",
@@ -233,7 +437,24 @@ def test_decoded_pose_loss_penalizes_shoulder_and_elbow_geometry() -> None:
         "calibration_arm_length_m",
     ]
     raw_features = torch.tensor(
-        [[1.60, 0.42, 1.20, 0.12, -0.42, 1.20, 0.12, 1.80, 0.40, 0.30, 0.25, 0.55]],
+        [
+            [
+                0.0,
+                1.60,
+                0.0,
+                0.42,
+                1.20,
+                0.12,
+                -0.42,
+                1.20,
+                0.12,
+                1.80,
+                0.40,
+                0.30,
+                0.25,
+                0.55,
+            ]
+        ],
         dtype=torch.float32,
     )
     target = torch.zeros((1, len(TARGET_NAMES)), dtype=torch.float32)
@@ -539,6 +760,7 @@ def _write_synthetic_dataset(
     row_count: int = 80,
     feature_names: list[str] | None = None,
     clip_mod: int = 8,
+    subject_mod: int = 8,
 ):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
@@ -549,7 +771,7 @@ def _write_synthetic_dataset(
         x0, x1, x2, x3 = features[:4]
         base = 0.4 * x0 - 0.2 * x1 + 0.1 * x2 + 0.05 * x3
         row = {
-            "subject": f"{index % 8:02d}",
+            "subject": f"{index % subject_mod:02d}",
             "clip": f"{index % clip_mod:02d}_01",
             "frame_index": index,
             "timestamp_s": index / 120.0,
@@ -613,6 +835,8 @@ def _synthetic_features(feature_names: list[str], index: int) -> list[float]:
     for feature_index, name in enumerate(feature_names):
         if name.endswith("_valid"):
             values.append(1.0)
+        elif name.endswith("_head_position_x") or name.endswith("_head_position_z"):
+            values.append(0.0)
         elif name.endswith("_head_position_y"):
             values.append(1.6 + 0.01 * (index % 3))
         elif name.endswith("_left_hand_position_x"):

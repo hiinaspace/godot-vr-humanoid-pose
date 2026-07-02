@@ -18,7 +18,12 @@ from validation.vr_pose_validation.parquet_cache import (
     write_clip_cache,
 )
 from validation.vr_pose_validation.synthetic_trackers import generate_three_point_samples
-from validation.vr_pose_validation.types import AvatarCalibration, GroundingContext
+from validation.vr_pose_validation.types import (
+    AvatarCalibration,
+    GroundingContext,
+    TrackedPoseSample,
+    TrackerState,
+)
 from validation.vr_pose_validation.upper_body_ml import (
     FK_TARGET_NAMES,
     FK_TARGET_SCHEMA,
@@ -35,10 +40,17 @@ from validation.vr_pose_validation.upper_body_ml import (
     extract_upper_body_fk_targets,
     extract_upper_body_latents,
     feature_schema,
+    precompute_sparse_tracker_features,
     rotation6d,
+    sparse_window_features,
+    sparse_window_features_from_cache,
     split_for_subject,
+    tracking_frame_for_joints,
+    tracking_frame_for_sample,
+    window_size_from_feature_names,
     yaw_basis_from_rotation,
     yaw_rotated_pose_frame,
+    yaw_rotated_sample,
 )
 
 
@@ -126,6 +138,10 @@ def test_sparse_window_cli_caps_dense_default_workers(monkeypatch) -> None:
     assert script._default_workers(stride=4) == 16
 
 
+def test_window_size_can_be_inferred_from_artifact_feature_names() -> None:
+    assert window_size_from_feature_names(feature_schema(7)) == 7
+
+
 def test_rotation6d_is_independent_of_quaternion_sign() -> None:
     rotation = look_rotation((0.0, 0.0, 1.0))
     negated = cast(tuple[float, float, float, float], tuple(-value for value in rotation))
@@ -176,6 +192,90 @@ def test_upper_body_sparse_representation_invariance_smoke() -> None:
     assert summary["max_feature_yaw_abs_delta"] == approx(0.0, abs=1e-6)
     assert summary["max_target_yaw_abs_delta"] == approx(0.0, abs=1e-6)
     assert summary["max_mirror_selected_abs_delta"] == approx(0.0, abs=1e-6)
+
+
+def test_calibration_yaw_features_use_stable_axes_for_head_turns() -> None:
+    samples = [
+        _sample_with_head_yaw(0.0, look_rotation((0.0, 0.0, 1.0))),
+        _sample_with_head_yaw(1.0 / 120.0, look_rotation((1.0, 0.0, 0.0))),
+    ]
+    calibration_frame = tracking_frame_for_sample(
+        samples[0],
+        tracking_space="calibration_yaw",
+    )
+    stable_frame = tracking_frame_for_sample(
+        samples[1],
+        tracking_space="calibration_yaw",
+        calibration_frame=calibration_frame,
+    )
+    moving_frame = tracking_frame_for_sample(samples[1], tracking_space="head_yaw")
+    names = feature_schema(2)
+
+    stable_features = sparse_window_features(
+        samples,
+        1,
+        2,
+        tracking_space="calibration_yaw",
+        tracking_frame=stable_frame,
+    )
+    cached_features = sparse_window_features_from_cache(
+        precompute_sparse_tracker_features(samples, calibration_frame.basis),
+        1,
+        2,
+    )
+    moving_features = sparse_window_features(
+        samples,
+        1,
+        2,
+        tracking_space="head_yaw",
+        tracking_frame=moving_frame,
+    )
+
+    left_x = names.index("t+00_left_hand_position_x")
+    left_z = names.index("t+00_left_hand_position_z")
+    assert cached_features == approx(stable_features, abs=1e-6)
+    assert stable_features[left_x] == approx(1.0, abs=1e-6)
+    assert stable_features[left_z] == approx(0.0, abs=1e-6)
+    assert moving_features[left_x] == approx(0.0, abs=1e-6)
+    assert moving_features[left_z] == approx(1.0, abs=1e-6)
+
+
+def test_calibration_yaw_targets_remain_global_yaw_invariant() -> None:
+    frame = _pose_frame(0.0)
+    samples = generate_three_point_samples([frame])
+    calibration_frame = tracking_frame_for_sample(
+        samples[0],
+        tracking_space="calibration_yaw",
+    )
+    rotated_frame = yaw_rotated_pose_frame(frame, 91.0)
+    rotated_sample = yaw_rotated_sample(samples[0], 91.0)
+    rotated_calibration_frame = tracking_frame_for_sample(
+        rotated_sample,
+        tracking_space="calibration_yaw",
+    )
+
+    original = extract_upper_body_latents(
+        frame,
+        AvatarCalibration(human_height_m=1.8),
+        tracking_frame=tracking_frame_for_joints(
+            frame,
+            tracking_space="calibration_yaw",
+            calibration_frame=calibration_frame,
+        ),
+    )
+    rotated = extract_upper_body_latents(
+        rotated_frame,
+        AvatarCalibration(human_height_m=1.8),
+        tracking_frame=tracking_frame_for_joints(
+            rotated_frame,
+            tracking_space="calibration_yaw",
+            calibration_frame=rotated_calibration_frame,
+        ),
+    )
+
+    assert original.masks == rotated.masks
+    for name, value in original.values.items():
+        assert rotated.values[name] == approx(value, abs=1e-6)
 
 
 def test_elbow_pole_labels_lower_elbow_as_downward_bend() -> None:
@@ -360,6 +460,27 @@ def _write_clip(
             motion_description="upper body test",
         )
     write_clip_cache(path, columns)
+
+
+def _sample_with_head_yaw(
+    timestamp: float,
+    head_rotation: tuple[float, float, float, float],
+) -> TrackedPoseSample:
+    return TrackedPoseSample(
+        timestamp_seconds=timestamp,
+        hmd=TrackerState(
+            role="head",
+            transform=Transform(position=(0.0, 1.62, 0.0), rotation=head_rotation),
+        ),
+        left_hand=TrackerState(
+            role="left_hand",
+            transform=Transform(position=(1.0, 1.1, 0.0), rotation=head_rotation),
+        ),
+        right_hand=TrackerState(
+            role="right_hand",
+            transform=Transform(position=(-1.0, 1.1, 0.0), rotation=head_rotation),
+        ),
+    )
 
 
 class _SequenceLatentProvider:

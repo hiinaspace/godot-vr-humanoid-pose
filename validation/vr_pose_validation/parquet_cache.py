@@ -29,6 +29,8 @@ type ParquetCompression = Literal["lz4", "uncompressed", "snappy", "gzip", "brot
 
 @dataclass(frozen=True, slots=True)
 class CachedPoseFrame:
+    dataset: str
+    dataset_split: str
     subject: str
     clip: str
     frame_index: int
@@ -85,6 +87,8 @@ def clip_from_cache_path(path: Path) -> str:
 
 def new_cache_columns() -> CacheColumns:
     columns: CacheColumns = {
+        "dataset": [],
+        "dataset_split": [],
         "subject": [],
         "clip": [],
         "frame_index": [],
@@ -105,6 +109,8 @@ def new_cache_columns() -> CacheColumns:
 def append_cached_pose_frame(
     columns: CacheColumns,
     *,
+    dataset: str = "cmu",
+    dataset_split: str = "",
     subject: str,
     clip: str,
     frame_index: int,
@@ -117,6 +123,8 @@ def append_cached_pose_frame(
     motion_description: str = "",
     subject_description: str = "",
 ) -> None:
+    _append(columns, "dataset", dataset)
+    _append(columns, "dataset_split", dataset_split)
     _append(columns, "subject", subject)
     _append(columns, "clip", clip)
     _append(columns, "frame_index", frame_index)
@@ -185,6 +193,8 @@ def iter_cached_pose_dataframe(dataframe: pl.DataFrame) -> Iterator[CachedPoseFr
                 ),
             )
         yield CachedPoseFrame(
+            dataset=_string_from_columns(columns, "dataset", row_index, fallback="cmu"),
+            dataset_split=_string_from_columns(columns, "dataset_split", row_index),
             subject=str(columns["subject"][row_index]),
             clip=str(columns["clip"][row_index]),
             frame_index=int(columns["frame_index"][row_index]),
@@ -281,7 +291,13 @@ def _activity_class_from_columns(columns: CacheColumns, row_index: int) -> Activ
     return "unknown"
 
 
-def _string_from_columns(columns: CacheColumns, column: str, row_index: int) -> str:
+def _string_from_columns(
+    columns: CacheColumns,
+    column: str,
+    row_index: int,
+    *,
+    fallback: str = "",
+) -> str:
     if column not in columns:
-        return ""
+        return fallback
     return str(columns[column][row_index])

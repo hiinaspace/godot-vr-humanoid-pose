@@ -34,7 +34,7 @@ const DEFAULT_BONES = [
 @export var mirror_distance_m = 2.0
 @export var mirror_height_offset_m = -0.15
 @export var calibration_target_distance_m = 0.0
-@export var calibration_target_radius_m = 0.35
+@export var calibration_target_radius_m = 0.18
 @export var calibration_dwell_seconds = 1.25
 @export var calibration_countdown_seconds = 3.0
 @export var post_calibration_settle_seconds = 2.0
@@ -45,6 +45,7 @@ const DEFAULT_BONES = [
 @export var tracker_label_font_size = 10
 @export var mirror_x_axis_enabled = true
 @export var use_calibrated_trackers_for_estimation = false
+@export var sparseposer_calibration_enabled = false
 @export var openvr_overlay_enabled = true
 @export var synthetic_input_without_xr = true
 
@@ -72,9 +73,11 @@ var _camera: XRCamera3D
 var _left_controller: XRController3D
 var _right_controller: XRController3D
 var _armature
+var _first_person_armature
 var _tracker_markers = {}
 var _calibration_target: MeshInstance3D
 var _calibration_target_material: StandardMaterial3D
+var _playspace_forward_indicator: Node3D
 var _status: Label3D
 var _session_message_sent = false
 var _tracker_calibration: Dictionary = {}
@@ -86,10 +89,14 @@ var _last_estimate_request_timestamp_s = -INF
 var _clip_index = 0
 var _last_flushed_clip_index = -1
 var _requires_gaze_release = false
+var _requires_trigger_release = false
+var _alignment_gaze_dwell_s = 0.0
 var _headlocked_prompt_root: Node3D
 var _headlocked_prompt: Label3D
 var _latest_estimated_frame: Dictionary = {}
 var _last_estimate_error = ""
+var _last_local_estimate_status = ""
+var _estimate_request_in_flight = false
 
 
 func _ready() -> void:
@@ -118,6 +125,10 @@ func _process(delta: float) -> void:
 	if devices.is_empty():
 		devices = _devices_from_sample(sample)
 
+	sample["optional_trackers"] = _tracker_calibrator.apply_optional_trackers(
+		devices,
+		_tracker_calibration
+	)
 	_update_capture_state(sample, devices, delta)
 	sample["optional_trackers"] = _tracker_calibrator.apply_optional_trackers(
 		devices,
@@ -128,16 +139,27 @@ func _process(delta: float) -> void:
 
 	var estimated_frame: Dictionary = _latest_estimated_frame
 	if estimated_frame.is_empty():
-		_update_headlocked_prompt()
+		_position_status_display(devices)
+		_update_headlocked_prompt(_current_head_tracker(devices))
 		_status.text = "%s | waiting for Python estimator" % _status_text(devices)
 		return
 	var debug_frame = _debug_frame_from_estimate(estimated_frame)
 	var display_forward = _display_forward(devices)
 	var display_frame = _mirror_display_frame(debug_frame, display_forward)
-	_position_live_debug(display_frame, devices)
-	_armature.set_pose_frame(display_frame, DEFAULT_BONES, Color(1.0, 0.38, 0.16, 1.0))
+	_position_first_person_debug(estimated_frame)
+	_first_person_armature.set_pose_frame(
+		debug_frame,
+		_debug_bones_for_estimate(estimated_frame),
+		Color(0.2, 0.65, 1.0, 1.0)
+	)
+	_position_live_debug(devices, estimated_frame)
+	_armature.set_pose_frame(
+		display_frame,
+		_debug_bones_for_estimate(estimated_frame),
+		Color(1.0, 0.38, 0.16, 1.0)
+	)
 	_update_tracker_markers(devices, estimated_frame, display_forward)
-	_update_headlocked_prompt()
+	_update_headlocked_prompt(_current_head_tracker(devices))
 	_status.text = _status_text(devices)
 
 
@@ -162,6 +184,11 @@ func _setup_xr_nodes() -> void:
 
 
 func _setup_debug_scene() -> void:
+	_first_person_armature = DebugArmature.new()
+	_first_person_armature.name = "EstimatedFirstPersonArmature"
+	_first_person_armature.bone_radius = 0.018
+	add_child(_first_person_armature)
+
 	_armature = DebugArmature.new()
 	_armature.name = "EstimatedMirrorArmature"
 	add_child(_armature)
@@ -174,12 +201,12 @@ func _setup_debug_scene() -> void:
 
 	_headlocked_prompt_root = Node3D.new()
 	_headlocked_prompt_root.name = "HeadlockedPrompt"
-	_headlocked_prompt_root.position = Vector3(0.0, -0.18, -1.15)
+	_headlocked_prompt_root.position = Vector3(0.0, 0.22, -1.25)
 	_headlocked_prompt_root.visible = false
 	var prompt_quad = MeshInstance3D.new()
 	prompt_quad.name = "Background"
 	var prompt_mesh = QuadMesh.new()
-	prompt_mesh.size = Vector2(0.95, 0.34)
+	prompt_mesh.size = Vector2(0.44, 0.16)
 	prompt_quad.mesh = prompt_mesh
 	var prompt_material = StandardMaterial3D.new()
 	prompt_material.albedo_color = Color(0.0, 0.0, 0.0, 0.58)
@@ -190,32 +217,78 @@ func _setup_debug_scene() -> void:
 	_headlocked_prompt = Label3D.new()
 	_headlocked_prompt.name = "Label3D"
 	_headlocked_prompt.position = Vector3(0.0, 0.0, -0.01)
-	_headlocked_prompt.font_size = 34
-	_headlocked_prompt.outline_size = 8
+	_headlocked_prompt.font_size = 12
+	_headlocked_prompt.outline_size = 3
 	_headlocked_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_headlocked_prompt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_headlocked_prompt_root.add_child(_headlocked_prompt)
-	if _camera != null:
-		_camera.add_child(_headlocked_prompt_root)
-	else:
-		add_child(_headlocked_prompt_root)
+	add_child(_headlocked_prompt_root)
 
 	_calibration_target = MeshInstance3D.new()
 	_calibration_target.name = "CalibrationTarget"
 	var target_mesh = CylinderMesh.new()
 	target_mesh.top_radius = calibration_target_radius_m
 	target_mesh.bottom_radius = calibration_target_radius_m
-	target_mesh.height = 0.025
+	target_mesh.height = 0.012
 	_calibration_target.mesh = target_mesh
 	_calibration_target_material = StandardMaterial3D.new()
-	_calibration_target_material.albedo_color = Color(0.1, 0.85, 0.95, 0.75)
+	_calibration_target_material.albedo_color = Color(0.1, 0.85, 0.95, 0.28)
+	_calibration_target_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_calibration_target_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_calibration_target.material_override = _calibration_target_material
 	add_child(_calibration_target)
+
+	_playspace_forward_indicator = _make_playspace_forward_indicator()
+	add_child(_playspace_forward_indicator)
 
 	var light = DirectionalLight3D.new()
 	light.name = "KeyLight"
 	light.rotation_degrees = Vector3(-45.0, 30.0, 0.0)
 	add_child(light)
+
+
+func _make_playspace_forward_indicator() -> Node3D:
+	var root = Node3D.new()
+	root.name = "PlayspaceForwardIndicator"
+
+	var material = StandardMaterial3D.new()
+	material.albedo_color = Color(0.2, 0.75, 1.0, 0.82)
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	var shaft = MeshInstance3D.new()
+	shaft.name = "Shaft"
+	var shaft_mesh = CylinderMesh.new()
+	shaft_mesh.top_radius = 0.012
+	shaft_mesh.bottom_radius = 0.012
+	shaft_mesh.height = 0.5
+	shaft.mesh = shaft_mesh
+	shaft.material_override = material
+	shaft.rotation_degrees = Vector3(90.0, 0.0, 0.0)
+	shaft.position = Vector3(0.0, 0.0, 0.28)
+	root.add_child(shaft)
+
+	var head = MeshInstance3D.new()
+	head.name = "ArrowHead"
+	var head_mesh = CylinderMesh.new()
+	head_mesh.top_radius = 0.0
+	head_mesh.bottom_radius = 0.055
+	head_mesh.height = 0.16
+	head.mesh = head_mesh
+	head.material_override = material
+	head.rotation_degrees = Vector3(90.0, 0.0, 0.0)
+	head.position = Vector3(0.0, 0.0, 0.58)
+	root.add_child(head)
+
+	var label = Label3D.new()
+	label.name = "Label3D"
+	label.text = "+Z"
+	label.font_size = 18
+	label.outline_size = 4
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.position = Vector3(0.0, 0.055, 0.78)
+	root.add_child(label)
+	return root
 
 
 func _initialize_openvr_overlay() -> void:
@@ -257,11 +330,23 @@ func _current_sample(devices: Array) -> Dictionary:
 
 
 func _estimator_sample(sample: Dictionary) -> Dictionary:
-	if use_calibrated_trackers_for_estimation:
+	if use_calibrated_trackers_for_estimation or sparseposer_calibration_enabled:
 		return sample
 	var estimator_sample = sample.duplicate(true)
 	estimator_sample["optional_trackers"] = {}
 	return estimator_sample
+
+
+func _estimator_calibration() -> Dictionary:
+	var estimator_calibration = calibration.duplicate(true)
+	if _tracker_calibration.is_empty():
+		return estimator_calibration
+	estimator_calibration["live_tracker_calibration"] = _tracker_calibration
+	if _tracker_calibration.has("sparseposer_alignment"):
+		estimator_calibration["sparseposer_alignment"] = _tracker_calibration[
+			"sparseposer_alignment"
+		]
+	return estimator_calibration
 
 
 func _send_estimation_or_recording_message(
@@ -270,6 +355,11 @@ func _send_estimation_or_recording_message(
 	devices: Array
 ) -> void:
 	var timestamp_seconds = float(sample["timestamp_seconds"])
+	var estimator_calibration = _estimator_calibration()
+	if not _can_send_estimation_message(estimator_sample):
+		return
+	if _estimate_request_in_flight:
+		return
 	if _should_stream_frame(timestamp_seconds):
 		var message = _stream_client.build_frame_message(
 			_session_id,
@@ -277,7 +367,7 @@ func _send_estimation_or_recording_message(
 			timestamp_seconds,
 			estimator_sample,
 			{},
-			calibration,
+			estimator_calibration,
 			grounding,
 			devices,
 			"standing",
@@ -285,6 +375,7 @@ func _send_estimation_or_recording_message(
 			_clip_index
 		)
 		if _stream_client.send_message(message):
+			_estimate_request_in_flight = true
 			_last_stream_timestamp_s = timestamp_seconds
 			_frame_index += 1
 			return
@@ -297,12 +388,14 @@ func _send_estimation_or_recording_message(
 		_frame_index,
 		timestamp_seconds,
 		estimator_sample,
-		calibration,
+		estimator_calibration,
 		grounding,
 		"standing",
-		_clip_index
+		_clip_index,
+		devices
 	)
 	if _stream_client.send_message(request):
+		_estimate_request_in_flight = true
 		_last_estimate_request_timestamp_s = timestamp_seconds
 		_estimate_request_index += 1
 
@@ -312,18 +405,28 @@ func _handle_stream_message(message: Dictionary) -> void:
 		return
 	var message_type = str(message.get("type", ""))
 	if message_type == "estimate_response":
+		_estimate_request_in_flight = false
 		var estimated = message.get("estimated_frame", {})
 		if estimated is Dictionary and not estimated.is_empty():
 			_latest_estimated_frame = estimated
 			_last_estimate_error = ""
+			_last_local_estimate_status = ""
 	elif message_type == "estimate_error":
-		_last_estimate_error = str(message.get("error", "estimate_error"))
+		_estimate_request_in_flight = false
+		var error = str(message.get("error", "estimate_error"))
+		if error != _last_estimate_error:
+			push_warning("Live estimator error: %s" % error)
+		_last_estimate_error = error
+		_latest_estimated_frame = {}
+	elif message_type == "estimator_reset":
+		_estimate_request_in_flight = false
 
 
 func _sample_from_devices(timestamp_seconds: float, devices: Array) -> Dictionary:
 	var hmd = _find_device(devices, "head", "HMD")
-	var left_hand = _find_device(devices, "left_hand", "Controller")
-	var right_hand = _find_device(devices, "right_hand", "Controller")
+	var controllers = _controller_devices_for_sample(devices)
+	var left_hand: Dictionary = controllers.get("left_hand", {})
+	var right_hand: Dictionary = controllers.get("right_hand", {})
 	if hmd.is_empty() or left_hand.is_empty() or right_hand.is_empty():
 		return {}
 	if not (
@@ -340,8 +443,20 @@ func _sample_from_devices(timestamp_seconds: float, devices: Array) -> Dictionar
 			"openvr_hmd",
 			true
 		),
-		"left_hand": _tracker_state_from_device("left_hand", left_hand, "openvr_left_hand"),
-		"right_hand": _tracker_state_from_device("right_hand", right_hand, "openvr_right_hand"),
+		"left_hand": _tracker_state_from_device(
+			"left_hand",
+			left_hand,
+			"openvr_left_hand",
+			false,
+			_controller_wrist_transform(left_hand)
+		),
+		"right_hand": _tracker_state_from_device(
+			"right_hand",
+			right_hand,
+			"openvr_right_hand",
+			false,
+			_controller_wrist_transform(right_hand)
+		),
 		"optional_trackers": {},
 		"character_velocity": [0.0, 0.0, 0.0],
 	}
@@ -362,6 +477,82 @@ func _find_device(devices: Array, role: String, device_class: String) -> Diction
 			continue
 		if str(item.get("device_class", "")) == device_class:
 			return item
+	return {}
+
+
+func _controller_devices_for_sample(devices: Array) -> Dictionary:
+	var bound = _controller_devices_from_calibration(devices)
+	if not bound.is_empty():
+		return bound
+	if sparseposer_calibration_enabled:
+		return _controller_devices_by_playspace_side(devices)
+	var left_hand = _find_device(devices, "left_hand", "Controller")
+	var right_hand = _find_device(devices, "right_hand", "Controller")
+	if left_hand.is_empty() or right_hand.is_empty():
+		return {}
+	if _calibration_device_id(left_hand) == _calibration_device_id(right_hand):
+		return _controller_devices_by_playspace_side(devices)
+	return {
+		"left_hand": left_hand,
+		"right_hand": right_hand,
+	}
+
+
+func _controller_devices_from_calibration(devices: Array) -> Dictionary:
+	if _tracker_calibration.is_empty():
+		return {}
+	var bindings: Dictionary = _tracker_calibration.get("controller_bindings", {})
+	if bindings.is_empty():
+		return {}
+	var left_hand = _find_device_by_calibration_id(devices, str(bindings.get("left_hand", "")))
+	var right_hand = _find_device_by_calibration_id(devices, str(bindings.get("right_hand", "")))
+	if left_hand.is_empty() or right_hand.is_empty():
+		return {}
+	return {
+		"left_hand": left_hand,
+		"right_hand": right_hand,
+	}
+
+
+func _controller_devices_by_playspace_side(devices: Array) -> Dictionary:
+	var controllers = []
+	for item in devices:
+		if not (item is Dictionary):
+			continue
+		var device: Dictionary = item
+		if str(device.get("device_class", "")) != "Controller":
+			continue
+		if not bool(device.get("valid", true)):
+			continue
+		controllers.append(device)
+	if controllers.size() < 2:
+		return {}
+	controllers.sort_custom(func(a, b): return _device_position(a).x < _device_position(b).x)
+	return {
+		"left_hand": controllers[0],
+		"right_hand": controllers[controllers.size() - 1],
+	}
+
+
+func _controller_bindings_from_devices(devices: Array) -> Dictionary:
+	var controllers = _controller_devices_by_playspace_side(devices)
+	if controllers.is_empty():
+		return {}
+	return {
+		"left_hand": _calibration_device_id(controllers["left_hand"]),
+		"right_hand": _calibration_device_id(controllers["right_hand"]),
+	}
+
+
+func _find_device_by_calibration_id(devices: Array, device_id: String) -> Dictionary:
+	if device_id.is_empty():
+		return {}
+	for item in devices:
+		if not (item is Dictionary):
+			continue
+		var device: Dictionary = item
+		if _calibration_device_id(device) == device_id:
+			return device
 	return {}
 
 
@@ -402,9 +593,11 @@ func _tracker_state_from_device(
 	role: String,
 	device: Dictionary,
 	fallback_device_id: String,
-	apply_head_correction = false
+	apply_head_correction = false,
+	transform_override = null
 ) -> Dictionary:
-	var transform = _transform3d_from_value(device.get("transform", Transform3D()))
+	var transform_value = transform_override if transform_override != null else device.get("transform", Transform3D())
+	var transform = _transform3d_from_value(transform_value)
 	if apply_head_correction:
 		transform = _estimator_head_transform(transform)
 	return {
@@ -414,6 +607,14 @@ func _tracker_state_from_device(
 		"confidence": 1.0,
 		"transform": _transform_to_json(transform),
 	}
+
+
+func _controller_wrist_transform(device: Dictionary):
+	if device.has("wrist_transform"):
+		return device["wrist_transform"]
+	if device.has("grip_transform"):
+		return device["grip_transform"]
+	return device.get("transform", Transform3D())
 
 
 func _estimator_head_transform(transform: Transform3D) -> Transform3D:
@@ -484,12 +685,20 @@ func _debug_frame_from_estimate(frame: Dictionary) -> Dictionary:
 			"rotation": _quaternion_from_transform(transform),
 		}
 
-	_add_visual_helper_joints(joints)
+	if str(frame.get("skeleton_profile", "")) != "sparseposer_xsens":
+		_add_visual_helper_joints(joints)
 	return {
 		"timestamp_seconds": frame["timestamp_seconds"],
 		"root": {"position": Vector3.ZERO, "rotation": frame["root"]["rotation"]},
 		"joints": joints,
 	}
+
+
+func _debug_bones_for_estimate(frame: Dictionary) -> Array:
+	var debug_bones = frame.get("debug_bones", [])
+	if debug_bones is Array and not debug_bones.is_empty():
+		return debug_bones
+	return DEFAULT_BONES
 
 
 func _mirror_display_frame(frame: Dictionary, display_forward: Vector3) -> Dictionary:
@@ -537,7 +746,14 @@ func _add_visual_helper_joints(joints: Dictionary) -> void:
 		}
 
 
-func _position_live_debug(debug_frame: Dictionary, devices: Array) -> void:
+func _position_first_person_debug(estimated_frame: Dictionary) -> void:
+	if _first_person_armature == null:
+		return
+	_first_person_armature.position = _vector3_from_transform(estimated_frame["root"])
+	_first_person_armature.rotation = Vector3.ZERO
+
+
+func _position_live_debug(devices: Array, estimated_frame: Dictionary) -> void:
 	var head_tracker = _current_head_tracker(devices)
 	var head_position = _source_position(head_tracker)
 	var head_rotation = _quaternion_from_tracker(head_tracker)
@@ -547,10 +763,23 @@ func _position_live_debug(debug_frame: Dictionary, devices: Array) -> void:
 		forward = GODOT_VIEW_FORWARD
 	forward = forward.normalized()
 	var mirror_origin = head_position + forward * mirror_distance_m
-	mirror_origin.y += mirror_height_offset_m
+	mirror_origin.y = _vector3_from_transform(estimated_frame["root"]).y
 	_armature.position = mirror_origin
 	_armature.rotation = Vector3(0.0, _mirror_yaw_for_forward(forward), 0.0)
-	_status.position = mirror_origin + Vector3(0.0, 1.2, 0.0)
+	_status.position = mirror_origin + Vector3(0.0, 1.2 + mirror_height_offset_m, 0.0)
+
+
+func _position_status_display(devices: Array) -> void:
+	var head_tracker = _current_head_tracker(devices)
+	var head_position = _source_position(head_tracker)
+	var head_rotation = _quaternion_from_tracker(head_tracker)
+	var forward = _horizontal(_rotate_vector(head_rotation, GODOT_VIEW_FORWARD))
+	if forward.length() <= 0.0001:
+		forward = GODOT_VIEW_FORWARD
+	forward = forward.normalized()
+	var status_origin = head_position + forward * mirror_distance_m
+	status_origin.y += mirror_height_offset_m + 1.2
+	_status.position = status_origin
 
 
 func _update_capture_state(sample: Dictionary, devices: Array, delta: float) -> void:
@@ -567,12 +796,17 @@ func _update_capture_state(sample: Dictionary, devices: Array, delta: float) -> 
 		float(grounding.get("floor_height_m", 0.0)) + 0.02,
 		head_position.z + forward.z * calibration_target_distance_m
 	)
+	_update_playspace_forward_indicator()
 	var gaze_hits_target = _gaze_hits_calibration_target(head_tracker)
 
 	if _capture_phase == "idle":
 		_update_idle_capture_state(delta, gaze_hits_target, sample, devices)
 	elif _capture_phase == "countdown":
 		_update_countdown_capture_state(delta, sample, devices, head_tracker)
+	elif _capture_phase == "align":
+		_update_align_capture_state(_controller_confirm_pressed(), sample)
+	elif _capture_phase == "align_countdown":
+		_update_align_countdown_capture_state(delta, sample)
 	elif _capture_phase == "settle":
 		_update_timed_capture_phase(delta, "recording")
 	elif _capture_phase == "recording":
@@ -605,31 +839,57 @@ func _update_idle_capture_state(
 		_phase_remaining_s = calibration_countdown_seconds
 		_calibration_dwell_s = 0.0
 		_requires_gaze_release = true
+		if sparseposer_calibration_enabled:
+			_requires_trigger_release = _controller_confirm_pressed()
 
 
 func _update_countdown_capture_state(
 	delta: float,
 	sample: Dictionary,
 	devices: Array,
-	head_tracker: Dictionary
+	head_tracker: Dictionary,
+	confirm_pressed = null
 ) -> void:
-	_phase_remaining_s -= delta
-	if _phase_remaining_s > 0.0:
-		return
+	if sparseposer_calibration_enabled:
+		if confirm_pressed == null:
+			confirm_pressed = _controller_confirm_pressed()
+		if _requires_trigger_release:
+			if not confirm_pressed:
+				_requires_trigger_release = false
+			return
+		if not confirm_pressed:
+			return
+	else:
+		_phase_remaining_s -= delta
+		if _phase_remaining_s > 0.0:
+			return
 	var calibration_sample = sample.duplicate(true)
 	calibration_sample["hmd"] = head_tracker
 	_tracker_calibration = _tracker_calibrator.build_calibration(calibration_sample, devices)
+	var controller_bindings = _controller_bindings_from_devices(devices)
+	if not controller_bindings.is_empty():
+		_tracker_calibration["controller_bindings"] = controller_bindings
 	_latest_estimated_frame = {}
 	_last_estimate_request_timestamp_s = -INF
-	_stream_client.send_message({
+	_estimate_request_in_flight = false
+	if _stream_client.send_message({
 		"format": StreamClient.CAPTURE_FORMAT,
 		"type": "reset_estimator",
 		"session_id": _session_id,
 		"request_id": _estimate_request_index,
-	})
+	}):
+		_estimate_request_in_flight = true
 	_estimate_request_index += 1
-	_capture_phase = "settle"
-	_phase_remaining_s = post_calibration_settle_seconds
+	if sparseposer_calibration_enabled:
+		_capture_phase = "align"
+		_phase_remaining_s = 0.0
+		_alignment_gaze_dwell_s = 0.0
+		_requires_gaze_release = false
+		_requires_trigger_release = _controller_confirm_pressed()
+		_last_local_estimate_status = ""
+	else:
+		_capture_phase = "settle"
+		_phase_remaining_s = post_calibration_settle_seconds
 	_clip_index += 1
 	_frame_index = 0
 	_last_stream_timestamp_s = -INF
@@ -637,6 +897,65 @@ func _update_countdown_capture_state(
 		"Live tracker calibration captured with roles: ",
 		_tracker_calibration.get("role_bindings", {})
 	)
+
+
+func _update_align_capture_state(confirm_pressed: bool, sample: Dictionary) -> void:
+	if _requires_trigger_release:
+		if not confirm_pressed:
+			_requires_trigger_release = false
+		return
+
+	if confirm_pressed:
+		_capture_sparseposer_alignment(sample)
+
+
+func _update_align_countdown_capture_state(delta: float, sample: Dictionary) -> void:
+	_phase_remaining_s -= delta
+	if _phase_remaining_s > 0.0:
+		return
+	_capture_sparseposer_alignment(sample)
+
+
+func _capture_sparseposer_alignment(sample: Dictionary) -> void:
+	var missing_roles = _sparseposer_missing_input_roles(sample)
+	if not missing_roles.is_empty():
+		_last_local_estimate_status = "missing roles: %s" % ", ".join(missing_roles)
+		return
+	_tracker_calibration["sparseposer_alignment"] = _sparseposer_alignment_from_sample(sample)
+	_latest_estimated_frame = {}
+	_last_estimate_request_timestamp_s = -INF
+	_estimate_request_in_flight = false
+	if _stream_client.send_message({
+		"format": StreamClient.CAPTURE_FORMAT,
+		"type": "reset_estimator",
+		"session_id": _session_id,
+		"request_id": _estimate_request_index,
+	}):
+		_estimate_request_in_flight = true
+	_estimate_request_index += 1
+	_capture_phase = "settle"
+	_phase_remaining_s = post_calibration_settle_seconds
+	_frame_index = 0
+	_last_stream_timestamp_s = -INF
+	_last_local_estimate_status = ""
+	print("SparsePoser alignment captured")
+
+
+func _sparseposer_alignment_from_sample(sample: Dictionary) -> Dictionary:
+	var optional: Dictionary = sample.get("optional_trackers", {})
+	var role_transforms = {
+		"head": sample.get("hmd", {}).get("transform", {}),
+		"left_hand": sample.get("left_hand", {}).get("transform", {}),
+		"right_hand": sample.get("right_hand", {}).get("transform", {}),
+	}
+	for role in ["pelvis", "left_foot", "right_foot"]:
+		if optional.has(role):
+			role_transforms[role] = optional[role].get("transform", {})
+	return {
+		"schema_version": 1,
+		"timestamp_seconds": sample.get("timestamp_seconds", 0.0),
+		"role_transforms": role_transforms,
+	}
 
 
 func _update_timed_capture_phase(delta: float, next_phase: String) -> void:
@@ -675,14 +994,32 @@ func _update_calibration_target_color() -> void:
 		0.1 + progress * 0.9,
 		0.85 - progress * 0.35,
 		0.95 - progress * 0.7,
-		0.78
+		0.28
 	)
+
+
+func _update_playspace_forward_indicator() -> void:
+	if _playspace_forward_indicator == null:
+		return
+	_playspace_forward_indicator.visible = sparseposer_calibration_enabled
+	_playspace_forward_indicator.position = Vector3(
+		_calibration_target.position.x,
+		float(grounding.get("floor_height_m", 0.0)) + 0.045,
+		_calibration_target.position.z
+	)
+	_playspace_forward_indicator.rotation = Vector3.ZERO
 
 
 func _capture_progress() -> float:
 	if _capture_phase == "idle":
 		return clampf(_calibration_dwell_s / calibration_dwell_seconds, 0.0, 1.0)
 	if _capture_phase == "countdown":
+		if sparseposer_calibration_enabled:
+			return 0.0
+		return 1.0 - clampf(_phase_remaining_s / calibration_countdown_seconds, 0.0, 1.0)
+	if _capture_phase == "align":
+		return 0.0
+	if _capture_phase == "align_countdown":
 		return 1.0 - clampf(_phase_remaining_s / calibration_countdown_seconds, 0.0, 1.0)
 	if _capture_phase == "settle":
 		return 1.0 - clampf(_phase_remaining_s / post_calibration_settle_seconds, 0.0, 1.0)
@@ -695,9 +1032,13 @@ func _status_text(devices: Array) -> String:
 	var recorder = "sidecar connected" if _stream_client.is_stream_connected() else "sidecar offline"
 	var tracker_count = _generic_tracker_count(devices)
 	var estimator_mode = "calibrated estimate" if use_calibrated_trackers_for_estimation else "3-point estimate"
+	if sparseposer_calibration_enabled:
+		estimator_mode = "SparsePoser 6-node"
 	var estimator_status = "python estimate"
 	if _latest_estimated_frame.is_empty():
 		estimator_status = "waiting python estimate"
+	if not _last_local_estimate_status.is_empty():
+		estimator_status = _last_local_estimate_status
 	if not _last_estimate_error.is_empty():
 		estimator_status = "estimate error: %s" % _last_estimate_error
 	var prefix = "%s | live %d targets | %s | %s" % [
@@ -711,7 +1052,17 @@ func _status_text(devices: Array) -> String:
 			return "%s | release gaze target" % prefix
 		return "%s | gaze target %.1fs" % [prefix, calibration_dwell_seconds - _calibration_dwell_s]
 	if _capture_phase == "countdown":
+		if sparseposer_calibration_enabled:
+			if _requires_trigger_release:
+				return "%s | T-pose facing +Z arrow | release trigger" % prefix
+			return "%s | T-pose facing +Z arrow | press trigger" % prefix
 		return "%s | T-pose in %.1fs" % [prefix, maxf(0.0, _phase_remaining_s)]
+	if _capture_phase == "align":
+		if _requires_trigger_release:
+			return "%s | align skeleton | release trigger" % prefix
+		return "%s | align skeleton | press trigger" % prefix
+	if _capture_phase == "align_countdown":
+		return "%s | confirm alignment %.1fs" % [prefix, maxf(0.0, _phase_remaining_s)]
 	if _capture_phase == "settle":
 		return "%s | neutral stance %.1fs" % [prefix, maxf(0.0, _phase_remaining_s)]
 	if _capture_phase == "recording":
@@ -723,17 +1074,31 @@ func _status_text(devices: Array) -> String:
 	return "%s | clip %d complete" % [prefix, _clip_index]
 
 
-func _update_headlocked_prompt() -> void:
+func _update_headlocked_prompt(head_tracker: Dictionary = {}) -> void:
 	if _headlocked_prompt_root == null or _headlocked_prompt == null:
 		return
 	var text = _headlocked_prompt_text()
 	_headlocked_prompt_root.visible = not text.is_empty()
 	_headlocked_prompt.text = text
+	if not text.is_empty() and not head_tracker.is_empty():
+		_position_headlocked_prompt(head_tracker)
 
 
 func _headlocked_prompt_text() -> String:
+	if (
+		not _last_estimate_error.is_empty()
+		and _latest_estimated_frame.is_empty()
+		and _capture_phase in ["settle", "recording", "complete"]
+	):
+		return "estimate error\n%s" % _last_estimate_error.left(42)
 	if _capture_phase == "countdown":
+		if sparseposer_calibration_enabled:
+			return "face +Z arrow\npress trigger"
 		return "T-pose\n%.1f" % maxf(0.0, _phase_remaining_s)
+	if _capture_phase == "align":
+		return "align skeleton\npress trigger"
+	if _capture_phase == "align_countdown":
+		return "hold alignment\n%.1f" % maxf(0.0, _phase_remaining_s)
 	if _capture_phase == "settle":
 		return "neutral stance\n%.1f" % maxf(0.0, _phase_remaining_s)
 	if _capture_phase == "recording":
@@ -741,6 +1106,17 @@ func _headlocked_prompt_text() -> String:
 	if _capture_phase == "complete":
 		return "clip saved"
 	return ""
+
+
+func _position_headlocked_prompt(head_tracker: Dictionary) -> void:
+	var head_position = _source_position(head_tracker)
+	var head_rotation = _quaternion_from_tracker(head_tracker)
+	var basis = Basis(head_rotation)
+	var local_offset = Vector3(0.0, 0.22, -1.25)
+	_headlocked_prompt_root.transform = Transform3D(
+		basis,
+		head_position + basis * local_offset
+	)
 
 
 func _should_stream_frame(timestamp_seconds: float) -> bool:
@@ -763,6 +1139,50 @@ func _should_request_estimate(timestamp_seconds: float) -> bool:
 		_last_estimate_request_timestamp_s == -INF
 		or timestamp_seconds - _last_estimate_request_timestamp_s >= min_interval
 	)
+
+
+func _can_send_estimation_message(sample: Dictionary) -> bool:
+	if not sparseposer_calibration_enabled:
+		_last_local_estimate_status = ""
+		return true
+	var missing_roles = _sparseposer_missing_input_roles(sample)
+	if not missing_roles.is_empty():
+		_last_local_estimate_status = "missing roles: %s" % ", ".join(missing_roles)
+		if _last_estimate_error.begins_with("missing SparsePoser roles"):
+			_last_estimate_error = ""
+		return false
+	_last_local_estimate_status = ""
+	return true
+
+
+func _sparseposer_missing_input_roles(sample: Dictionary) -> Array:
+	var missing = []
+	if not sample.has("hmd"):
+		missing.append("head")
+	if not sample.has("left_hand"):
+		missing.append("left_hand")
+	if not sample.has("right_hand"):
+		missing.append("right_hand")
+	var optional: Dictionary = sample.get("optional_trackers", {})
+	for role in ["pelvis", "left_foot", "right_foot"]:
+		if not optional.has(role):
+			missing.append(role)
+	return missing
+
+
+func _controller_confirm_pressed() -> bool:
+	return _controller_trigger_pressed(_left_controller) or _controller_trigger_pressed(_right_controller)
+
+
+func _controller_trigger_pressed(controller: XRController3D) -> bool:
+	if controller == null:
+		return false
+	if controller.get_float("trigger") >= 0.85:
+		return true
+	for button in ["trigger_click", "trigger", "grip"]:
+		if controller.is_button_pressed(button):
+			return true
+	return false
 
 
 func _gaze_hits_calibration_target(head_tracker: Dictionary) -> bool:
@@ -817,6 +1237,19 @@ func _update_tracker_markers(
 		marker.visible = true
 		_set_tracker_marker_label(marker, _tracker_label_for_device(device))
 		_set_tracker_marker_color(marker, _tracker_color_for_device(device))
+	for debug_marker in estimated_frame.get("debug_markers", []):
+		if not (debug_marker is Dictionary):
+			continue
+		if str(debug_marker.get("kind", "")) != "sparseposer_input":
+			continue
+		var marker = _tracker_marker("debug:%s" % str(debug_marker.get("label", "")))
+		var marker_transform = debug_marker.get("transform", {})
+		var relative_position = _vector3_from_transform(marker_transform) - root_position
+		relative_position = _display_relative_position(relative_position, display_forward)
+		marker.position = _armature.position + _armature.basis * relative_position
+		marker.visible = true
+		_set_tracker_marker_label(marker, str(debug_marker.get("label", "")))
+		_set_tracker_marker_color(marker, Color(0.95, 0.2, 1.0, 1.0))
 
 
 func _hide_tracker_markers() -> void:
@@ -901,6 +1334,10 @@ func _calibrated_role_for_device(device: Dictionary) -> String:
 	for role in role_bindings.keys():
 		if str(role_bindings[role]) == device_id:
 			return str(role)
+	var controller_bindings: Dictionary = _tracker_calibration.get("controller_bindings", {})
+	for role in controller_bindings.keys():
+		if str(controller_bindings[role]) == device_id:
+			return str(role)
 	return ""
 
 
@@ -945,6 +1382,9 @@ func _apply_user_args() -> void:
 		if args[index] == "--no-openvr-overlay":
 			openvr_overlay_enabled = false
 		if args[index] == "--use-calibrated-trackers-for-estimation":
+			use_calibrated_trackers_for_estimation = true
+		if args[index] == "--sparseposer-calibration":
+			sparseposer_calibration_enabled = true
 			use_calibrated_trackers_for_estimation = true
 
 

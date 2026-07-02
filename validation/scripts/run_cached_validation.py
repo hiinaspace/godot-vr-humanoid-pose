@@ -425,7 +425,13 @@ def _evaluate_cached_clip(task: CachedValidationTask) -> ClipResult:
     return evaluate_cached_clip_path(Path(task.path), estimator)
 
 
-def evaluate_cached_clip_path(path: Path, estimator: PoseEstimator) -> ClipResult:
+def evaluate_cached_clip_path(
+    path: Path,
+    estimator: PoseEstimator,
+    *,
+    max_frames: int | None = None,
+    skip_initial_frames: int = 0,
+) -> ClipResult:
     """Evaluate one cached clip with a caller-provided stateful estimator instance."""
 
     start = time.perf_counter()
@@ -433,6 +439,10 @@ def evaluate_cached_clip_path(path: Path, estimator: PoseEstimator) -> ClipResul
     reference_metrics: list[ReferencePoseMetrics] = []
     estimated_poses = []
     cached_frame_list = list(iter_cached_pose_frames(path))
+    if skip_initial_frames > 0:
+        cached_frame_list = cached_frame_list[skip_initial_frames:]
+    if max_frames is not None:
+        cached_frame_list = cached_frame_list[:max_frames]
     reference_frames = [frame.joints for frame in cached_frame_list]
     timestamps_seconds = [frame.timestamp_s for frame in cached_frame_list]
     inferred_floor_height_m = infer_reference_floor_height(reference_frames)

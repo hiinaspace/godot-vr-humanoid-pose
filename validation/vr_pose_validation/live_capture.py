@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import socket
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from threading import Event
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
 import polars as pl
@@ -34,6 +34,19 @@ RAW_TO_STANDING_COMPONENTS = tuple(f"raw_to_standing_{index:02d}" for index in r
 type ParquetCompression = Literal["lz4", "uncompressed", "snappy", "gzip", "brotli", "zstd"]
 
 
+class LiveEstimateBackend(Protocol):
+    name: str
+
+    def estimate_from_message(self, message: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Estimate a pose from a raw live-capture protocol message."""
+
+    def reset(self) -> None:
+        """Reset stateful estimator/backend history."""
+
+    def close(self) -> None:
+        """Release backend resources."""
+
+
 @dataclass(frozen=True, slots=True)
 class LiveCapturePaths:
     session_dir: Path
@@ -41,6 +54,7 @@ class LiveCapturePaths:
     frames_path: Path
     devices_path: Path
     joints_path: Path
+    raw_messages_path: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +78,7 @@ def live_capture_paths(output_dir: Path, session_id: str) -> LiveCapturePaths:
         frames_path=session_dir / "frames.parquet",
         devices_path=session_dir / "devices.parquet",
         joints_path=session_dir / "joints.parquet",
+        raw_messages_path=session_dir / "raw_messages.ndjson",
     )
 
 
@@ -88,6 +103,13 @@ class LiveCaptureParquetWriter:
         self._frames: list[dict[str, Any]] = []
         self._devices: list[dict[str, Any]] = []
         self._joints: list[dict[str, Any]] = []
+
+    def append_raw_message(self, message: Mapping[str, Any]) -> None:
+        self.paths.session_dir.mkdir(parents=True, exist_ok=True)
+        with self.paths.raw_messages_path.open("ab") as handle:
+            handle.write(
+                (json.dumps(message, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+            )
 
     def append_message(self, message: Mapping[str, Any]) -> None:
         message_type = str(message.get("type", "frame"))
@@ -279,57 +301,70 @@ def run_tcp_recorder(
     port: int,
     writer: LiveCaptureParquetWriter,
     estimator_name: EstimatorName | None = None,
+    estimator_backend: LiveEstimateBackend | None = None,
     stop_after_client: bool = False,
     stop_event: Event | None = None,
     accept_timeout_seconds: float = 0.5,
+    event_logger: Callable[[str], None] | None = None,
 ) -> LiveCaptureSummary:
     estimator = create_estimator(estimator_name) if estimator_name is not None else None
-    with socket.create_server((host, port), reuse_port=False) as server:
-        server.settimeout(accept_timeout_seconds)
-        while True:
-            if stop_event is not None and stop_event.is_set():
-                return writer.flush()
-            try:
-                client, _address = server.accept()
-            except TimeoutError:
-                continue
-            with client:
-                client.settimeout(accept_timeout_seconds)
-                buffer = b""
+    try:
+        with socket.create_server((host, port), reuse_port=False) as server:
+            server.settimeout(accept_timeout_seconds)
+            _log_event(event_logger, f"listening host={host} port={port}")
+            while True:
+                if stop_event is not None and stop_event.is_set():
+                    return writer.flush()
                 try:
-                    while True:
-                        if stop_event is not None and stop_event.is_set():
-                            return writer.flush()
-                        try:
-                            chunk = client.recv(65536)
-                        except TimeoutError:
-                            continue
-                        if not chunk:
-                            break
-                        buffer += chunk
-                        while b"\n" in buffer:
-                            raw_line, buffer = buffer.split(b"\n", 1)
+                    client, address = server.accept()
+                except TimeoutError:
+                    continue
+                _log_event(event_logger, f"client connected address={address}")
+                with client:
+                    client.settimeout(accept_timeout_seconds)
+                    buffer = b""
+                    try:
+                        while True:
+                            if stop_event is not None and stop_event.is_set():
+                                return writer.flush()
+                            try:
+                                chunk = client.recv(65536)
+                            except TimeoutError:
+                                continue
+                            if not chunk:
+                                break
+                            buffer += chunk
+                            while b"\n" in buffer:
+                                raw_line, buffer = buffer.split(b"\n", 1)
+                                response = _handle_socket_line(
+                                    raw_line,
+                                    writer,
+                                    estimator=estimator,
+                                    estimator_name=estimator_name,
+                                    estimator_backend=estimator_backend,
+                                    event_logger=event_logger,
+                                )
+                                _send_socket_response(client, response)
+                    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+                        _log_event(event_logger, "client disconnected abruptly")
+                    finally:
+                        if buffer.strip():
                             response = _handle_socket_line(
-                                raw_line,
+                                buffer,
                                 writer,
                                 estimator=estimator,
                                 estimator_name=estimator_name,
+                                estimator_backend=estimator_backend,
+                                event_logger=event_logger,
                             )
                             _send_socket_response(client, response)
-                except (ConnectionResetError, BrokenPipeError):
-                    pass
-                finally:
-                    if buffer.strip():
-                        response = _handle_socket_line(
-                            buffer,
-                            writer,
-                            estimator=estimator,
-                            estimator_name=estimator_name,
-                        )
-                        _send_socket_response(client, response)
-                    writer.flush()
-            if stop_after_client:
-                return writer.flush()
+                        writer.flush()
+                _log_event(event_logger, "client disconnected")
+                if stop_after_client:
+                    return writer.flush()
+    finally:
+        if estimator_backend is not None:
+            estimator_backend.close()
 
 
 def _send_socket_response(client: socket.socket, response: Mapping[str, Any] | None) -> None:
@@ -345,6 +380,8 @@ def _handle_socket_line(
     *,
     estimator: PoseEstimator | None,
     estimator_name: EstimatorName | None,
+    estimator_backend: LiveEstimateBackend | None,
+    event_logger: Callable[[str], None] | None = None,
 ) -> Mapping[str, Any] | None:
     line = raw_line.strip()
     if not line:
@@ -357,6 +394,8 @@ def _handle_socket_line(
         writer,
         estimator=estimator,
         estimator_name=estimator_name,
+        estimator_backend=estimator_backend,
+        event_logger=event_logger,
     )
 
 
@@ -366,12 +405,26 @@ def _handle_socket_message(
     *,
     estimator: PoseEstimator | None,
     estimator_name: EstimatorName | None,
+    estimator_backend: LiveEstimateBackend | None = None,
+    event_logger: Callable[[str], None] | None = None,
 ) -> Mapping[str, Any] | None:
     message_type = str(message.get("type", "frame"))
+    writer.append_raw_message(message)
+    _log_event(
+        event_logger,
+        "recv "
+        f"type={message_type} "
+        f"request={_int_or_default(message.get('request_id'), -1)} "
+        f"frame={_int_or_default(message.get('frame_index'), -1)} "
+        f"clip={_int_or_default(message.get('clip_index'), -1)}",
+    )
     if message_type == "reset_estimator":
         reset = getattr(estimator, "reset", None)
         if callable(reset):
             reset()
+        if estimator_backend is not None:
+            estimator_backend.reset()
+        _log_event(event_logger, "send type=estimator_reset")
         return {
             "format": CAPTURE_FORMAT,
             "type": "estimator_reset",
@@ -382,24 +435,53 @@ def _handle_socket_message(
         writer.append_message(message)
         return None
 
-    if estimator is None:
+    if estimator is None and estimator_backend is None:
         if message_type == "frame":
             writer.append_message(message)
+        _log_event(event_logger, "send type=estimate_error error=estimation is disabled")
         return _estimate_error_response(message, "estimation is disabled")
 
-    estimated_frame = _estimate_frame_from_message(message, estimator)
+    try:
+        if estimator_backend is not None:
+            _log_event(event_logger, f"estimate backend={estimator_backend.name} start")
+            estimated_frame = estimator_backend.estimate_from_message(message)
+            response_estimator_name = estimator_backend.name
+            _log_event(event_logger, f"estimate backend={estimator_backend.name} done")
+        else:
+            assert estimator is not None
+            _log_event(event_logger, f"estimate estimator={estimator_name} start")
+            estimated_frame = _estimate_frame_from_message(message, estimator)
+            response_estimator_name = estimator_name
+            _log_event(event_logger, f"estimate estimator={estimator_name} done")
+    except Exception as exc:
+        if message_type == "frame":
+            writer.append_message(message)
+        _log_event(event_logger, f"send type=estimate_error error={exc}")
+        return _estimate_error_response(message, str(exc))
     if message_type == "frame":
         enriched = dict(message)
         enriched["estimated_frame"] = estimated_frame
         writer.append_message(enriched)
-    return _estimate_response(message, estimated_frame, estimator_name=estimator_name)
+    calibration_required = ""
+    if isinstance(estimated_frame, Mapping):
+        calibration_required = str(estimated_frame.get("calibration_required", ""))
+    suffix = f" calibration_required={calibration_required}" if calibration_required else ""
+    _log_event(
+        event_logger, f"send type=estimate_response estimator={response_estimator_name}{suffix}"
+    )
+    return _estimate_response(message, estimated_frame, estimator_name=response_estimator_name)
+
+
+def _log_event(event_logger: Callable[[str], None] | None, message: str) -> None:
+    if event_logger is not None:
+        event_logger(message)
 
 
 def _estimate_response(
     message: Mapping[str, Any],
     estimated_frame: Mapping[str, Any],
     *,
-    estimator_name: EstimatorName | None,
+    estimator_name: str | None,
 ) -> Mapping[str, Any]:
     return {
         "format": CAPTURE_FORMAT,
