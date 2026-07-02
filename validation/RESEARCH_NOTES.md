@@ -5,6 +5,12 @@ for this repo. The goal is not a complete literature survey; it is to preserve
 implementation ideas, evaluation ideas, and licensing constraints for the
 CMU/Godot humanoid path.
 
+Plan-level decisions live in `PLAN.md` (authoritative) and the 2026-07
+literature re-evaluation lives in `RESEARCH_REEVAL-2026-07.md` (rationale and
+citations for the newer decisions: latency budget, dual-frame torso,
+seated-first, data policy, dropout-first corruption). These notes stay at the
+implementation-reference level.
+
 ## Project Constraints
 
 - Runtime target is a Godot humanoid skeleton, not SMPL. SMPL papers and body
@@ -19,10 +25,12 @@ CMU/Godot humanoid path.
   SMPL/SMPL-X model/software downloads remain under non-commercial research
   licenses. A transient SMPL-body interchange layer may be acceptable; training
   commercial-bound models with the full model/software still needs review.
-- SparsePoser's public Xsens dataset is much closer to VR usage than CMU, but
-  its license metadata is inconsistent between Zenodo and the GitHub repo. Use
-  it for local research/evaluation until training-artifact redistribution is
-  explicitly reviewed.
+- SparsePoser's public Xsens dataset is much closer to VR usage than CMU. Its
+  license metadata is inconsistent between Zenodo (CC BY 4.0) and the GitHub
+  repo's LICENSE_data (CC BY-SA 4.0); the 2026-07 review concluded taking it
+  under CC BY via the Zenodo distribution channel is defensible, with a
+  confirmation email to the UPC-ViRVIG authors as the pending action. Keep
+  the training split license-gated until that email is answered.
 - The immediate product case is 3-point VR tracking: HMD plus left/right hands.
   Extra trackers in live capture are useful as withheld ground truth, not as
   required estimator inputs.
@@ -89,9 +97,14 @@ License/status caveats:
 - SparsePoser code is MIT.
 - The repo's `LICENSE_data` says model weights and data are CC BY-SA 4.0.
 - Zenodo metadata for record `8427980` currently reports `cc-by-4.0`.
-- Until that mismatch is resolved, treat this corpus as allowed for local
-  research/evaluation and uncertain for redistributed trained weights or
-  commercial-bound model artifacts.
+- 2026-07 review: the Zenodo record is the distribution channel and the same
+  rights-holder published it there, so dual-license analysis favors taking
+  the data under CC BY. Even worst-case BY-SA, current authority (CC's 2025
+  guidance; Getty v. Stability UK) says trained weights are likely not
+  adaptations — the SA exposure is contractual and survivable, unlike NC.
+- Pending action (PLAN.md milestone 6): confirmation email to the UPC-ViRVIG
+  authors (J. L. Ponton). Until answered, keep the training split
+  license-gated as implemented.
 
 Importer status:
 

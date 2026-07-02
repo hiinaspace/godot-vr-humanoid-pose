@@ -4,8 +4,12 @@ A fresh literature pass over PLAN.md / validation/RESEARCH_NOTES.md, run as
 four parallel reviews (SOTA lineage, missed method branches, shipping-practice
 + perception, data/licensing) grounded in the repo's stated position. This is
 a **delta document**: it records what the earlier research passes missed or
-under-weighted, what they got right, and the recommended plan changes. Nothing
-here is applied to PLAN.md yet.
+under-weighted, what they got right, and the recommended plan changes.
+
+> **Status 2026-07-02: applied.** The recommendations below have been folded
+> into `PLAN.md`, which is now the authoritative current plan. This file is
+> kept as the dated rationale and source-citation record; do not treat its
+> "recommended changes" framing as pending work.
 
 ## TL;DR — recommended plan changes, ranked
 
