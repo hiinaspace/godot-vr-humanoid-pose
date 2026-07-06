@@ -424,7 +424,7 @@ func _handle_stream_message(message: Dictionary) -> void:
 
 func _sample_from_devices(timestamp_seconds: float, devices: Array) -> Dictionary:
 	var hmd = _find_device(devices, "head", "HMD")
-	var controllers = _controller_devices_for_sample(devices)
+	var controllers = _controller_devices_for_sample(devices, hmd)
 	var left_hand: Dictionary = controllers.get("left_hand", {})
 	var right_hand: Dictionary = controllers.get("right_hand", {})
 	if hmd.is_empty() or left_hand.is_empty() or right_hand.is_empty():
@@ -480,22 +480,11 @@ func _find_device(devices: Array, role: String, device_class: String) -> Diction
 	return {}
 
 
-func _controller_devices_for_sample(devices: Array) -> Dictionary:
+func _controller_devices_for_sample(devices: Array, head: Dictionary = {}) -> Dictionary:
 	var bound = _controller_devices_from_calibration(devices)
 	if not bound.is_empty():
 		return bound
-	if sparseposer_calibration_enabled:
-		return _controller_devices_by_playspace_side(devices)
-	var left_hand = _find_device(devices, "left_hand", "Controller")
-	var right_hand = _find_device(devices, "right_hand", "Controller")
-	if left_hand.is_empty() or right_hand.is_empty():
-		return {}
-	if _calibration_device_id(left_hand) == _calibration_device_id(right_hand):
-		return _controller_devices_by_playspace_side(devices)
-	return {
-		"left_hand": left_hand,
-		"right_hand": right_hand,
-	}
+	return _bind_controllers(devices, head, sparseposer_calibration_enabled)
 
 
 func _controller_devices_from_calibration(devices: Array) -> Dictionary:
@@ -514,7 +503,13 @@ func _controller_devices_from_calibration(devices: Array) -> Dictionary:
 	}
 
 
-func _controller_devices_by_playspace_side(devices: Array) -> Dictionary:
+# Assign the two hand controllers to left/right roles. Normal capture prefers
+# each controller's self-reported OpenVR handedness; SparsePoser calibration
+# forces geometric T-pose-side binding (prefer_geometry). The geometric
+# fallback projects onto the head-relative body-right axis, never world/
+# playspace X -- world X mislabels the hands whenever the user faces away from
+# +Z at calibration, which is the observed left/right controller swap.
+func _bind_controllers(devices: Array, head: Dictionary, prefer_geometry: bool) -> Dictionary:
 	var controllers = []
 	for item in devices:
 		if not (item is Dictionary):
@@ -527,15 +522,70 @@ func _controller_devices_by_playspace_side(devices: Array) -> Dictionary:
 		controllers.append(device)
 	if controllers.size() < 2:
 		return {}
-	controllers.sort_custom(func(a, b): return _device_position(a).x < _device_position(b).x)
+	if not prefer_geometry:
+		var by_role = _controllers_by_reported_hand(controllers)
+		if not by_role.is_empty():
+			return by_role
+	return _controllers_by_body_side(controllers, head)
+
+
+func _controllers_by_reported_hand(controllers: Array) -> Dictionary:
+	var left_hand := {}
+	var right_hand := {}
+	for device in controllers:
+		match str(device.get("role", "")):
+			"left_hand":
+				if left_hand.is_empty():
+					left_hand = device
+			"right_hand":
+				if right_hand.is_empty():
+					right_hand = device
+	if left_hand.is_empty() or right_hand.is_empty():
+		return {}
+	if _calibration_device_id(left_hand) == _calibration_device_id(right_hand):
+		return {}
 	return {
-		"left_hand": controllers[0],
-		"right_hand": controllers[controllers.size() - 1],
+		"left_hand": left_hand,
+		"right_hand": right_hand,
 	}
 
 
-func _controller_bindings_from_devices(devices: Array) -> Dictionary:
-	var controllers = _controller_devices_by_playspace_side(devices)
+func _controllers_by_body_side(controllers: Array, head: Dictionary) -> Dictionary:
+	var head_position = _device_position(head) if not head.is_empty() else Vector3.ZERO
+	var right_axis = _head_right_axis(head)
+	var ordered = controllers.duplicate()
+	ordered.sort_custom(func(a, b): return _body_side_key(a, head_position, right_axis) < _body_side_key(b, head_position, right_axis))
+	return {
+		"left_hand": ordered[0],
+		"right_hand": ordered[ordered.size() - 1],
+	}
+
+
+func _body_side_key(device: Dictionary, head_position: Vector3, right_axis: Vector3) -> float:
+	return (_device_position(device) - head_position).dot(right_axis)
+
+
+# Horizontal body-right axis derived from HMD yaw. Falls back to world +X only
+# when no head pose is available or the head is looking straight up/down.
+func _head_right_axis(head: Dictionary) -> Vector3:
+	if head.is_empty():
+		return Vector3.RIGHT
+	var basis = _transform3d_from_value(head.get("transform", Transform3D())).basis
+	var right = basis.x
+	right.y = 0.0
+	if right.length() < 0.0001:
+		var forward = -basis.z
+		forward.y = 0.0
+		if forward.length() < 0.0001:
+			return Vector3.RIGHT
+		right = forward.normalized().cross(Vector3.UP)
+	if right.length() < 0.0001:
+		return Vector3.RIGHT
+	return right.normalized()
+
+
+func _controller_bindings_from_devices(devices: Array, head: Dictionary = {}) -> Dictionary:
+	var controllers = _bind_controllers(devices, head, sparseposer_calibration_enabled)
 	if controllers.is_empty():
 		return {}
 	return {
@@ -866,7 +916,7 @@ func _update_countdown_capture_state(
 	var calibration_sample = sample.duplicate(true)
 	calibration_sample["hmd"] = head_tracker
 	_tracker_calibration = _tracker_calibrator.build_calibration(calibration_sample, devices)
-	var controller_bindings = _controller_bindings_from_devices(devices)
+	var controller_bindings = _controller_bindings_from_devices(devices, head_tracker)
 	if not controller_bindings.is_empty():
 		_tracker_calibration["controller_bindings"] = controller_bindings
 	_latest_estimated_frame = {}

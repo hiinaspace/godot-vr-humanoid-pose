@@ -15,6 +15,8 @@ func _init() -> void:
 	_test_live_sample_prefers_openvr_devices()
 	_test_live_sample_prefers_controller_wrist_pose()
 	_test_live_sparseposer_controller_bindings_use_tpose_side()
+	_test_live_controller_bindings_use_head_relative_side()
+	_test_live_controller_bindings_prefer_reported_handedness()
 	_test_live_tracker_marker_uses_calibrated_role_and_mirror_space()
 	_test_live_tracker_marker_shows_sparseposer_input_markers()
 	_test_live_first_person_armature_uses_estimated_root_position()
@@ -387,6 +389,44 @@ func _test_live_sparseposer_controller_bindings_use_tpose_side() -> void:
 	_assert_close("sparseposer initial left hand side", sample["left_hand"]["transform"]["position"][0], -0.45)
 	_assert_eq("sparseposer bound left controller remains stable", crossed_sample["left_hand"]["device_id"], "openvr_right_hand")
 	_assert_close("sparseposer bound left follows device", crossed_sample["left_hand"]["transform"]["position"][0], 0.25)
+	overlay.free()
+
+
+func _test_live_controller_bindings_use_head_relative_side() -> void:
+	# SparsePoser mode binds by geometry. Facing -Z, the controller at world +X
+	# is the user's LEFT hand; world-X sorting would mislabel it (the swap bug).
+	var overlay = LiveOverlayDebug.new()
+	overlay.sparseposer_calibration_enabled = true
+	var head = _openvr_device("head", "HMD", [0.0, 1.65, 0.0])
+	head["transform"] = Transform3D(Basis(Vector3.UP, PI), Vector3(0.0, 1.65, 0.0))
+	var devices = [
+		head,
+		_openvr_device("right_hand", "Controller", [0.45, 1.2, 0.0]),
+		_openvr_device("left_hand", "Controller", [-0.45, 1.2, 0.0]),
+	]
+
+	var bindings = overlay._controller_bindings_from_devices(devices, head)
+
+	_assert_eq("facing -Z: +X controller is user left", bindings["left_hand"], "openvr_right_hand")
+	_assert_eq("facing -Z: -X controller is user right", bindings["right_hand"], "openvr_left_hand")
+	overlay.free()
+
+
+func _test_live_controller_bindings_prefer_reported_handedness() -> void:
+	# Normal capture trusts self-reported OpenVR handedness even when the two
+	# controllers sit on the opposite physical side at calibration.
+	var overlay = LiveOverlayDebug.new()
+	var head = _openvr_device("head", "HMD", [0.0, 1.65, 0.0])
+	var devices = [
+		head,
+		_openvr_device("left_hand", "Controller", [0.4, 1.2, 0.0]),
+		_openvr_device("right_hand", "Controller", [-0.4, 1.2, 0.0]),
+	]
+
+	var bindings = overlay._controller_bindings_from_devices(devices, head)
+
+	_assert_eq("reported left handedness wins", bindings["left_hand"], "openvr_left_hand")
+	_assert_eq("reported right handedness wins", bindings["right_hand"], "openvr_right_hand")
 	overlay.free()
 
 
