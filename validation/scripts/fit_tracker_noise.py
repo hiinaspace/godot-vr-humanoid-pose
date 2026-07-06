@@ -8,6 +8,16 @@ drift. Roles absent from the sessions are skipped; per-role sample counts are
 reported. Parameters that cannot be fit without ground truth (calibration bias,
 latency, prediction overshoot) fall back to the invented role priors and are
 flagged in the summary.
+
+Dropout/excursion provenance policy: the fields dropout_probability,
+dropout_mean_run_frames, dropout_hold_last_probability, invalid_confidence, and
+excursion_magnitude_m are fit only from rows whose ``run_kind == "occlusion"``.
+For any other run_kind the role prior is used for those specific fields, because
+non-occlusion runs do not exercise representative dropout geometry. Jitter,
+drift, velocity, and angular fields still fit from all selected rows regardless
+of kind. Legacy captures with no ``run_kind`` column preserve the original
+behavior (dropout fit from all rows). The ``--run``/``--run-kind`` filters
+restrict which rows feed the fit before this policy is applied.
 """
 
 from __future__ import annotations
@@ -35,6 +45,17 @@ DEVICE_CLASS_TO_KIND = {
     "GenericTracker": "strap_tracker",
 }
 IDLE_SPEED_THRESHOLD_MPS = 0.05
+OCCLUSION_RUN_KIND = "occlusion"
+# Dropout/excursion statistics only have representative provenance when captured
+# in a dedicated occlusion run; for any other run_kind we fall back to the role
+# prior for these fields (see the provenance policy in the module docstring).
+OCCLUSION_ONLY_FIELDS = (
+    "dropout_probability",
+    "dropout_mean_run_frames",
+    "dropout_hold_last_probability",
+    "invalid_confidence",
+    "excursion_magnitude_m",
+)
 UNFITTABLE_FIELDS = (
     "calibration_bias_std_m",
     "latency_frames",
@@ -67,10 +88,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=90.0,
         help="Assumed capture frame rate when device timestamps are unavailable.",
     )
+    parser.add_argument(
+        "--run",
+        dest="runs",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Only fit device rows whose run_name matches NAME (repeatable).",
+    )
+    parser.add_argument(
+        "--run-kind",
+        dest="run_kinds",
+        action="append",
+        default=[],
+        metavar="KIND",
+        help="Only fit device rows whose run_kind matches KIND (repeatable).",
+    )
     args = parser.parse_args(argv)
 
     session_dirs = _resolve_sessions(args.sessions)
     devices = _load_devices(session_dirs)
+    devices = _apply_run_filters(devices, args.runs, args.run_kinds)
     summary = fit_tracker_noise(devices, frame_rate_hz=args.frame_rate_hz)
 
     if args.output is not None:
@@ -103,6 +141,24 @@ def _resolve_sessions(paths: Sequence[Path]) -> list[Path]:
     if not resolved:
         raise FileNotFoundError("No live-capture sessions with devices.parquet found")
     return resolved
+
+
+def _apply_run_filters(
+    devices: pl.DataFrame,
+    runs: Sequence[str],
+    run_kinds: Sequence[str],
+) -> pl.DataFrame:
+    for values, column in ((runs, "run_name"), (run_kinds, "run_kind")):
+        if not values:
+            continue
+        if column not in devices.columns:
+            print(
+                f"Filter --{column.replace('_', '-')} given but column "
+                f"'{column}' is absent; no rows match."
+            )
+            return devices.clear()
+        devices = devices.filter(pl.col(column).cast(pl.Utf8).is_in(list(values)))
+    return devices
 
 
 def _load_devices(session_dirs: Sequence[Path]) -> pl.DataFrame:
@@ -142,46 +198,79 @@ def _fit_role(role: str, rows: pl.DataFrame, frame_rate_hz: float) -> dict[str, 
     prior = role_default_profile(role, device_kind=kind)
     dt = 1.0 / frame_rate_hz if frame_rate_hz > 0.0 else 0.0
 
+    # Legacy captures without a run_kind column fit dropout/excursion from all
+    # rows; when the column is present only occlusion rows are eligible for those
+    # fields (the rest fall back to the role prior).
+    has_run_kind = "run_kind" in rows.columns
+    if has_run_kind:
+        dropout_rows = rows.filter(pl.col("run_kind").cast(pl.Utf8) == OCCLUSION_RUN_KIND)
+    else:
+        dropout_rows = rows
+
     samples = 0
-    dropout_frames = 0
-    run_lengths: list[int] = []
-    hold_runs = 0
-    invalid_confidences: list[float] = []
-    excursion_distances: list[float] = []
     jitter_values: list[float] = []
     drift_values: list[float] = []
     velocity_errors: list[float] = []
     angular_speeds: list[float] = []
 
     for _, group in _iter_tracks(rows):
-        positions, valids, confidences, native_velocities, angular = _track_arrays(group)
+        positions, valids, _confidences, native_velocities, angular = _track_arrays(group)
         samples += len(positions)
+        _accumulate_jitter_and_drift(positions, valids, dt, jitter_values, drift_values)
+        _accumulate_velocity_error(positions, native_velocities, valids, dt, velocity_errors)
+        _accumulate_angular(angular, valids, angular_speeds)
+
+    dropout_samples = 0
+    dropout_frames = 0
+    run_lengths: list[int] = []
+    hold_runs = 0
+    invalid_confidences: list[float] = []
+    excursion_distances: list[float] = []
+
+    for _, group in _iter_tracks(dropout_rows):
+        positions, valids, confidences, _native_velocities, _angular = _track_arrays(group)
+        dropout_samples += len(positions)
         _accumulate_dropout(valids, run_lengths)
         dropout_frames += sum(1 for valid in valids if not valid)
         holds, invalid_conf = _classify_invalid_runs(valids, confidences)
         hold_runs += holds
         invalid_confidences.extend(invalid_conf)
         _accumulate_excursion(positions, valids, excursion_distances)
-        _accumulate_jitter_and_drift(positions, valids, dt, jitter_values, drift_values)
-        _accumulate_velocity_error(positions, native_velocities, valids, dt, velocity_errors)
-        _accumulate_angular(angular, valids, angular_speeds)
 
     total_runs = len(run_lengths)
-    eligible = max(samples - dropout_frames, 1)
+    eligible = max(dropout_samples - dropout_frames, 1)
+
+    # When a run_kind column exists but yields no occlusion rows, dropout and
+    # excursion parameters fall back to the role prior rather than to the empty
+    # non-occlusion accumulation.
+    dropout_from_priors = has_run_kind and dropout_rows.is_empty()
+    if dropout_from_priors:
+        dropout_probability = prior.dropout_probability
+        dropout_mean_run_frames = prior.dropout_mean_run_frames
+        dropout_hold_last_probability = prior.dropout_hold_last_probability
+        invalid_confidence = prior.invalid_confidence
+        excursion_magnitude_m = prior.excursion_magnitude_m
+    else:
+        dropout_probability = (total_runs / eligible) if total_runs else prior.dropout_probability
+        dropout_mean_run_frames = (
+            fmean(run_lengths) if run_lengths else prior.dropout_mean_run_frames
+        )
+        dropout_hold_last_probability = (
+            hold_runs / total_runs if total_runs else prior.dropout_hold_last_probability
+        )
+        invalid_confidence = _stat(invalid_confidences, prior.invalid_confidence, use_mean=True)
+        excursion_magnitude_m = _axis_sigma_from_magnitudes(
+            excursion_distances, prior.excursion_magnitude_m
+        )
+
     profile = NoiseProfile(
         position_std_m=_stat(jitter_values, prior.position_std_m, use_mean=True),
-        dropout_probability=(total_runs / eligible) if total_runs else prior.dropout_probability,
-        invalid_confidence=_stat(invalid_confidences, prior.invalid_confidence, use_mean=True),
+        dropout_probability=dropout_probability,
+        invalid_confidence=invalid_confidence,
         device_kind=kind,
-        dropout_mean_run_frames=(
-            fmean(run_lengths) if run_lengths else prior.dropout_mean_run_frames
-        ),
-        dropout_hold_last_probability=(
-            hold_runs / total_runs if total_runs else prior.dropout_hold_last_probability
-        ),
-        excursion_magnitude_m=_axis_sigma_from_magnitudes(
-            excursion_distances, prior.excursion_magnitude_m
-        ),
+        dropout_mean_run_frames=dropout_mean_run_frames,
+        dropout_hold_last_probability=dropout_hold_last_probability,
+        excursion_magnitude_m=excursion_magnitude_m,
         excursion_frames=prior.excursion_frames,
         calibration_bias_std_m=prior.calibration_bias_std_m,
         drift_amplitude_m=_stat(drift_values, prior.drift_amplitude_m, use_mean=True),
@@ -193,13 +282,17 @@ def _fit_role(role: str, rows: pl.DataFrame, frame_rate_hz: float) -> dict[str, 
             angular_speeds, prior.angular_velocity_std_radps
         ),
     )
+    unfitted_fields = list(UNFITTABLE_FIELDS)
+    if dropout_from_priors:
+        unfitted_fields.extend(OCCLUSION_ONLY_FIELDS)
     return {
         "profile": profile,
         "samples": samples,
         "dropout_frames": dropout_frames,
         "dropout_runs": total_runs,
+        "dropout_from_priors": dropout_from_priors,
         "sessions": rows["_session_dir"].n_unique() if "_session_dir" in rows.columns else 1,
-        "unfitted_fields": list(UNFITTABLE_FIELDS),
+        "unfitted_fields": unfitted_fields,
     }
 
 
@@ -467,11 +560,14 @@ def _print_summary(
         entry = roles[role]
         profile = entry["profile"]
         print(f"\n[{role}] kind={profile.device_kind} samples={entry['samples']}")
+        dropout_note = (
+            " [from priors: no occlusion rows]" if entry.get("dropout_from_priors") else ""
+        )
         print(
             f"  dropout: p_onset={profile.dropout_probability:.4f} "
             f"mean_run={profile.dropout_mean_run_frames:.2f} frames "
             f"hold_last={profile.dropout_hold_last_probability:.2f} "
-            f"(runs={entry['dropout_runs']})"
+            f"(runs={entry['dropout_runs']}){dropout_note}"
         )
         print(
             f"  jitter_std={profile.position_std_m * 1000:.2f} mm "

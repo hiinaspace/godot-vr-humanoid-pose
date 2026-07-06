@@ -48,6 +48,38 @@ const DEFAULT_BONES = [
 @export var sparseposer_calibration_enabled = false
 @export var openvr_overlay_enabled = true
 @export var synthetic_input_without_xr = true
+@export var capture_director_enabled = false
+
+# The redo action re-runs the current director run without advancing the run
+# pointer. Trigger stays the accept action (via _controller_confirm_pressed);
+# pick a distinct button here so one press cannot serve both.
+const CAPTURE_DIRECTOR_REDO_ACTION = "grip"
+
+# Ordered capture protocol for the in-VR director. Occlusion is intentionally
+# omitted (decision 2026-07: skip as fit data until an inside-out rig exists).
+# To add it later, append a run like:
+#   {"name": "occlusion", "instruction": "Occlude controllers behind back",
+#    "duration_s": 45.0, "kind": "occlusion"}
+const CAPTURE_PROTOCOL = [
+	{
+		"name": "idle",
+		"instruction": "Stand relaxed — arms at sides, then loosely folded",
+		"duration_s": 60.0,
+		"kind": "idle",
+	},
+	{
+		"name": "range_of_motion",
+		"instruction": "Slow full-body reach: arms overhead, torso twist, look around",
+		"duration_s": 60.0,
+		"kind": "motion",
+	},
+	{
+		"name": "sit_stand",
+		"instruction": "Sit, settle, stand — repeat at a normal chair",
+		"duration_s": 45.0,
+		"kind": "sit_stand",
+	},
+]
 
 var calibration = {
 	"human_height_m": 1.7,
@@ -90,6 +122,8 @@ var _clip_index = 0
 var _last_flushed_clip_index = -1
 var _requires_gaze_release = false
 var _requires_trigger_release = false
+var _run_index = 0
+var _requires_redo_release = false
 var _alignment_gaze_dwell_s = 0.0
 var _headlocked_prompt_root: Node3D
 var _headlocked_prompt: Label3D
@@ -372,7 +406,9 @@ func _send_estimation_or_recording_message(
 			devices,
 			"standing",
 			_raw_to_standing_transform(),
-			_clip_index
+			_clip_index,
+			_current_run_name(),
+			_current_run_kind()
 		)
 		if _stream_client.send_message(message):
 			_estimate_request_in_flight = true
@@ -860,7 +896,9 @@ func _update_capture_state(sample: Dictionary, devices: Array, delta: float) -> 
 	elif _capture_phase == "settle":
 		_update_timed_capture_phase(delta, "recording")
 	elif _capture_phase == "recording":
-		_update_timed_capture_phase(delta, "complete")
+		_update_timed_capture_phase(delta, "review" if capture_director_enabled else "complete")
+	elif _capture_phase == "review":
+		_update_review_capture_state()
 	elif _capture_phase == "complete" and not gaze_hits_target:
 		_capture_phase = "idle"
 		_requires_gaze_release = false
@@ -1014,12 +1052,88 @@ func _update_timed_capture_phase(delta: float, next_phase: String) -> void:
 		return
 	if next_phase == "recording":
 		_capture_phase = "recording"
-		_phase_remaining_s = clip_duration_seconds
+		_phase_remaining_s = _clip_duration_for_current_run()
 		_last_stream_timestamp_s = -INF
 	elif next_phase == "complete":
 		_capture_phase = "complete"
 		_phase_remaining_s = 0.0
 		_send_clip_flush()
+	elif next_phase == "review":
+		_capture_phase = "review"
+		_phase_remaining_s = 0.0
+		_requires_trigger_release = _controller_confirm_pressed()
+		_requires_redo_release = _controller_redo_pressed()
+		_send_clip_flush()
+
+
+func _update_review_capture_state(confirm_pressed = null, redo_pressed = null) -> void:
+	if confirm_pressed == null:
+		confirm_pressed = _controller_confirm_pressed()
+	if redo_pressed == null:
+		redo_pressed = _controller_redo_pressed()
+	if _requires_trigger_release:
+		if not confirm_pressed:
+			_requires_trigger_release = false
+	if _requires_redo_release:
+		if not redo_pressed:
+			_requires_redo_release = false
+
+	if not _requires_redo_release and redo_pressed:
+		_redo_current_run()
+		return
+	if not _requires_trigger_release and confirm_pressed:
+		_accept_current_run()
+
+
+func _accept_current_run() -> void:
+	_run_index += 1
+	_requires_trigger_release = _controller_confirm_pressed()
+	_requires_redo_release = _controller_redo_pressed()
+	if _run_index >= CAPTURE_PROTOCOL.size():
+		_capture_phase = "done"
+		_phase_remaining_s = 0.0
+	else:
+		_capture_phase = "idle"
+		_requires_gaze_release = false
+		_calibration_dwell_s = 0.0
+
+
+# Re-run the same director run: back to settle (which flows into recording) with
+# a fresh clip index, without advancing the run pointer.
+func _redo_current_run() -> void:
+	_capture_phase = "settle"
+	_phase_remaining_s = post_calibration_settle_seconds
+	_clip_index += 1
+	_frame_index = 0
+	_last_stream_timestamp_s = -INF
+	_requires_trigger_release = false
+	_requires_redo_release = false
+
+
+func _current_run() -> Dictionary:
+	if _run_index < 0 or _run_index >= CAPTURE_PROTOCOL.size():
+		return {}
+	return CAPTURE_PROTOCOL[_run_index]
+
+
+func _current_run_name() -> String:
+	if not capture_director_enabled:
+		return ""
+	return str(_current_run().get("name", ""))
+
+
+func _current_run_kind() -> String:
+	if not capture_director_enabled:
+		return ""
+	return str(_current_run().get("kind", ""))
+
+
+func _clip_duration_for_current_run() -> float:
+	if capture_director_enabled:
+		var run = _current_run()
+		if not run.is_empty():
+			return float(run.get("duration_s", clip_duration_seconds))
+	return clip_duration_seconds
 
 
 func _send_clip_flush() -> void:
@@ -1032,7 +1146,9 @@ func _send_clip_flush() -> void:
 			_session_id,
 			_clip_index,
 			_frame_index,
-			"clip_complete"
+			"clip_complete",
+			_current_run_name(),
+			_current_run_kind()
 		)
 	):
 		_last_flushed_clip_index = _clip_index
@@ -1144,6 +1260,8 @@ func _headlocked_prompt_text() -> String:
 	if _capture_phase == "countdown":
 		if sparseposer_calibration_enabled:
 			return "face +Z arrow\npress trigger"
+		if capture_director_enabled:
+			return "%s\nT-pose %.1f" % [_current_run().get("instruction", ""), maxf(0.0, _phase_remaining_s)]
 		return "T-pose\n%.1f" % maxf(0.0, _phase_remaining_s)
 	if _capture_phase == "align":
 		return "align skeleton\npress trigger"
@@ -1152,7 +1270,16 @@ func _headlocked_prompt_text() -> String:
 	if _capture_phase == "settle":
 		return "neutral stance\n%.1f" % maxf(0.0, _phase_remaining_s)
 	if _capture_phase == "recording":
+		if capture_director_enabled:
+			return "%s\n%.1f" % [_current_run().get("instruction", ""), maxf(0.0, _phase_remaining_s)]
 		return "recording\n%.1f" % maxf(0.0, _phase_remaining_s)
+	if _capture_phase == "review":
+		return "%s done — [trigger] accept · [%s] redo" % [
+			_current_run_name(),
+			CAPTURE_DIRECTOR_REDO_ACTION,
+		]
+	if _capture_phase == "done":
+		return "capture complete"
 	if _capture_phase == "complete":
 		return "clip saved"
 	return ""
@@ -1222,6 +1349,19 @@ func _sparseposer_missing_input_roles(sample: Dictionary) -> Array:
 
 func _controller_confirm_pressed() -> bool:
 	return _controller_trigger_pressed(_left_controller) or _controller_trigger_pressed(_right_controller)
+
+
+func _controller_redo_pressed() -> bool:
+	return (
+		_controller_button_pressed(_left_controller, CAPTURE_DIRECTOR_REDO_ACTION)
+		or _controller_button_pressed(_right_controller, CAPTURE_DIRECTOR_REDO_ACTION)
+	)
+
+
+func _controller_button_pressed(controller: XRController3D, action: String) -> bool:
+	if controller == null:
+		return false
+	return controller.is_button_pressed(action)
 
 
 func _controller_trigger_pressed(controller: XRController3D) -> bool:
@@ -1436,6 +1576,8 @@ func _apply_user_args() -> void:
 		if args[index] == "--sparseposer-calibration":
 			sparseposer_calibration_enabled = true
 			use_calibrated_trackers_for_estimation = true
+		if args[index] == "--capture-director":
+			capture_director_enabled = true
 
 
 func _new_session_id() -> String:

@@ -87,7 +87,9 @@ func build_flush_message(
     session_id: String,
     clip_index: int,
     frame_index: int,
-    reason := "clip_complete"
+    reason := "clip_complete",
+    run_name := "",
+    run_kind := ""
 ) -> Dictionary:
     return {
         "format": CAPTURE_FORMAT,
@@ -96,6 +98,8 @@ func build_flush_message(
         "clip_index": clip_index,
         "frame_index": frame_index,
         "reason": reason,
+        "run_name": run_name,
+        "run_kind": run_kind,
     }
 
 
@@ -139,7 +143,9 @@ func build_frame_message(
     devices: Array,
     pose_universe := "standing",
     raw_to_standing = null,
-    clip_index := 0
+    clip_index := 0,
+    run_name := "",
+    run_kind := ""
 ) -> Dictionary:
     return _json_safe({
         "format": CAPTURE_FORMAT,
@@ -151,6 +157,8 @@ func build_frame_message(
         "source": "godot_live_overlay",
         "pose_universe": pose_universe,
         "raw_to_standing": raw_to_standing,
+        "run_name": run_name,
+        "run_kind": run_kind,
         "sample": sample,
         "estimated_frame": estimated_frame,
         "calibration": calibration,

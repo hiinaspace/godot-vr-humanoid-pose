@@ -130,6 +130,8 @@ class LiveCaptureParquetWriter:
 
         frame_index = _int_or_default(message.get("frame_index"), len(self._frames))
         clip_index = _int_or_default(message.get("clip_index"), 0)
+        run_name = str(message.get("run_name", ""))
+        run_kind = str(message.get("run_kind", ""))
         session_id = str(message.get("session_id") or self.session_id)
         timestamp_seconds = _float_or_default(message.get("timestamp_seconds"), 0.0)
         received_monotonic_ns = time.monotonic_ns()
@@ -142,6 +144,8 @@ class LiveCaptureParquetWriter:
             "session_id": session_id,
             "clip_index": clip_index,
             "frame_index": frame_index,
+            "run_name": run_name,
+            "run_kind": run_kind,
             "timestamp_seconds": timestamp_seconds,
             "received_monotonic_ns": received_monotonic_ns,
             "source": str(message.get("source", "")),
@@ -164,6 +168,8 @@ class LiveCaptureParquetWriter:
             clip_index,
             frame_index,
             timestamp_seconds,
+            run_name,
+            run_kind,
         ):
             self._devices.append(device_row)
         for joint_row in self._joint_rows(
@@ -172,6 +178,8 @@ class LiveCaptureParquetWriter:
             clip_index,
             frame_index,
             timestamp_seconds,
+            run_name,
+            run_kind,
         ):
             self._joints.append(joint_row)
 
@@ -209,6 +217,8 @@ class LiveCaptureParquetWriter:
                 "clip_index": _int_or_default(message.get("clip_index"), 0),
                 "frame_index": _int_or_default(message.get("frame_index"), len(self._frames)),
                 "reason": str(message.get("reason", "")),
+                "run_name": str(message.get("run_name", "")),
+                "run_kind": str(message.get("run_kind", "")),
             }
         )
 
@@ -219,6 +229,8 @@ class LiveCaptureParquetWriter:
         clip_index: int,
         frame_index: int,
         timestamp_seconds: float,
+        run_name: str,
+        run_kind: str,
     ) -> Iterable[dict[str, Any]]:
         sample = _mapping_or_empty(message.get("sample"))
         devices = message.get("devices")
@@ -236,6 +248,8 @@ class LiveCaptureParquetWriter:
                 "session_id": session_id,
                 "clip_index": clip_index,
                 "frame_index": frame_index,
+                "run_name": run_name,
+                "run_kind": run_kind,
                 "timestamp_seconds": timestamp_seconds,
                 "device_order": device_order,
                 "role": str(device.get("role", "")),
@@ -257,6 +271,8 @@ class LiveCaptureParquetWriter:
         clip_index: int,
         frame_index: int,
         timestamp_seconds: float,
+        run_name: str,
+        run_kind: str,
     ) -> Iterable[dict[str, Any]]:
         joints = estimated_frame.get("joints")
         if not isinstance(joints, Mapping):
@@ -270,6 +286,8 @@ class LiveCaptureParquetWriter:
                 "session_id": session_id,
                 "clip_index": clip_index,
                 "frame_index": frame_index,
+                "run_name": run_name,
+                "run_kind": run_kind,
                 "timestamp_seconds": timestamp_seconds,
                 "joint": str(joint_name),
                 "estimated": bool(joint.get("estimated", True)),

@@ -58,9 +58,11 @@ uv run python -m validation.scripts.build_sparseposer_parquet_cache --cache-dir 
 ```
 
 The SparsePoser cache uses the same canonical wide-Parquet columns and adds
-`dataset=sparseposer_xsens` plus `dataset_split=train|eval`. Keep it
-license-gated for now: the SparsePoser repo and Zenodo metadata disagree between
-CC BY-SA 4.0 and CC BY 4.0. For a fast smoke test, run:
+`dataset=sparseposer_xsens` plus `dataset_split=train|eval`. Licensing is
+settled: J. L. Ponton (UPC-ViRVIG) confirmed over email (2026-07) that the data
+is CC BY 4.0 (no ShareAlike) and open-source weights are an approved use, so the
+training split is unblocked — keep the CC BY attribution in the license log. For
+a fast smoke test, run:
 
 ```powershell
 uv run python -m validation.scripts.build_sparseposer_parquet_cache --splits eval --max-clips 1 --max-frames-per-clip 120 --cache-dir .cache/sparseposer/parquet/smoke --force
@@ -320,6 +322,29 @@ model (HMD, both controllers, and any strap trackers). Keep the device native
 `linear_velocity`/`angular_velocity` channels on — SteamVR poses embed
 photon-time prediction overshoot that only the native velocity exposes.
 
+### In-VR capture director (opt-in)
+
+The live overlay ships an opt-in capture director that walks you through the
+protocol runs from inside the headset, so you don't have to hand-time each clip.
+Enable it with the `capture_director_enabled` export or the `--capture-director`
+cmdline flag; when it is off, free-form capture and the SparsePoser flow are
+unaffected. The director runs an ordered protocol of named runs (idle,
+range_of_motion, sit_stand by default — occlusion is intentionally omitted per
+the decision below) and shows each run's instruction plus the remaining seconds
+in the head-locked prompt during countdown and recording.
+
+After a run's recording finishes, the director enters a `review` gate instead of
+going idle: press the **trigger** to accept the take (advance to the next run) or
+the **grip** button to redo the same run (re-record without advancing). The
+head-locked prompt shows `"<run> done — [trigger] accept · [grip] redo"`. After
+the last run it settles into a terminal `done` state.
+
+Every recorded frame and the per-clip flush message are tagged with the current
+run's `run_name` and `run_kind`, persisted as string columns on the frame,
+device, and joint parquet tables (and in the flush metadata). Legacy captures
+without the director leave both tags empty (`""`), and older parquet without the
+columns still loads.
+
 - **Idle standing (~60 s)** — stand still, arms relaxed then loosely folded.
   This clip anchors sub-mm jitter and low-frequency strap drift, so hold each
   pose long enough for the drift estimator to see a stationary window.
@@ -359,3 +384,20 @@ prediction-overshoot gain, excursion run-length (`excursion_frames`), and drift
 period (`drift_period_seconds`). Load the result with
 `noise_profile_io.config_from_fitted_profile_file` to build a
 `SyntheticTrackerConfig` for synthetic tracker generation.
+
+The fitter accepts repeatable `--run NAME` and `--run-kind KIND` filters that
+restrict which device rows feed the fit against the new `run_name`/`run_kind`
+columns. If a filter is given but the column is absent (legacy parquet), the
+selection is empty and the fitter says so.
+
+**Occlusion-only dropout provenance policy.** The dropout- and excursion-related
+fields — `dropout_probability`, `dropout_mean_run_frames`,
+`dropout_hold_last_probability`, `invalid_confidence`, and
+`excursion_magnitude_m` — are fit **only** from rows whose `run_kind ==
+"occlusion"`. For every other `run_kind`, those specific fields fall back to the
+role prior, because non-occlusion runs do not exercise representative dropout
+geometry. Jitter, drift, velocity, and angular fields still fit from all selected
+rows regardless of kind. When there are no occlusion rows, the summary and the
+per-role provenance report that the dropout fields came from priors. As a
+backward-compat guarantee, parquet with **no** `run_kind` column at all (legacy
+captures) preserves the original behavior and fits dropout from all rows.

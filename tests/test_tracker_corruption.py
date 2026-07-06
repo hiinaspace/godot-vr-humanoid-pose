@@ -5,7 +5,10 @@ from math import cos, sin
 import polars as pl
 from pytest import approx
 
-from validation.scripts.fit_tracker_noise import fit_tracker_noise
+from validation.scripts.fit_tracker_noise import (
+    _apply_run_filters,
+    fit_tracker_noise,
+)
 from validation.vr_pose_validation.geometry import Transform
 from validation.vr_pose_validation.noise_profile_io import (
     FITTED_PROFILE_SCHEMA,
@@ -297,7 +300,13 @@ def test_write_and_load_fitted_profile(tmp_path) -> None:
     assert config.noise_profiles["fitted_head"] == profiles["head"]
 
 
-def _devices_dataframe_from_samples(samples) -> pl.DataFrame:
+def _devices_dataframe_from_samples(
+    samples,
+    *,
+    run_name: str | None = None,
+    run_kind: str | None = None,
+    clip_index: int = 0,
+) -> pl.DataFrame:
     role_to_state = {
         "head": lambda s: s.hmd,
         "left_hand": lambda s: s.left_hand,
@@ -313,27 +322,30 @@ def _devices_dataframe_from_samples(samples) -> pl.DataFrame:
         for role, accessor in role_to_state.items():
             state = accessor(sample)
             kind = state.attachment.noise_profile_id if state.attachment else "controller"
-            rows.append(
-                {
-                    "session_id": "synthetic",
-                    "clip_index": 0,
-                    "frame_index": frame_index,
-                    "timestamp_seconds": sample.timestamp_seconds,
-                    "role": role,
-                    "device_class": class_by_kind.get(kind, "Controller"),
-                    "valid": state.valid,
-                    "confidence": state.confidence,
-                    "device_px": state.transform.position[0],
-                    "device_py": state.transform.position[1],
-                    "device_pz": state.transform.position[2],
-                    "linear_velocity_x": state.linear_velocity[0],
-                    "linear_velocity_y": state.linear_velocity[1],
-                    "linear_velocity_z": state.linear_velocity[2],
-                    "angular_velocity_x": state.angular_velocity[0],
-                    "angular_velocity_y": state.angular_velocity[1],
-                    "angular_velocity_z": state.angular_velocity[2],
-                }
-            )
+            row = {
+                "session_id": "synthetic",
+                "clip_index": clip_index,
+                "frame_index": frame_index,
+                "timestamp_seconds": sample.timestamp_seconds,
+                "role": role,
+                "device_class": class_by_kind.get(kind, "Controller"),
+                "valid": state.valid,
+                "confidence": state.confidence,
+                "device_px": state.transform.position[0],
+                "device_py": state.transform.position[1],
+                "device_pz": state.transform.position[2],
+                "linear_velocity_x": state.linear_velocity[0],
+                "linear_velocity_y": state.linear_velocity[1],
+                "linear_velocity_z": state.linear_velocity[2],
+                "angular_velocity_x": state.angular_velocity[0],
+                "angular_velocity_y": state.angular_velocity[1],
+                "angular_velocity_z": state.angular_velocity[2],
+            }
+            if run_name is not None:
+                row["run_name"] = run_name
+            if run_kind is not None:
+                row["run_kind"] = run_kind
+            rows.append(row)
     return pl.DataFrame(rows)
 
 
@@ -565,6 +577,141 @@ def test_invalid_confidence_recovered_above_half() -> None:
     fitted = fit_tracker_noise(devices, frame_rate_hz=90.0)["roles"]["left_hand"]["profile"]
     assert fitted.invalid_confidence == approx(0.7, abs=0.02)
     assert fitted.dropout_hold_last_probability == approx(0.0, abs=0.05)
+
+
+def _dropout_config(profile: NoiseProfile, seed: int) -> SyntheticTrackerConfig:
+    attachments: dict[TrackerRole, TrackerAttachment] = {
+        "head": TrackerAttachment(role="head", source_joint="head", noise_profile_id="ctrl"),
+        "left_hand": TrackerAttachment(
+            role="left_hand", source_joint="left_hand", noise_profile_id="ctrl"
+        ),
+        "right_hand": TrackerAttachment(
+            role="right_hand", source_joint="right_hand", noise_profile_id="ctrl"
+        ),
+    }
+    return SyntheticTrackerConfig(
+        attachments=attachments,
+        noise_profiles={"ctrl": profile},
+        seed=seed,
+        frame_rate_hz=90.0,
+    )
+
+
+def test_run_filters_restrict_rows() -> None:
+    devices = pl.DataFrame(
+        {
+            "role": ["left_hand", "left_hand", "left_hand"],
+            "run_name": ["idle", "range_of_motion", "idle"],
+            "run_kind": ["idle", "motion", "idle"],
+            "device_px": [0.0, 1.0, 2.0],
+        }
+    )
+
+    by_name = _apply_run_filters(devices, ["idle"], [])
+    assert by_name["device_px"].to_list() == [0.0, 2.0]
+
+    by_kind = _apply_run_filters(devices, [], ["motion"])
+    assert by_kind["device_px"].to_list() == [1.0]
+
+    both = _apply_run_filters(devices, ["idle"], ["motion"])
+    assert both.is_empty()
+
+
+def test_run_filter_missing_column_yields_empty_selection(capsys) -> None:
+    devices = pl.DataFrame({"role": ["left_hand"], "device_px": [0.0]})
+    filtered = _apply_run_filters(devices, ["idle"], [])
+    assert filtered.is_empty()
+    assert "run_name" in capsys.readouterr().out
+
+
+def test_dropout_fit_only_from_occlusion_rows() -> None:
+    # A run with heavy dropout but kind="motion" must NOT feed dropout params;
+    # only the occlusion run does, so the fitted dropout reflects the occlusion
+    # rows despite the motion rows having their own (different) dropout.
+    occlusion_profile = NoiseProfile(
+        position_std_m=0.0,
+        velocity_std_mps=0.0,
+        dropout_probability=0.05,
+        dropout_mean_run_frames=8.0,
+        dropout_hold_last_probability=0.5,
+        invalid_confidence=0.0,
+    )
+    motion_profile = NoiseProfile(
+        position_std_m=0.0,
+        velocity_std_mps=0.0,
+        dropout_probability=0.0,
+    )
+    frames = _walking_frames(6000)
+    occlusion_samples = generate_three_point_samples(
+        frames, _dropout_config(occlusion_profile, seed=11)
+    )
+    motion_samples = generate_three_point_samples(frames, _dropout_config(motion_profile, seed=23))
+    occlusion_devices = _devices_dataframe_from_samples(
+        occlusion_samples, run_name="occlusion", run_kind="occlusion", clip_index=0
+    )
+    motion_devices = _devices_dataframe_from_samples(
+        motion_samples, run_name="range_of_motion", run_kind="motion", clip_index=1
+    )
+    devices = pl.concat([occlusion_devices, motion_devices])
+
+    entry = fit_tracker_noise(devices, frame_rate_hz=90.0)["roles"]["left_hand"]
+    fitted = entry["profile"]
+
+    assert not entry["dropout_from_priors"]
+    assert fitted.dropout_probability == approx(0.05, rel=0.4)
+    assert fitted.dropout_mean_run_frames == approx(8.0, rel=0.4)
+    # Motion rows contributed zero dropout; if they leaked in, run count would be
+    # unchanged but p_onset would drop toward half. Occlusion-only keeps it near.
+    assert fitted.dropout_probability > 0.02
+
+
+def test_dropout_falls_back_to_priors_without_occlusion_rows() -> None:
+    profile = NoiseProfile(
+        position_std_m=0.0,
+        velocity_std_mps=0.0,
+        dropout_probability=0.05,
+        dropout_mean_run_frames=8.0,
+        invalid_confidence=0.0,
+    )
+    frames = _walking_frames(4000)
+    samples = generate_three_point_samples(frames, _dropout_config(profile, seed=11))
+    devices = _devices_dataframe_from_samples(
+        samples, run_name="range_of_motion", run_kind="motion"
+    )
+
+    entry = fit_tracker_noise(devices, frame_rate_hz=90.0)["roles"]["left_hand"]
+    fitted = entry["profile"]
+    prior = role_default_profile("left_hand", device_kind=CONTROLLER_KIND)
+
+    assert entry["dropout_from_priors"]
+    assert fitted.dropout_probability == prior.dropout_probability
+    assert fitted.dropout_mean_run_frames == prior.dropout_mean_run_frames
+    assert fitted.excursion_magnitude_m == prior.excursion_magnitude_m
+    assert "dropout_probability" in entry["unfitted_fields"]
+    assert "excursion_magnitude_m" in entry["unfitted_fields"]
+
+
+def test_legacy_no_run_kind_column_fits_dropout_from_all_rows() -> None:
+    profile = NoiseProfile(
+        position_std_m=0.0,
+        velocity_std_mps=0.0,
+        dropout_probability=0.05,
+        dropout_mean_run_frames=8.0,
+        dropout_hold_last_probability=0.5,
+        invalid_confidence=0.0,
+    )
+    frames = _walking_frames(6000)
+    samples = generate_three_point_samples(frames, _dropout_config(profile, seed=11))
+    devices = _devices_dataframe_from_samples(samples)
+    assert "run_kind" not in devices.columns
+
+    entry = fit_tracker_noise(devices, frame_rate_hz=90.0)["roles"]["left_hand"]
+    fitted = entry["profile"]
+
+    assert not entry["dropout_from_priors"]
+    assert fitted.dropout_probability == approx(0.05, rel=0.4)
+    assert fitted.dropout_mean_run_frames == approx(8.0, rel=0.4)
+    assert "dropout_probability" not in entry["unfitted_fields"]
 
 
 def test_three_point_and_multi_point_agree_on_shared_roles() -> None:

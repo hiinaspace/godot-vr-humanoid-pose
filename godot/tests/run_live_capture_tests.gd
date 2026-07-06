@@ -34,6 +34,9 @@ func _init() -> void:
 	_test_live_debug_frame_flattens_estimator_output()
 	_test_live_debug_bones_use_sparseposer_response_edges()
 	_test_live_sparseposer_calibration_flow_reaches_alignment()
+	_test_live_director_advances_runs_on_accept()
+	_test_live_director_redo_reruns_same_run()
+	_test_live_director_tags_frame_and_flush_with_run()
 	_finish()
 
 
@@ -255,6 +258,81 @@ func _test_live_sparseposer_calibration_flow_reaches_alignment() -> void:
 	_assert_true("sparseposer head alignment", roles.has("head"))
 	_assert_true("sparseposer left hand alignment", roles.has("left_hand"))
 	_assert_true("sparseposer right hand alignment", roles.has("right_hand"))
+	overlay.free()
+
+
+func _test_live_director_advances_runs_on_accept() -> void:
+	var overlay = LiveOverlayDebug.new()
+	overlay.capture_director_enabled = true
+	var run_count = overlay.CAPTURE_PROTOCOL.size()
+	_assert_true("director has runs", run_count >= 3)
+
+	# Recording the first run ends in review (not complete) when director is on.
+	overlay._capture_phase = "recording"
+	overlay._phase_remaining_s = 0.0
+	overlay._update_timed_capture_phase(0.0, "review")
+	_assert_eq("recording ends in review", overlay._capture_phase, "review")
+	_assert_eq("review keeps run pointer", overlay._run_index, 0)
+
+	# Accept advances to the next run and returns to the ready/idle state.
+	overlay._update_review_capture_state(true, false)
+	_assert_eq("accept advances run", overlay._run_index, 1)
+	_assert_eq("accept returns to idle", overlay._capture_phase, "idle")
+
+	# Walk the remaining runs to reach the terminal done state.
+	for _i in range(1, run_count):
+		overlay._capture_phase = "review"
+		overlay._requires_trigger_release = false
+		overlay._update_review_capture_state(true, false)
+	_assert_eq("last accept advances past end", overlay._run_index, run_count)
+	_assert_eq("director reaches done", overlay._capture_phase, "done")
+	overlay.free()
+
+
+func _test_live_director_redo_reruns_same_run() -> void:
+	var overlay = LiveOverlayDebug.new()
+	overlay.capture_director_enabled = true
+	overlay._run_index = 1
+	overlay._clip_index = 5
+	overlay._capture_phase = "review"
+	overlay._requires_trigger_release = false
+	overlay._requires_redo_release = false
+
+	overlay._update_review_capture_state(false, true)
+
+	_assert_eq("redo keeps run pointer", overlay._run_index, 1)
+	_assert_eq("redo re-enters settle", overlay._capture_phase, "settle")
+	_assert_eq("redo advances clip index", overlay._clip_index, 6)
+	overlay.free()
+
+
+func _test_live_director_tags_frame_and_flush_with_run() -> void:
+	var overlay = LiveOverlayDebug.new()
+	overlay.capture_director_enabled = true
+	overlay._run_index = 2
+	var run = overlay.CAPTURE_PROTOCOL[2]
+
+	_assert_eq("director run name", overlay._current_run_name(), str(run["name"]))
+	_assert_eq("director run kind", overlay._current_run_kind(), str(run["kind"]))
+
+	var client = StreamClient.new()
+	var frame_message = client.build_frame_message(
+		"s", 0, 1.0, {}, {}, {}, {}, [], "standing", null, 3,
+		overlay._current_run_name(), overlay._current_run_kind()
+	)
+	_assert_eq("frame run name", frame_message["run_name"], str(run["name"]))
+	_assert_eq("frame run kind", frame_message["run_kind"], str(run["kind"]))
+
+	var flush_message = client.build_flush_message(
+		"s", 3, 12, "clip_complete", overlay._current_run_name(), overlay._current_run_kind()
+	)
+	_assert_eq("flush run name", flush_message["run_name"], str(run["name"]))
+	_assert_eq("flush run kind", flush_message["run_kind"], str(run["kind"]))
+
+	# Director disabled -> empty tags, backward compatible.
+	overlay.capture_director_enabled = false
+	_assert_eq("disabled run name empty", overlay._current_run_name(), "")
+	_assert_eq("disabled run kind empty", overlay._current_run_kind(), "")
 	overlay.free()
 
 

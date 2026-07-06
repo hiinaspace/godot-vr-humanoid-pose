@@ -47,6 +47,55 @@ def test_live_capture_writer_splits_frames_devices_and_joints(tmp_path) -> None:
     assert joints["joint_py"].to_list() == [1.6, 1.0]
 
 
+def test_live_capture_writer_persists_run_name_and_kind(tmp_path) -> None:
+    writer = LiveCaptureParquetWriter(tmp_path, session_id="run-tags")
+    message = _frame_message(frame_index=0, timestamp_seconds=1.0)
+    message["run_name"] = "range_of_motion"
+    message["run_kind"] = "motion"
+    writer.append_message(message)
+    writer.append_message(
+        {
+            "format": CAPTURE_FORMAT,
+            "type": "flush",
+            "session_id": "run-tags",
+            "clip_index": 2,
+            "frame_index": 1,
+            "reason": "clip_complete",
+            "run_name": "range_of_motion",
+            "run_kind": "motion",
+        }
+    )
+
+    frames = pl.read_parquet(writer.paths.frames_path)
+    devices = pl.read_parquet(writer.paths.devices_path)
+    joints = pl.read_parquet(writer.paths.joints_path)
+    metadata = json.loads(writer.paths.session_metadata_path.read_text(encoding="utf-8"))
+
+    assert frames["run_name"].to_list() == ["range_of_motion"]
+    assert frames["run_kind"].to_list() == ["motion"]
+    assert devices["run_name"].unique().to_list() == ["range_of_motion"]
+    assert devices["run_kind"].unique().to_list() == ["motion"]
+    assert joints["run_name"].unique().to_list() == ["range_of_motion"]
+    assert joints["run_kind"].unique().to_list() == ["motion"]
+    assert metadata["flushes"][0]["run_name"] == "range_of_motion"
+    assert metadata["flushes"][0]["run_kind"] == "motion"
+
+
+def test_live_capture_legacy_message_without_run_tags_still_loads(tmp_path) -> None:
+    writer = LiveCaptureParquetWriter(tmp_path, session_id="legacy-run")
+    message = _frame_message(frame_index=0, timestamp_seconds=1.0)
+    assert "run_name" not in message
+
+    writer.append_message(message)
+    summary = writer.flush()
+
+    frames = pl.read_parquet(summary.session_dir / "frames.parquet")
+    devices = pl.read_parquet(summary.session_dir / "devices.parquet")
+    assert frames["run_name"].to_list() == [""]
+    assert frames["run_kind"].to_list() == [""]
+    assert devices["run_name"].unique().to_list() == [""]
+
+
 def test_live_capture_ndjson_records_sample_devices_when_devices_are_omitted(tmp_path) -> None:
     writer = LiveCaptureParquetWriter(tmp_path, session_id="sample-devices")
     message = _frame_message(frame_index=0, timestamp_seconds=0.0)
