@@ -329,10 +329,16 @@ photon-time prediction overshoot that only the native velocity exposes.
 - **Sit / stand transitions (~45 s)** — repeated sit down, settle, stand up at
   a normal desk/chair. Captures occlusion around the hips/legs and the
   reacquisition excursion when trackers come back into view.
-- **Controllers occluded (~45 s)** — deliberately hide the controllers behind
-  your back and holster them at your hip for a few seconds at a time. This is
-  the >19 cm dropout mode: it drives dropout run-length, the hold-last vs
-  invalid-confidence split, and the reacquisition excursion.
+- **Controllers occluded (deferred — needs an inside-out rig)** — the >19 cm
+  dropout mode that drives dropout run-length, the hold-last vs
+  invalid-confidence split, and the reacquisition excursion. On a Lighthouse
+  setup with rear basestation coverage this cannot be reproduced representatively
+  (blanket-occluding the controllers yields dropout with different geometry and
+  duration than the headset-camera occlusion the target audience actually hits).
+  **Decision 2026-07: skip this as fit data.** Dropout and excursion parameters
+  stay on the literature-informed role priors until captured on an inside-out
+  (Quest-class) headset. When that capture happens, record it as a dedicated
+  `occlusion`-kind run so the fitter attributes dropout only to that run.
 
 Fit a profile from one or more recorded session directories:
 
