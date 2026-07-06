@@ -17,11 +17,12 @@ Adopted, with verified licenses (rationale in `RESEARCH_REEVAL-2026-07.md`):
 - **Own VR capture** — the VR-telemetry source of record; also the only
   source for fitting the tracker corruption model. Seated desk sessions are
   uniquely cheap to self-capture and feed the seated-decoder milestone.
-- **SparsePoser Xsens corpus** (~9.8 h, Zenodo 8427980) — CC BY 4.0 per
-  Zenodo metadata vs CC BY-SA per repo LICENSE_data; taking it under CC BY
-  via the Zenodo channel is defensible, and a confirmation email to
-  UPC-ViRVIG (J. L. Ponton) is the pending action to make it clean. Training
-  split stays license-gated until then.
+- **SparsePoser Xsens corpus** (~9.8 h, Zenodo 8427980) — CC BY 4.0,
+  **confirmed by J. L. Ponton (UPC-ViRVIG) via email 2026-07**: CC BY, no
+  ShareAlike, and open-source weights/library are an explicitly approved use.
+  The prior Zenodo-vs-`LICENSE_data` (CC BY-SA) ambiguity is resolved in
+  favor of CC BY. Training split is unblocked; attribution required, no SA
+  obligation on derived weights.
 - **Kimodo-SOMA-RP-v1.1** — synthetic-data engine (see Synthetic Augmentation
   below). SOMA variants only; Kimodo-SMPLX-RP is research-only.
 - **100STYLE** — CC BY 4.0, 4M+ frames, 100 locomotion styles; feeds both

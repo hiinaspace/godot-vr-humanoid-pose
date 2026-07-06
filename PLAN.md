@@ -267,11 +267,10 @@ Adopt (verified licenses; details and caveats in
   extra Vive trackers worn during normal VR use. Seated desk sessions are
   uniquely cheap to self-capture and feed the seated milestone.
 - **SparsePoser Xsens corpus** — the only commercially-usable VR-native GT
-  corpus found (~9.8 h). Zenodo metadata says CC BY 4.0; the repo's
-  LICENSE_data says CC BY-SA. Dual-license analysis favors CC BY via the
-  Zenodo channel; **action: one confirmation email to UPC-ViRVIG (J. L.
-  Ponton) converts "defensible" to "clean."** Until then keep the training
-  split license-gated as implemented.
+  corpus found (~9.8 h). **License resolved 2026-07: CC BY 4.0, confirmed by
+  J. L. Ponton (UPC-ViRVIG) over email** — CC BY, no ShareAlike, open-source
+  weights/library an approved use. The training split is unblocked;
+  attribution required, no SA obligation on derived weights.
 - **Kimodo-SOMA-RP-v1.1** — synthetic-data engine for VR-style motion
   ("seated, gesturing while talking") to attack the CMU distribution-shift
   problem. SOMA variants only.
@@ -363,8 +362,10 @@ frequency bands, worst-clip tables, distribution plots) is implemented; see
    and chair-plane estimate are a stretch follow-on.
 6. **Motion-matching A/B**: 100STYLE + BSD-2 LMM controller vs the procedural
    gait planner on the locomotion eval set (joystick + roomscale).
-7. **Send the UPC-ViRVIG email** (SparsePoser CC BY confirmation) — can go
-   out immediately, independent of everything else. The BONES-SEED email is
+7. **UPC-ViRVIG email — done (2026-07).** Ponton confirmed SparsePoser Xsens
+   is CC BY (no SA) and open-source weights/library an approved use; training
+   split unblocked. This also opens a domain-expert channel for well-scoped
+   model-design questions (see Open Questions). The BONES-SEED email remains
    deprioritized (see Data Policy).
 
 Cross-cutting, start alongside milestone 1: the 1€ filter swap and the

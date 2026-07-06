@@ -25,12 +25,12 @@ implementation-reference level.
   SMPL/SMPL-X model/software downloads remain under non-commercial research
   licenses. A transient SMPL-body interchange layer may be acceptable; training
   commercial-bound models with the full model/software still needs review.
-- SparsePoser's public Xsens dataset is much closer to VR usage than CMU. Its
-  license metadata is inconsistent between Zenodo (CC BY 4.0) and the GitHub
-  repo's LICENSE_data (CC BY-SA 4.0); the 2026-07 review concluded taking it
-  under CC BY via the Zenodo distribution channel is defensible, with a
-  confirmation email to the UPC-ViRVIG authors as the pending action. Keep
-  the training split license-gated until that email is answered.
+- SparsePoser's public Xsens dataset is much closer to VR usage than CMU.
+  **License resolved 2026-07: J. L. Ponton (UPC-ViRVIG) confirmed CC BY (no
+  ShareAlike) over email, and that open-source weights/library are an approved
+  use.** The earlier Zenodo-vs-`LICENSE_data` ambiguity is settled in favor of
+  CC BY; the training split is unblocked (attribution required, no SA on
+  derived weights).
 - The immediate product case is 3-point VR tracking: HMD plus left/right hands.
   Extra trackers in live capture are useful as withheld ground truth, not as
   required estimator inputs.
@@ -102,9 +102,10 @@ License/status caveats:
   the data under CC BY. Even worst-case BY-SA, current authority (CC's 2025
   guidance; Getty v. Stability UK) says trained weights are likely not
   adaptations — the SA exposure is contractual and survivable, unlike NC.
-- Pending action (PLAN.md milestone 7): confirmation email to the UPC-ViRVIG
-  authors (J. L. Ponton). Until answered, keep the training split
-  license-gated as implemented.
+- **Resolved 2026-07 (PLAN.md milestone 7): J. L. Ponton (UPC-ViRVIG)
+  confirmed CC BY, no ShareAlike, open-source weights/library approved.** The
+  training split is unblocked; the license gate below is now lifted for
+  committed artifacts (keep attribution in the license log).
 
 Importer status:
 
@@ -121,9 +122,9 @@ Importer status:
    Its generated BVH outputs can be converted back into our canonical cache with
    `--input-dir`, then compared against the reference cache with
    `validation.scripts.run_pose_cache_comparison`.
-5. Keep the default training split license-gated: enable local experiments, but
-   do not mix this data into committed model artifacts until the license policy
-   is settled.
+5. Training split unblocked (license settled 2026-07, see caveats above): the
+   data may now feed committed model artifacts. Keep SparsePoser/Xsens
+   attribution in the license log; no ShareAlike obligation on derived weights.
 
 SparsePoser weights benchmark:
 
