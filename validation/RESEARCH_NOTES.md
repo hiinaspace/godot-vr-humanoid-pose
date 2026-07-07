@@ -281,6 +281,81 @@ Implementation implication:
 - Metrics should include hand target error, elbow position error, elbow swivel
   error, elbow side-flip rate, and upper-body MPJPE.
 
+## Cross-Method Read: Augmentation, Spine, Heading (2026-07)
+
+A focused read of the local reference code (SparsePoser, EgoPoser, AvatarPoser,
+DivaTrack, LGSIK-Poser, SSR-HMR, VRArmIK, MANIKIN) plus a transient clone of
+DragPoser, run to ground three open forks and to scope questions for the
+UPC-ViRVIG domain-expert channel. Findings are code-grounded; the residual
+judgment calls are collected as Open Questions in `PLAN.md`.
+
+- **Sim-to-real tracker noise (augmentation fork).** None of the read methods
+  inject fitted or stochastic positional/rotational tracker noise in training —
+  all train on clean mocap. The only input corruption anyone trains with is
+  structured *dropout*: EgoPoser's deterministic field-of-view hand masking (zero
+  the hand channels when the wrist leaves a modeled camera frustum; optional, on
+  only in its `handtracking` configs), with FLAG's stochastic Bernoulli hand
+  masking as the cited precedent. EgoPoser's ablation reports realistic FoV
+  masking beating uniform-random masking, and its authors explicitly argue
+  against generic augmentation ("impossible to cover the entire infinite
+  3-space"). SparsePoser handles real hardware entirely with rigid T-pose
+  calibration at inference, no learned noise model. Implication: the field's
+  sim-to-real answer is architectural + structured-dropout, not data-level
+  jitter; our fitted-from-real-logs corruption model (esp. dropout run-length /
+  hold-last) is under-explored, and if used as augmentation should favor the
+  structured occlusion terms over generic jitter. See "Tracker Attachment Drift
+  And Sensor Denoising".
+
+- **Spine / shoulders: analytic vs learned (6-point upper-body fork).** VRArmIK
+  is the only fully-analytic method and has no spine at all — the torso is welded
+  below the head, shoulder yaw is the hands-averaged direction clamped to ±80° of
+  head yaw. Every learned method regresses spine/shoulder *orientation*; where
+  analytic components survive they only recover *position* via FK, never
+  chest/shoulder orientation. SparsePoser generates the spine purely learned and
+  refines shoulders/clavicles with a learned per-limb IK MLP (not analytic). The
+  one direct ablation (LGSIK "noIK") shows the learned upper-body refinement
+  helps but only modestly (~0.1 cm). No source runs the clean experiment —
+  waist-tracked analytic spine vs learned spine, error decomposed by chest lean
+  and head-vs-neck twist. A learned upper-body residual is thus consistent with
+  the field, and the DoF argument (chest lean + neck twist stay underdetermined
+  from endpoints even with head+hips) supports keeping it, but its magnitude of
+  benefit given a waist tracker is unproven. See "Upper Body IK".
+
+- **Torso heading / hip-yaw (dual-frame heuristic fork).** Three families:
+  observe it (waist tracker — the most effective lever; it largely dissolves the
+  ambiguity), learn it implicitly from temporal history (SparsePoser: 64-frame
+  temporal conv, no RNN, plus a physical hips tracker as input; AvatarPoser
+  Stabilizer; LGSIK LSTM), or an explicit heading heuristic. Only VRArmIK and
+  DivaTrack use an explicit heuristic — and DivaTrack independently arrived at our
+  dual-reference-frame design (head-forward frame vs velocity-direction frame)
+  but *learns* the blend weight via a Transformer rather than hand-tuning it.
+  DragPoser (Ponton's newer, genuinely no-pelvis system; SparsePoser always has a
+  hips tracker) coded an explicit head-hips-forward heading loss plus feet-floor
+  and colinearity losses, then shipped with all of them disabled in favor of the
+  learned temporal prior; its per-tracker configs drop the temporal-prior weight
+  (0.15→0.02) and lookahead (16→0) as trackers go 3→6. Static-pose heading drift
+  is unmeasured across the entire literature — every temporal prior is trained on
+  moving data. Implication: our heuristic is a known-good idea, not idiosyncratic;
+  the 6-point waist tracker makes it much less load-bearing; the open fork is
+  learn-the-blend vs hand-tune, and static behavior is the one thing no code can
+  settle. See "Global Orientation And Torso".
+
+**Domain-expert questions (UPC-ViRVIG channel).** Distilled to what is
+design-judgment or unobservable-from-code, SparsePoser/DragPoser specific:
+
+1. Static-pose heading — does hip/torso heading stay locked when the user stands
+   still and only turns their head, or follow/wobble; was it ever measured?
+2. DragPoser's disabled heading-loss family — did the learned temporal prior
+   strictly dominate, or did the heuristics cause artifacts; was the 3-tracker
+   `lambda_temporal`/lookahead gradient tuned mainly against pelvis-yaw ambiguity?
+3. SparsePoser learned vs analytic spine — was a cheap analytic spine
+   (interpolated twist between pelvis and head) ever tried as a baseline; how
+   much of the learned spine's benefit is orientation accuracy vs end-effector
+   position fitting?
+4. Clean-training sim-to-real — was the T-pose calibration load-bearing on the
+   Vive, or did the temporal window smooth over tracker noise; did controller
+   dropout cause visible failures?
+
 ## Learned Temporal-Skeleton Architecture
 
 The project has moved from "classical Basis port plus small residuals" toward a

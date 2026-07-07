@@ -374,6 +374,24 @@ report against).
 
 ## Open Questions
 
+Three model-design forks scoped by the 2026-07 cross-method code read (evidence
+and citations in `validation/RESEARCH_NOTES.md`, "Cross-Method Read: Augmentation,
+Spine, Heading"); pending domain-expert input on the UPC-ViRVIG channel:
+
+- **Augmentation policy.** Whether to feed the fitted tracker-corruption model in
+  as training-time augmentation, and which terms. The read favors the structured
+  dropout/occlusion terms (realistic > uniform; the field trains no positional
+  jitter) and treating generic jitter as skippable; fitted-from-real dropout is
+  under-explored. Open: whether clean-training + calibration already suffices.
+- **6-point upper body.** Whether to extend the learned upper-body residual to
+  the 6-point case or drop to analytic once a waist tracker constrains the pelvis.
+  The chest-lean / head-vs-neck-twist DoF argument supports keeping the residual,
+  but no waist-tracked analytic-vs-learned experiment exists to size the benefit.
+- **Torso heading.** Keep/refine the dual-frame heading heuristic vs replace it
+  with a learned blend. DivaTrack learns the blend; DragPoser dropped explicit
+  heading for a learned prior; a waist tracker reduces the heuristic's load.
+  Static-pose drift (unmeasured anywhere) is the deciding unknown.
+
 - Whether the first Godot integration should be direct `SkeletonModifier3D`
   only, or also publish `XRBodyTracker` from the start.
 - Which Godot version is the minimum target once the newer humanoid modifier
