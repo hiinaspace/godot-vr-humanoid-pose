@@ -597,6 +597,34 @@ def _dropout_config(profile: NoiseProfile, seed: int) -> SyntheticTrackerConfig:
     )
 
 
+def test_fitter_tolerates_null_position_dropout_rows() -> None:
+    # Real captures stream a null position on dropout frames (valid=False). The
+    # jitter/drift windowed mean must skip those instead of feeding a None into
+    # fmean, which used to crash the whole fit.
+    n = 200
+    px = [0.0 if i % 40 else None for i in range(n)]
+    py = [1.2 if i % 40 else None for i in range(n)]
+    pz = [-0.2 if i % 40 else None for i in range(n)]
+    valid = [i % 40 != 0 for i in range(n)]
+    devices = pl.DataFrame(
+        {
+            "session_id": ["synthetic"] * n,
+            "clip_index": [0] * n,
+            "frame_index": list(range(n)),
+            "role": ["left_hand"] * n,
+            "device_class": ["Controller"] * n,
+            "valid": valid,
+            "confidence": [1.0 if v else 0.0 for v in valid],
+            "device_px": px,
+            "device_py": py,
+            "device_pz": pz,
+        }
+    )
+
+    result = fit_tracker_noise(devices, frame_rate_hz=90.0)
+    assert "left_hand" in result["roles"]
+
+
 def test_run_filters_restrict_rows() -> None:
     devices = pl.DataFrame(
         {
@@ -712,6 +740,84 @@ def test_legacy_no_run_kind_column_fits_dropout_from_all_rows() -> None:
     assert fitted.dropout_probability == approx(0.05, rel=0.4)
     assert fitted.dropout_mean_run_frames == approx(8.0, rel=0.4)
     assert "dropout_probability" not in entry["unfitted_fields"]
+
+
+def _static_frames(n: int) -> list[dict[str, Transform]]:
+    return [
+        {
+            "head": Transform(position=(0.0, 1.6, 0.0)),
+            "left_hand": Transform(position=(-0.3, 1.2, -0.2)),
+            "right_hand": Transform(position=(0.3, 1.2, -0.2)),
+        }
+        for _ in range(n)
+    ]
+
+
+def _jitter_config(position_std_m: float, seed: int) -> SyntheticTrackerConfig:
+    profile = NoiseProfile(
+        position_std_m=position_std_m, velocity_std_mps=0.0, dropout_probability=0.0
+    )
+    attachments: dict[TrackerRole, TrackerAttachment] = {
+        role: TrackerAttachment(role=role, source_joint=role, noise_profile_id="p")
+        for role in ("head", "left_hand", "right_hand")
+    }
+    return SyntheticTrackerConfig(
+        attachments=attachments, noise_profiles={"p": profile}, seed=seed, frame_rate_hz=90.0
+    )
+
+
+def test_stationary_noise_fit_only_from_idle_rows() -> None:
+    # An idle run with small jitter and a motion-kind run with 20x jitter, both
+    # over a static pose. Only the idle run may feed jitter, so the fit lands in
+    # the idle regime rather than being pulled up by the motion rows.
+    frames = _static_frames(3000)
+    idle = _devices_dataframe_from_samples(
+        generate_three_point_samples(frames, _jitter_config(0.001, 5)),
+        run_name="idle",
+        run_kind="idle",
+        clip_index=0,
+    )
+    motion = _devices_dataframe_from_samples(
+        generate_three_point_samples(frames, _jitter_config(0.02, 9)),
+        run_name="range_of_motion",
+        run_kind="motion",
+        clip_index=1,
+    )
+    entry = fit_tracker_noise(pl.concat([idle, motion]), frame_rate_hz=90.0)["roles"]["left_hand"]
+
+    assert not entry["stationary_from_priors"]
+    # Idle sigma ~0.001; a leak of the 0.02 motion rows would push this well past 0.005.
+    assert entry["profile"].position_std_m < 0.005
+
+
+def test_stationary_falls_back_to_priors_without_idle_rows() -> None:
+    samples = generate_three_point_samples(_static_frames(3000), _jitter_config(0.02, 9))
+    devices = _devices_dataframe_from_samples(
+        samples, run_name="range_of_motion", run_kind="motion"
+    )
+
+    entry = fit_tracker_noise(devices, frame_rate_hz=90.0)["roles"]["left_hand"]
+    prior = role_default_profile("left_hand", device_kind=CONTROLLER_KIND)
+
+    assert entry["stationary_from_priors"]
+    assert entry["profile"].position_std_m == prior.position_std_m
+    assert entry["profile"].velocity_std_mps == prior.velocity_std_mps
+    assert "position_std_m" in entry["unfitted_fields"]
+    assert "velocity_std_mps" in entry["unfitted_fields"]
+
+
+def test_base_station_role_excluded_from_fit() -> None:
+    devices = pl.DataFrame(
+        {
+            "role": ["tracking_reference", "left_hand"],
+            "device_px": [0.0, 0.0],
+            "device_py": [0.0, 1.2],
+            "device_pz": [0.0, -0.2],
+        }
+    )
+    result = fit_tracker_noise(devices, frame_rate_hz=90.0)
+    assert "tracking_reference" not in result["roles"]
+    assert "left_hand" in result["roles"]
 
 
 def test_three_point_and_multi_point_agree_on_shared_roles() -> None:

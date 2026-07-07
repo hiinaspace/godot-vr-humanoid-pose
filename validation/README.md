@@ -390,14 +390,31 @@ restrict which device rows feed the fit against the new `run_name`/`run_kind`
 columns. If a filter is given but the column is absent (legacy parquet), the
 selection is empty and the fitter says so.
 
-**Occlusion-only dropout provenance policy.** The dropout- and excursion-related
-fields — `dropout_probability`, `dropout_mean_run_frames`,
-`dropout_hold_last_probability`, `invalid_confidence`, and
-`excursion_magnitude_m` — are fit **only** from rows whose `run_kind ==
-"occlusion"`. For every other `run_kind`, those specific fields fall back to the
-role prior, because non-occlusion runs do not exercise representative dropout
-geometry. Jitter, drift, velocity, and angular fields still fit from all selected
-rows regardless of kind. When there are no occlusion rows, the summary and the
-per-role provenance report that the dropout fields came from priors. As a
-backward-compat guarantee, parquet with **no** `run_kind` column at all (legacy
-captures) preserves the original behavior and fits dropout from all rows.
+**Run-kind provenance policy.** Each parameter is fit only from the run whose
+motion exercises it representatively:
+
+- **Dropout/excursion** — `dropout_probability`, `dropout_mean_run_frames`,
+  `dropout_hold_last_probability`, `invalid_confidence`, `excursion_magnitude_m`
+  — fit **only** from `run_kind == "occlusion"` rows.
+- **Stationary noise** — `position_std_m` (jitter), `drift_amplitude_m`,
+  `velocity_std_mps`, `angular_velocity_std_radps` — fit **only** from
+  `run_kind == "idle"` rows. Pooling motion runs folds real body motion into
+  these terms and inflates the fitted jitter/velocity by an order of magnitude
+  (a mostly-motion session reads ~20 mm "jitter" where the idle run alone reads
+  the true sub-mm sensor value).
+
+When a role has no rows of the required kind, those specific fields fall back to
+the role prior and the summary flags it (`[from priors: no occlusion rows]` /
+`[from priors: no idle rows]`). Parquet with **no** `run_kind` column (legacy
+captures) preserves the original behavior and fits every field from all rows.
+
+**Caveat — drift.** The idle protocol above ("arms at sides, then loosely
+folded") deliberately repositions the arms, so the fitted `drift_amplitude_m`
+for the hands captures that real slow motion, not sensor drift. Isolating true
+drift needs a "hold completely still" window in the idle run; until then, treat
+the fitted hand drift as an overestimate.
+
+**Base stations excluded.** Rows with role `tracking_reference` are dropped from
+the fit: they define the tracking origin rather than reporting a tracked pose, so
+they are never a corruption-model attachment and their in-stream jitter/drift is
+zero by construction.

@@ -9,15 +9,25 @@ reported. Parameters that cannot be fit without ground truth (calibration bias,
 latency, prediction overshoot) fall back to the invented role priors and are
 flagged in the summary.
 
-Dropout/excursion provenance policy: the fields dropout_probability,
-dropout_mean_run_frames, dropout_hold_last_probability, invalid_confidence, and
-excursion_magnitude_m are fit only from rows whose ``run_kind == "occlusion"``.
-For any other run_kind the role prior is used for those specific fields, because
-non-occlusion runs do not exercise representative dropout geometry. Jitter,
-drift, velocity, and angular fields still fit from all selected rows regardless
-of kind. Legacy captures with no ``run_kind`` column preserve the original
-behavior (dropout fit from all rows). The ``--run``/``--run-kind`` filters
-restrict which rows feed the fit before this policy is applied.
+Run-kind provenance policy: each parameter is fit only from the run whose motion
+exercises it representatively.
+- Dropout/excursion fields (dropout_probability, dropout_mean_run_frames,
+  dropout_hold_last_probability, invalid_confidence, excursion_magnitude_m) fit
+  only from rows whose ``run_kind == "occlusion"``.
+- Stationary-noise fields (position_std_m, drift_amplitude_m, velocity_std_mps,
+  angular_velocity_std_radps) fit only from rows whose ``run_kind == "idle"``.
+  Pooling motion runs folds real body motion into these terms and inflates the
+  fitted jitter/velocity by an order of magnitude.
+When a role has no rows of the required kind, the invented role prior is used for
+those specific fields and they are flagged in the summary. Legacy captures with
+no ``run_kind`` column preserve the original behavior (every field fit from all
+rows). The ``--run``/``--run-kind`` filters restrict which rows feed the fit
+before this policy is applied.
+
+Base-station rows (role ``tracking_reference``) are excluded: they define the
+tracking origin rather than reporting a tracked pose, so they are never a
+corruption-model attachment and their in-stream jitter/drift is zero by
+construction.
 """
 
 from __future__ import annotations
@@ -56,6 +66,19 @@ OCCLUSION_ONLY_FIELDS = (
     "invalid_confidence",
     "excursion_magnitude_m",
 )
+STATIONARY_RUN_KIND = "idle"
+# Jitter, drift, velocity, and angular noise are only measurable while the body
+# is still; a moving run folds real motion into them. Fit from the idle run and
+# fall back to the role prior when no idle run is present.
+STATIONARY_ONLY_FIELDS = (
+    "position_std_m",
+    "drift_amplitude_m",
+    "velocity_std_mps",
+    "angular_velocity_std_radps",
+)
+# Base stations define the tracking origin; they are not a corruption-model
+# attachment role and their in-stream pose is static by construction.
+EXCLUDED_ROLES = frozenset({"tracking_reference"})
 UNFITTABLE_FIELDS = (
     "calibration_bias_std_m",
     "latency_frames",
@@ -184,6 +207,8 @@ def fit_tracker_noise(
         return {"roles": roles, "frame_rate_hz": frame_rate_hz}
 
     for role in sorted(str(role) for role in devices["role"].unique() if role):
+        if role in EXCLUDED_ROLES:
+            continue
         role_rows = devices.filter(pl.col("role") == role)
         entry = _fit_role(role, role_rows, frame_rate_hz)
         if entry is not None:
@@ -198,24 +223,26 @@ def _fit_role(role: str, rows: pl.DataFrame, frame_rate_hz: float) -> dict[str, 
     prior = role_default_profile(role, device_kind=kind)
     dt = 1.0 / frame_rate_hz if frame_rate_hz > 0.0 else 0.0
 
-    # Legacy captures without a run_kind column fit dropout/excursion from all
-    # rows; when the column is present only occlusion rows are eligible for those
-    # fields (the rest fall back to the role prior).
+    # Legacy captures without a run_kind column fit every field from all rows.
+    # When the column is present, dropout/excursion fit only from occlusion rows
+    # and stationary noise only from idle rows; the rest fall back to the prior.
     has_run_kind = "run_kind" in rows.columns
     if has_run_kind:
-        dropout_rows = rows.filter(pl.col("run_kind").cast(pl.Utf8) == OCCLUSION_RUN_KIND)
+        run_kind = pl.col("run_kind").cast(pl.Utf8)
+        dropout_rows = rows.filter(run_kind == OCCLUSION_RUN_KIND)
+        stationary_rows = rows.filter(run_kind == STATIONARY_RUN_KIND)
     else:
         dropout_rows = rows
+        stationary_rows = rows
 
-    samples = 0
+    samples = rows.height
     jitter_values: list[float] = []
     drift_values: list[float] = []
     velocity_errors: list[float] = []
     angular_speeds: list[float] = []
 
-    for _, group in _iter_tracks(rows):
+    for _, group in _iter_tracks(stationary_rows):
         positions, valids, _confidences, native_velocities, angular = _track_arrays(group)
-        samples += len(positions)
         _accumulate_jitter_and_drift(positions, valids, dt, jitter_values, drift_values)
         _accumulate_velocity_error(positions, native_velocities, valids, dt, velocity_errors)
         _accumulate_angular(angular, valids, angular_speeds)
@@ -282,15 +309,22 @@ def _fit_role(role: str, rows: pl.DataFrame, frame_rate_hz: float) -> dict[str, 
             angular_speeds, prior.angular_velocity_std_radps
         ),
     )
+    # The stationary accumulators are empty when no idle rows exist, so the
+    # profile already falls back to the prior via _stat; flag it for the summary.
+    stationary_from_priors = has_run_kind and stationary_rows.is_empty()
+
     unfitted_fields = list(UNFITTABLE_FIELDS)
     if dropout_from_priors:
         unfitted_fields.extend(OCCLUSION_ONLY_FIELDS)
+    if stationary_from_priors:
+        unfitted_fields.extend(STATIONARY_ONLY_FIELDS)
     return {
         "profile": profile,
         "samples": samples,
         "dropout_frames": dropout_frames,
         "dropout_runs": total_runs,
         "dropout_from_priors": dropout_from_priors,
+        "stationary_from_priors": stationary_from_priors,
         "sessions": rows["_session_dir"].n_unique() if "_session_dir" in rows.columns else 1,
         "unfitted_fields": unfitted_fields,
     }
@@ -309,7 +343,15 @@ def _device_kind(role: str, rows: pl.DataFrame) -> str:
 
 
 def _iter_tracks(rows: pl.DataFrame):
+    # A track is one physical device's continuous stream. Several devices can
+    # share a role (e.g. two base stations under tracking_reference, or several
+    # uncalibrated straps under generic_tracker); without a per-device key they
+    # interleave frame-by-frame and the finite differences jump between devices,
+    # inflating jitter and velocity into physically impossible values.
+    device_key = next((key for key in ("device_id", "serial_hash") if key in rows.columns), None)
     keys = [key for key in ("_session_dir", "session_id", "clip_index") if key in rows.columns]
+    if device_key:
+        keys.append(device_key)
     sort_keys = keys + (["frame_index"] if "frame_index" in rows.columns else [])
     ordered = rows.sort(sort_keys) if sort_keys else rows
     if not keys:
@@ -436,13 +478,22 @@ def _accumulate_excursion(
     out: list[float],
 ) -> None:
     # Only reacquire (invalid -> valid) adds a measurable excursion: the generator
-    # applies the offset on the first valid frame after a dropout, and invalid
-    # frames hold the last pose. Measuring at onset too would fold ~0-displacement
-    # samples into the mean and halve the fitted magnitude.
-    for index in range(1, len(positions)):
-        reacquire = not valids[index - 1] and valids[index]
-        if reacquire:
-            out.append(_distance(positions[index], positions[index - 1]))
+    # applies the offset on the first valid frame after a dropout. Measure it
+    # against the last *valid* pose before the dropout, not the preceding frame:
+    # real captures stream a null position while invalid (so positions[index - 1]
+    # is None), and even held-last dropouts equal that last valid pose. Measuring
+    # at onset too would fold ~0-displacement samples into the mean and halve the
+    # fitted magnitude.
+    last_valid: tuple[float, float, float] | None = None
+    prev_valid = False
+    for index in range(len(positions)):
+        position = positions[index]
+        usable = valids[index] and position is not None and None not in position
+        if usable:
+            if not prev_valid and last_valid is not None:
+                out.append(_distance(position, last_valid))
+            last_valid = position
+        prev_valid = usable
 
 
 def _accumulate_jitter_and_drift(
@@ -457,18 +508,26 @@ def _accumulate_jitter_and_drift(
     window = min(9, len(positions) // 2 * 2 + 1)
     for axis in range(3):
         series = [positions[i][axis] for i in range(len(positions))]
+        # A frame is usable only when marked valid and carrying a real position.
+        # Dropout frames stream a null (or held-last) position; letting them into
+        # the windowed mean corrupts both the jitter residual and the drift
+        # estimate — and a null trips fmean outright.
+        usable = [valids[i] and series[i] is not None for i in range(len(series))]
         speeds: list[float] = [
-            abs(series[i] - series[i - 1]) / dt if valids[i] and valids[i - 1] else float("inf")
+            abs(series[i] - series[i - 1]) / dt if usable[i] and usable[i - 1] else float("inf")
             for i in range(1, len(series))
         ]
         residuals = []
         low_freq = []
         for i in range(len(series)):
+            if not usable[i]:
+                continue
             lo = max(0, i - window // 2)
             hi = min(len(series), i + window // 2 + 1)
-            local_mean = fmean(series[lo:hi])
-            if not valids[i]:
+            window_values = [series[j] for j in range(lo, hi) if usable[j]]
+            if not window_values:
                 continue
+            local_mean = fmean(window_values)
             if i >= 1 and speeds[i - 1] < IDLE_SPEED_THRESHOLD_MPS:
                 residuals.append(series[i] - local_mean)
                 low_freq.append(local_mean)
@@ -569,10 +628,13 @@ def _print_summary(
             f"hold_last={profile.dropout_hold_last_probability:.2f} "
             f"(runs={entry['dropout_runs']}){dropout_note}"
         )
+        stationary_note = (
+            "  [from priors: no idle rows]" if entry.get("stationary_from_priors") else ""
+        )
         print(
             f"  jitter_std={profile.position_std_m * 1000:.2f} mm "
             f"drift_amp={profile.drift_amplitude_m * 1000:.2f} mm "
-            f"excursion={profile.excursion_magnitude_m * 1000:.1f} mm"
+            f"excursion={profile.excursion_magnitude_m * 1000:.1f} mm{stationary_note}"
         )
         print(
             f"  velocity_std={profile.velocity_std_mps:.3f} m/s "
