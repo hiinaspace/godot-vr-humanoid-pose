@@ -137,8 +137,10 @@ Benchmark results worth remembering:
 
 Local reference checkouts and their roles:
 
-- `S:\code\Basis` — closest open-source implementation to the desired
-  procedural behavior; MIT. Virtual spine, foot placement, full-body IK.
+- `S:\code\Basis` ([BasisVR/Basis](https://github.com/BasisVR/Basis)) — closest
+  open-source implementation to the desired procedural behavior; MIT. Virtual
+  spine, foot placement, full-body IK. The in-repo procedural solver is named
+  after it.
 - `.cache/references/LGSIK-Poser` — MIT code; the grouped-partition
   architecture template (grouped LSTMs, masked skeleton graph convolution,
   partition IK refinement heads with sparse-input skips, anthropometric

@@ -37,7 +37,9 @@ is perceptually visible: upper body, torso facing, and transitions.
 
 - **Procedural "Basis" solver** — calibration, virtual spine/hips, two-bone arms
   with swivel strategies, and a sticky-feet gait planner. The always-available
-  baseline and correctness floor.
+  baseline and correctness floor. Named after and modeled on the procedural
+  avatar posing in [Basis](https://github.com/BasisVR/Basis) (MIT), an
+  open-source social-VR platform.
 - **Learned upper-body residual** — a small causal model (GRU/TCN/MLP variants)
   over sparse tracker windows, decoded through a differentiable, MANIKIN-style
   runtime layer (torso heading/lean, shoulder offsets, elbow swivel) on top of
@@ -64,6 +66,10 @@ use. It also draws ideas from AvatarPoser, EgoPoser, MANIKIN (ETH Zürich SIPLab
 SSR-HMR, and VRArmIK. See [`validation/RESEARCH_NOTES.md`](validation/RESEARCH_NOTES.md)
 for the implementation-reference notes and a cross-method read of how each handles
 tracker noise, spine/shoulder inference, and torso-heading ambiguity.
+
+The procedural baseline solver is named after and modeled on
+[Basis](https://github.com/BasisVR/Basis) (MIT), an open-source social-VR
+platform, used here as a ToS-safe open proxy for social-VR avatar behavior.
 
 ## Data and licensing stance
 
