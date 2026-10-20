@@ -119,3 +119,57 @@ frames. Xsens source pinned: Zenodo record 8427980 revision 1 (modified 2023-10-
    Basis lower-body and p95 on `xsens_val`.
 5. Leg rest directions differ by 15-20 degrees between CMU and Xsens; upper-body ones agree within
    ~8 degrees. Joint-rotation targets for lower body are therefore not cross-dataset canonical.
+
+## Round 2: oracle-v2, canonical retarget, HMD-Poser-design E1 (tag `oracle-v2`)
+
+Builder: Claude Sonnet 5.5 (`claude-sonnet-5-5`). Owner-judged property (round): an HMD-Poser-design model trained only on
+CMU + SparsePoser Xsens train beats Basis on the held-out validation sets on MPJPE-upper and MPJPE-lower without exceeding
+1.5x GT jitter, evaluated through the frozen oracle. Strike counter: none.
+
+Built: `oracle_v2.py` (imports v1, adds columns only; LOCK.md updated, `eval.py` defaults to `--oracle v2`, `--ckpt` for
+models), `rest.py` (canonical rest directions, dataset->canonical rotation retarget, mirror, forearm probe), `train.py`
+(743 lines: data, hmdposer + avatarposer, loss, resumable loop, MLflow experiment `sprint-2026-10`, selftest/overfit gates),
+`baselines.py` gains `gt_canon`, `report_e1.py`, `tests/test_sprint_round2.py` (6 tests).
+
+### Design choices
+* Canonical rest dirs = left/right-symmetrised mean of the two dataset templates. Rotation target = dataset incoming-bone
+  rotation times the constant swing P_j (canonical -> dataset rest dir), then a per-frame swing fix so bone directions are exact;
+  twist is inherited. Root keeps the dataset orientation.
+* Bone lengths are NOT rigid in the cached 14-joint skeletons (hips->knee, shoulder, head vary by 5-50 mm within a clip because
+  virtual pelvis/clavicle joints are missing). Oracle-v2 uses the clip median length; the floor of that choice (`gt_canon`) is 0.52 cm
+  MPJPE-full (CMU test) and 0.37 cm (Xsens). Reproducing GT exactly needs per-frame lengths (max error 3e-12 m on 50+50 clips).
+* Pops are measured on swing-only rotations derived from positions, so Basis is comparable; swivel is gated on GT elbow flexion >20
+  deg and GT arm >=15 deg off vertical (61-78 % of frames used). The GT row has its own skate (2.8-5.5 cm/s), so the memo green line
+  "< 3" cannot be met even by mocap at this threshold; compare to the GT row.
+* The model gets a skeleton-id one-hot (CMU and Xsens rigs place hips->knee differently, a ~7 cm lateral knee difference that
+  rotation canonicalisation cannot remove) and the 3 noisy calibration scalars (train: true x U(0.95,1.05)). The oracle passes the
+  dataset name to predictors with `needs_meta`. Design question below.
+* hmdposer: 5 tokens (head, hands, hands in head frame) + body token, 2 x [per-token LSTM, 3-layer transformer], d=256, windowed
+  (40 frames, left-padded with frame 0), canonical heading and origin from the newest head frame (causal). Loss weights rot 2,
+  FK pos 10, hand 10, velocity (1/3/5) 10; AdamW 3e-4, cosine, warm-up 500, batch 256, fp32/TF32 (bf16 gave no speed-up; 5.5 it/s).
+  Sampling 50 % Xsens / 50 % CMU frames. Wrist augmentation on CMU hand trackers is ON (swing +-35, twist +-20 deg).
+* Not implemented: the optional two-bone hand post-fix. Not run: ablations.
+
+### Gates
+| gate | result |
+|---|---|
+| v1 columns identical for gt / gt_rot / basis under v2 | PASS (key by key); GT: MPJPE 0, pops 0, swivel 0, skate = GT own value |
+| retarget FK < 1 mm, 50 random clips per dataset | PASS with per-frame GT lengths (3e-12 m; test); with clip-median lengths the mean error is 5.1 mm CMU / 3.9 mm Xsens (the oracle-v2 floor) |
+| sign / handedness | PASS: GT targets through the model pipeline (canonical->world->quats->FK) give 7.1 mm (CMU) / 3.9 mm (Xsens) mean error; left elbow on the head-forward left side in 98 % / 100 % of frames |
+| one-clip overfit (Xsens S01_A01, 1500 frames) | PASS: oracle-v2 MPJPE-full 0.44 cm after 5000 steps (lr 1e-3 failed at 8.5 cm; 3e-4 gave 1.5 cm after 1500 steps) |
+| 5-min GPU smoke | PASS: val loss 1.80 -> 1.23 in 1476 steps |
+| CMU forearm probe | angle(hand-tracker bone axis, elbow->hand): CMU 0.0 deg (it is the forearm frame), Xsens 18.2 deg |
+
+### E1 result (details `validation/reports/sprint-2026-10/e1.md`)
+Selected checkpoint = best on val (step 10 000 of 50 000). Clean val: Xsens S09 upper 5.41 (Basis 7.73), lower 19.29 (25.03), jitter
+2.62 vs GT 2.22 (1.18x); CMU val upper 5.36 (11.07), lower 19.55 (34.18), jitter 12.42 vs 8.50 (1.46x). Round property MET on val.
+Test (one run): CMU upper 5.41 (Basis 10.86), lower 12.72 (25.81); Xsens eval (subject overlap with train) upper 3.49 (10.37), lower 11.91 (27.72).
+Kill criterion (S09 upper < 6.6 after 3 GPU-h): best.pt passes (5.41); last.pt at the end of the 2.6 GPU-h run does not (6.92): the
+run overfits Xsens after about 10k steps (train-subset upper 1.4 cm vs 5.4-7.2 held out). Skate (36 cm/s), hand placement (2-5 cm)
+and corrupted-input degradation are bad. GPU-h: about 2.6 training + 0.3 gates/smokes/evals. Wall-clock about 6 h including lock queueing.
+
+### Deviations / surprises
+* Oracle-v2 has no toe joint: feet = ankle (Xsens) / mid-foot (CMU). Another builder ran `tmux kill-server` on sayu at about 00:20 and
+  killed my first overfit job (rerun; nothing else lost). Jobs now run under `systemd-run --user` + tmux + flock.
+* The AvatarPoser-style model trains about 10x faster (60 it/s) and at 5.4k steps already shows Xsens S09 upper 5.2-5.8 / lower
+  15.3-16.2 and CMU val upper 5.8 / lower 21: at least as good as hmdposer best. Smoke only; Round 3 should compare properly.
