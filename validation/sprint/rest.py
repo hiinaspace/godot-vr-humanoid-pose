@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Canonical rest pose and cross-dataset rotation targets (rest-v1).
 
 ``conventions.py`` (locked) keeps one FK template per dataset because leg rest directions differ by

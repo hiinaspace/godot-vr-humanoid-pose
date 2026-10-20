@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Evaluation oracle v2 = oracle-v1 (imported unchanged) + extra columns. LOCKED once tagged.
 
 Adds, without touching any v1 column or the v1 input generator / splits / conventions:

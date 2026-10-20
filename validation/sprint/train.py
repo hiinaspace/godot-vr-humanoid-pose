@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Sprint trainer: data -> model -> loss -> loop -> checkpoint -> oracle eval, one file.
 
 Architecture after HMD-Poser (Dai et al., CVPR 2024, MIT): per-token feature embeddings, 2 blocks of
@@ -18,7 +19,6 @@ Evaluate a checkpoint: ``python -m validation.sprint.eval --ckpt PATH --split va
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import time
@@ -311,12 +311,14 @@ class HMDPoser(nn.Module):
         b, t = feats.shape[:2]
         sl = [slice(0, 6), slice(6, 12), slice(12, 15), slice(15, 18)]
         toks = [
-            self.norm(torch.cat([e(feats[:, :, k, s]) for e, s in zip(self.emb[k], sl)], -1))
+            self.norm(
+                torch.cat([e(feats[:, :, k, s]) for e, s in zip(self.emb[k], sl, strict=True)], -1)
+            )
             for k in range(NT)
         ]
         toks.append(self.norm(self.static(static))[:, None].expand(b, t, -1))
         x = torch.stack(toks, 2)
-        for lstm, sp in zip(self.lstm, self.spatial):
+        for lstm, sp in zip(self.lstm, self.spatial, strict=True):
             x = torch.stack([lstm[k](x[:, :, k])[0] for k in range(NT + 1)], 2)
             x = sp(x.reshape(b * t, NT + 1, -1)).reshape(b, t, NT + 1, -1)
         return self.head(x.reshape(b, t, -1))
@@ -509,10 +511,12 @@ def train(args) -> int:
     if rid is None:
         mlflow.log_params({k: str(v) for k, v in cfg.items()})
     gen = torch.Generator(device=dev).manual_seed(args.seed + step)
-    sched = lambda s: (
-        min(1.0, (s + 1) / 500)
-        * (0.5 * (1 + math.cos(math.pi * min(1.0, s / args.steps))) * 0.97 + 0.03)
-    )  # noqa: E731
+
+    def sched(s):  # linear warmup, cosine to 3 % of the peak lr
+        return min(1.0, (s + 1) / 500) * (
+            0.5 * (1 + math.cos(math.pi * min(1.0, s / args.steps))) * 0.97 + 0.03
+        )
+
     t0, last_log = time.time(), time.time()
     model.train()
 
@@ -668,13 +672,19 @@ def overfit(args) -> int:
         g = st.sample(args.bs, 1.0, gen)
         idx, feats, sf, Q, origin, head_pc = batch_inputs(st, g, True, False, gen, noise=False)
         r6, hips_rel, pc = make_targets(st, idx[:, 1:], Q, origin, head_pc)
-        loss, terms, _ = loss_fn(model(feats, sf), r6, hips_rel, pc, head_pc, st.lengths[st.cidx[g]])
+        loss, terms, _ = loss_fn(
+            model(feats, sf), r6, hips_rel, pc, head_pc, st.lengths[st.cidx[g]]
+        )
         opt.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         if step % 200 == 0:
-            print(f"overfit step {step} loss {loss.item():.4f}", {k: round(v.item(), 4) for k, v in terms.items()}, flush=True)
+            print(
+                f"overfit step {step} loss {loss.item():.4f}",
+                {k: round(v.item(), 4) for k, v in terms.items()},
+                flush=True,
+            )
     pred = ModelPredictor(model, dict(model=args.model, skel=True), "overfit", dev)
     # oracle path with un-noised calibration: the model was overfit on true calibration scalars
     noise, O.CALIB_NOISE = O.CALIB_NOISE, 0.0

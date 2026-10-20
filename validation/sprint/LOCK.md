@@ -13,3 +13,16 @@ Check: `sha256sum validation/sprint/oracle.py validation/sprint/conventions.py v
 Tag: `oracle-v1`. Not locked (may change without a version bump as long as they do not change
 the numbers): eval.py, baselines.py (new methods may be added; `gt`, `gt_rot`, `basis` must not
 change), splits.py, probe_conventions.py, repro_legacy.py.
+
+# oracle-v2 lock (2026-10-20)
+
+oracle-v2 imports oracle-v1 unchanged (hashes above still hold) and only adds columns:
+GT-bone-length FK for canonical-rest rotation outputs and the skate / ground / pop / swivel
+columns. `eval.py` now defaults to `--oracle v2`; `--oracle v1` reproduces the Round 1 tables.
+Gate: v1 numeric columns of gt, gt_rot and basis are identical under v2 (checked key by key).
+Tag: `oracle-v2`.
+
+| file | sha256 |
+|---|---|
+| validation/sprint/oracle_v2.py | fcde4cbc2f86c2a7d2dea4f4f4a41acb3c91953b97f41d943e13e73fce04bda9 |
+| validation/sprint/rest.py | f18004216711d083bcd0c72b640ecc83c5f519daecfc22ddf4a2b862119d907c |
