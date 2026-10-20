@@ -6,12 +6,13 @@ Registered next to ``basis_research`` (``baseline.create_estimator("learned")``)
 is run by onnxruntime (``validation/sprint/runtime.py``). Export one with
 ``python -m validation.sprint.export_onnx``; see ``validation/sprint/RUNTIME.md``.
 
-Frames. ``frame="godot"`` (default) adapts live Godot samples to the training convention: the head
-transform already carries the +Z-forward fix (``_estimator_head_transform`` in live_overlay_debug.gd);
-the hand transforms are Godot grip poses (fingers along local -Z), which are re-expressed in the
-training hand frame (forearm axis +X on the left hand, -X on the right: ``rest.forearm_probe``) by a
-fixed +-90 degree yaw. That hand-frame mapping is the one input convention that has not been
-verified on a headset. ``frame="model"`` feeds the samples through untouched (replay / parity tests).
+Frames. ``frame="godot"`` (default) adapts live Godot samples to the training convention: the
+head transform already carries the +Z-forward fix (``_estimator_head_transform`` in
+live_overlay_debug.gd); the hand transforms are Godot grip poses (fingers along local -Z), which
+are re-expressed in the training hand frame (forearm axis +X on the left hand, -X on the right:
+``rest.forearm_probe``) by a fixed +-90 degree yaw. That hand-frame mapping is the one input
+convention that has not been verified on a headset. ``frame="model"`` feeds the samples through
+untouched (replay / parity tests).
 
 Outputs are the 14 canonical joints (``conventions.JOINTS``) with world positions and the world
 rotation of each joint in the rest.py canonical rest pose (not avatar-bone rotations), plus the
@@ -119,7 +120,9 @@ class LearnedEstimator:
     # --- sample -> raw24 -------------------------------------------------------------------
     def _raw(self, s: TrackedPoseSample) -> np.ndarray:
         raw = np.zeros(RT.RAW_DIM)
-        for k, (side, tr) in enumerate((("head", s.hmd), ("left", s.left_hand), ("right", s.right_hand))):
+        for k, (side, tr) in enumerate(
+            (("head", s.hmd), ("left", s.left_hand), ("right", s.right_hand))
+        ):
             ps, qs = RT.TRACKERS[k]
             raw[ps] = tr.transform.position
             q = np.asarray(tr.transform.rotation, np.float64)
@@ -147,7 +150,9 @@ class LearnedEstimator:
         }
         h, c = joints["head"].transform, joints["chest"].transform
         joints["neck"] = JointPose(
-            Transform(tuple(0.5 * (np.asarray(h.position) + np.asarray(c.position))), h.rotation), 1.0, True
+            Transform(tuple(0.5 * (np.asarray(h.position) + np.asarray(c.position))), h.rotation),
+            1.0,
+            True,
         )
         return HumanoidPoseFrame(
             timestamp_seconds=sample.timestamp_seconds,

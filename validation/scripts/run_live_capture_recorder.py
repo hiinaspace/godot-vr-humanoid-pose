@@ -64,7 +64,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         help="ONNX graph for --estimator learned (validation.sprint.export_onnx output).",
     )
-    parser.add_argument("--learned-threads", type=int, help="onnxruntime intra-op threads (default 1)")
+    parser.add_argument(
+        "--learned-threads", type=int, help="onnxruntime intra-op threads (default 1)"
+    )
     parser.add_argument(
         "--learned-frame",
         choices=("godot", "model"),

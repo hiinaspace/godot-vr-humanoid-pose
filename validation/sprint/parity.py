@@ -66,7 +66,12 @@ def run_onnx(rt: RT.LearnedRuntime, inputs, calib, lengths, dataset: str, hz: fl
     pos, loc, glob, hips, times = [], [], [], [], []
     for k in range(len(inputs)):
         r = rt.step(k / hz, inputs[k], lengths)
-        pos.append(r.positions), loc.append(r.local_rot), glob.append(r.global_rot), hips.append(r.hips)
+        (
+            pos.append(r.positions),
+            loc.append(r.local_rot),
+            glob.append(r.global_rot),
+            hips.append(r.hips),
+        )
         times.append(r.timing)
     return np.stack(pos), np.stack(loc), np.stack(glob), np.stack(hips), times
 
@@ -86,15 +91,24 @@ def gate(args) -> int:
         d_deg = float(C.qgeodesic_deg(q_o, pred.rotations).max())
         rows.append((cid, len(inputs), d_pos, d_hip, d_deg))
         worst = max(worst, d_pos)
-        print(f"{cid:44s} {len(inputs):5d} fr  max|dpos| {d_pos:.2e} m  max|dhips| {d_hip:.2e} m  max rot {d_deg:.4f} deg", flush=True)
+        print(
+            f"{cid:44s} {len(inputs):5d} fr  max|dpos| {d_pos:.2e} m  max|dhips| {d_hip:.2e} m  max rot {d_deg:.4f} deg",
+            flush=True,
+        )
     ok = worst <= GATE_M
-    print(f"PARITY {'PASS' if ok else 'FAIL'}: worst max|dpos| {worst:.3e} m (gate {GATE_M:g}), {len(rows)} clips")
+    print(
+        f"PARITY {'PASS' if ok else 'FAIL'}: worst max|dpos| {worst:.3e} m (gate {GATE_M:g}), {len(rows)} clips"
+    )
     if args.json:
-        Path(args.json).write_text(json.dumps(dict(worst_pos_m=worst, gate_m=GATE_M, clips=rows), indent=1))
+        Path(args.json).write_text(
+            json.dumps(dict(worst_pos_m=worst, gate_m=GATE_M, clips=rows), indent=1)
+        )
     return 0 if ok else 1
 
 
-def resample_stream(raw60: np.ndarray, hz_out: float, hz_in: float = 60.0) -> tuple[np.ndarray, np.ndarray]:
+def resample_stream(
+    raw60: np.ndarray, hz_out: float, hz_in: float = 60.0
+) -> tuple[np.ndarray, np.ndarray]:
     """Resample an on-grid stream to ``hz_out`` (linear / nlerp) -> (times, raw). Used for the 90 Hz variant."""
     n = len(raw60)
     t_in = np.arange(n) / hz_in
@@ -140,7 +154,11 @@ def fixture(args) -> int:
         nj=C.NJ,
         joints=list(C.JOINTS),
         raw_dim=RT.RAW_DIM,
-        calib=dict(height_m=calib.height_m, arm_length_m=calib.arm_length_m, shoulder_width_m=calib.shoulder_width_m),
+        calib=dict(
+            height_m=calib.height_m,
+            arm_length_m=calib.arm_length_m,
+            shoulder_width_m=calib.shoulder_width_m,
+        ),
         bone_lengths_m={n_: float(lengths[i]) for i, n_ in enumerate(C.JOINTS)},
         dataset=clip.dataset,
         onnx=str(args.onnx),
@@ -166,7 +184,9 @@ def run_onnx_times(rt, raw, times, calib, lengths, dataset):
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("gate", "fixture"):
         p = sub.add_parser(name)

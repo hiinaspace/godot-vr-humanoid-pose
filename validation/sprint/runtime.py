@@ -28,8 +28,14 @@ import numpy as np
 
 RAW_DIM = 24
 # (pos slice, quat slice) of head, left hand, right hand inside the 24-vector
-TRACKERS = ((slice(0, 3), slice(3, 7)), (slice(7, 10), slice(10, 14)), (slice(14, 17), slice(17, 21)))
-SNAP = 1e-6  # interpolation weights closer than this to 0/1 are snapped (keeps on-grid streams exact)
+TRACKERS = (
+    (slice(0, 3), slice(3, 7)),
+    (slice(7, 10), slice(10, 14)),
+    (slice(14, 17), slice(17, 21)),
+)
+SNAP = (
+    1e-6  # interpolation weights closer than this to 0/1 are snapped (keeps on-grid streams exact)
+)
 MAX_GAP_RESET_S = 1.0  # a timestamp jump of more than this (either way) starts a new session
 
 
@@ -51,22 +57,44 @@ def rotmat_to_quat(m: np.ndarray) -> np.ndarray:
         tr = r[0, 0] + r[1, 1] + r[2, 2]
         if tr > 0:
             s = 2.0 * np.sqrt(tr + 1.0)
-            q = [(r[2, 1] - r[1, 2]) / s, (r[0, 2] - r[2, 0]) / s, (r[1, 0] - r[0, 1]) / s, 0.25 * s]
+            q = [
+                (r[2, 1] - r[1, 2]) / s,
+                (r[0, 2] - r[2, 0]) / s,
+                (r[1, 0] - r[0, 1]) / s,
+                0.25 * s,
+            ]
         elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
             s = 2.0 * np.sqrt(1.0 + r[0, 0] - r[1, 1] - r[2, 2])
-            q = [0.25 * s, (r[0, 1] + r[1, 0]) / s, (r[0, 2] + r[2, 0]) / s, (r[2, 1] - r[1, 2]) / s]
+            q = [
+                0.25 * s,
+                (r[0, 1] + r[1, 0]) / s,
+                (r[0, 2] + r[2, 0]) / s,
+                (r[2, 1] - r[1, 2]) / s,
+            ]
         elif r[1, 1] > r[2, 2]:
             s = 2.0 * np.sqrt(1.0 + r[1, 1] - r[0, 0] - r[2, 2])
-            q = [(r[0, 1] + r[1, 0]) / s, 0.25 * s, (r[1, 2] + r[2, 1]) / s, (r[0, 2] - r[2, 0]) / s]
+            q = [
+                (r[0, 1] + r[1, 0]) / s,
+                0.25 * s,
+                (r[1, 2] + r[2, 1]) / s,
+                (r[0, 2] - r[2, 0]) / s,
+            ]
         else:
             s = 2.0 * np.sqrt(1.0 + r[2, 2] - r[0, 0] - r[1, 1])
-            q = [(r[0, 2] + r[2, 0]) / s, (r[1, 2] + r[2, 1]) / s, 0.25 * s, (r[1, 0] - r[0, 1]) / s]
+            q = [
+                (r[0, 2] + r[2, 0]) / s,
+                (r[1, 2] + r[2, 1]) / s,
+                0.25 * s,
+                (r[1, 0] - r[0, 1]) / s,
+            ]
         q = np.asarray(q)
         o[i] = q / np.linalg.norm(q) * (1.0 if q[3] >= 0 else -1.0)
     return out
 
 
-def fk(rot: np.ndarray, hips: np.ndarray, lengths: np.ndarray, rest_dirs: np.ndarray, parents) -> tuple[np.ndarray, np.ndarray]:
+def fk(
+    rot: np.ndarray, hips: np.ndarray, lengths: np.ndarray, rest_dirs: np.ndarray, parents
+) -> tuple[np.ndarray, np.ndarray]:
     """Local rotation matrices [NJ,3,3] (root = world), hips [3], bone lengths [NJ] -> (positions
     [NJ,3], global rotation matrices [NJ,3,3]). Same recurrence as ``train.fk_torch``."""
     nj = len(parents)
@@ -134,10 +162,14 @@ class TimedWindow:
         w[w < SNAP] = 0.0
         w[w > 1.0 - SNAP] = 1.0
         w = w[:, None]
-        out = xs[i0].copy()
+        out = np.where(w == 1.0, xs[i1], xs[i0])  # flags: sample at-or-before the query time
         for ps, qs in TRACKERS:
             out[:, ps] = xs[i0][:, ps] * (1.0 - w) + xs[i1][:, ps] * w
-            out[:, qs] = np.where(w == 0.0, xs[i0][:, qs], np.where(w == 1.0, xs[i1][:, qs], _nlerp_quat(xs[i0][:, qs], xs[i1][:, qs], w)))
+            out[:, qs] = np.where(
+                w == 0.0,
+                xs[i0][:, qs],
+                np.where(w == 1.0, xs[i1][:, qs], _nlerp_quat(xs[i0][:, qs], xs[i1][:, qs], w)),
+            )
         return out.astype(np.float32)[None]
 
 

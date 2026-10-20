@@ -79,9 +79,7 @@ def hmd_last_step(model, feats: torch.Tensor, static: torch.Tensor) -> torch.Ten
     sl = [slice(0, 6), slice(6, 12), slice(12, 15), slice(15, 18)]
     toks = [
         model.norm(
-            torch.cat(
-                [e(feats[:, :, k, s]) for e, s in zip(model.emb[k], sl, strict=True)], -1
-            )
+            torch.cat([e(feats[:, :, k, s]) for e, s in zip(model.emb[k], sl, strict=True)], -1)
         )
         for k in range(T.NT)
     ]
@@ -104,7 +102,10 @@ class StepGraph(nn.Module):
         self.hmd = cfg["model"] == "hmdposer"
         mode = cfg.get("inputs", "full")
         self.register_buffer(
-            "mask", T.feat_mask(mode, "cpu") if hasattr(T, "feat_mask") and mode != "full" else torch.ones(18)
+            "mask",
+            T.feat_mask(mode, "cpu")
+            if hasattr(T, "feat_mask") and mode != "full"
+            else torch.ones(18),
         )
 
     def forward(self, raw: torch.Tensor, static: torch.Tensor):
@@ -130,7 +131,9 @@ class StepGraph(nn.Module):
 def export(ckpt: Path, out: Path, verify: bool = True, opset: int = OPSET) -> dict:
     import onnx
 
-    torch.backends.mha.set_fastpath_enabled(False)  # fused encoder-layer kernel has no ONNX symbolic
+    torch.backends.mha.set_fastpath_enabled(
+        False
+    )  # fused encoder-layer kernel has no ONNX symbolic
     model, cfg, ck, nout = load_checkpoint(ckpt)
     g = StepGraph(model, cfg, nout).eval()
     w = T.L
@@ -169,7 +172,10 @@ def export(ckpt: Path, out: Path, verify: bool = True, opset: int = OPSET) -> di
         ckpt=str(ckpt),
         ckpt_sha256=sha,
         ckpt_step=int(ck.get("step", -1)),
-        cfg={k: (v if isinstance(v, int | float | str | bool | type(None)) else str(v)) for k, v in cfg.items()},
+        cfg={
+            k: (v if isinstance(v, int | float | str | bool | type(None)) else str(v))
+            for k, v in cfg.items()
+        },
     )
     m = onnx.load(str(out))
     onnx.checker.check_model(m)
@@ -197,7 +203,34 @@ def verify_against_torch(model, g: StepGraph, onnx_path: Path, nout: int, n: int
     for _ in range(n):
         # a plausible window: smooth head/hands near standing height, random yaw
         raw = torch.zeros(1, T.L + 1, 24)
-        base = torch.tensor([0.3, 1.65, -0.2, 0.0, 0.0, 0.0, 1.0, 0.5, 1.2, 0.2, 0, 0, 0, 1, 0.1, 1.2, 0.3, 0, 0, 0, 1, 1, 1, 1])
+        base = torch.tensor(
+            [
+                0.3,
+                1.65,
+                -0.2,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.5,
+                1.2,
+                0.2,
+                0,
+                0,
+                0,
+                1,
+                0.1,
+                1.2,
+                0.3,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+            ]
+        )
         raw[:] = base + 0.02 * torch.randn(1, T.L + 1, 24, generator=gen).cumsum(1) * 0.1
         raw[..., 3:7] = torch.nn.functional.normalize(raw[..., 3:7], dim=-1)
         raw[..., 10:14] = torch.nn.functional.normalize(raw[..., 10:14], dim=-1)
@@ -216,14 +249,25 @@ def verify_against_torch(model, g: StepGraph, onnx_path: Path, nout: int, n: int
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--ckpt", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--opset", type=int, default=OPSET)
     ap.add_argument("--no-verify", action="store_true")
     a = ap.parse_args(argv)
     meta = export(a.ckpt, a.out, verify=not a.no_verify, opset=a.opset)
-    print(json.dumps({k: v for k, v in meta.items() if k not in ("rest_dirs", "cfg", "joints", "parents", "norm")}, indent=1))
+    print(
+        json.dumps(
+            {
+                k: v
+                for k, v in meta.items()
+                if k not in ("rest_dirs", "cfg", "joints", "parents", "norm")
+            },
+            indent=1,
+        )
+    )
     return 0
 
 
