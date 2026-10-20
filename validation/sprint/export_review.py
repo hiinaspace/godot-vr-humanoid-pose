@@ -211,13 +211,35 @@ def per_frame_err(pos: np.ndarray, gt: np.ndarray) -> np.ndarray:
     return np.linalg.norm(pos - gt, axis=-1)[:, C.NONINPUT_IDX].mean(1)
 
 
-def gt_contact(gt: np.ndarray) -> tuple[np.ndarray, float]:
-    """[T,2] bool GT foot-contact (oracle-v2 rule, window floor) and the floor height."""
+GLITCH_BONE_TOL, GLITCH_JUMP_M, GLITCH_DILATE = 0.15, 0.5, 5
+MAX_INVALID_FRAC = 0.10  # a review window may contain at most this fraction of invalid GT frames
+
+
+def gt_invalid(gt: np.ndarray) -> np.ndarray:
+    """[T] bool: GT frames that cannot be trusted. A frame is invalid when any bone length is outside
+    +-15 % of the clip median, or any joint moves more than 0.5 m since the previous / to the next
+    frame (mocap glitch); the mask is dilated by +-5 frames."""
+    b = np.linalg.norm(gt[:, 1:] - gt[:, C.PARENT[1:]], axis=-1)
+    med = np.maximum(np.median(b, axis=0), 1e-6)
+    bad = (np.abs(b / med - 1.0) > GLITCH_BONE_TOL).any(1)
+    step = np.linalg.norm(np.diff(gt, axis=0), axis=-1).max(1) > GLITCH_JUMP_M
+    bad[1:] |= step
+    bad[:-1] |= step
+    k = 2 * GLITCH_DILATE + 1
+    return np.convolve(bad.astype(float), np.ones(k), mode="same") > 0
+
+
+def gt_contact(gt: np.ndarray, invalid: np.ndarray | None = None) -> tuple[np.ndarray, float]:
+    """[T,2] bool GT foot-contact (oracle-v2 rule, window floor from valid frames) and the floor."""
     gf = gt[:, O2.FEET]
-    floor = float(np.percentile(gf[..., 1].min(1), 2))
+    lowest = gf[..., 1].min(1)
+    ok = ~invalid if invalid is not None and (~invalid).sum() > 10 else np.ones(len(gt), bool)
+    floor = float(np.percentile(lowest[ok], 2))
     c = np.zeros((len(gt), 2), bool)
     c[1:-1] = (gf[1:-1, :, 1] < floor + O2.CONTACT_H) & (O2._hspeed(gf) < O2.CONTACT_V)
     c[0], c[-1] = c[1], c[-2]
+    if invalid is not None:
+        c[invalid] = False
     return c, floor
 
 
@@ -236,6 +258,8 @@ def pop_frames(gt: np.ndarray | None, pr: np.ndarray) -> list[int]:
 def separated_top(score: np.ndarray, k: int, gap: int) -> list[int]:
     out: list[int] = []
     for i in np.argsort(-score):
+        if not np.isfinite(score[i]):
+            break
         if all(abs(int(i) - o) >= gap for o in out):
             out.append(int(i))
         if len(out) >= k:
@@ -243,24 +267,50 @@ def separated_top(score: np.ndarray, k: int, gap: int) -> list[int]:
     return sorted(out)
 
 
-def window_metrics(clip: C.ClipData, pos: np.ndarray) -> dict:
-    m = O2.clip_metrics(clip, pos, O.Prediction(positions=pos))
+def window_metrics(clip: C.ClipData, pos: np.ndarray, invalid: np.ndarray | None = None) -> dict:
+    """Oracle-v2 columns on a window. Invalid GT frames are dropped: the window is split into runs
+    of valid frames (>= 30 frames) and the per-run oracle-v2 results are pooled (the floor is taken
+    per run), so no temporal metric ever differences across a glitch."""
     n = clip.n_frames
-    sv, gv, ev = m["skate_vals"], m["ground_vals"], m["swivel_vals"]
+    ok = np.ones(n, bool) if invalid is None else ~invalid
+    runs, t = [], 0
+    while t < n:
+        if ok[t]:
+            e = t
+            while e + 1 < n and ok[e + 1]:
+                e += 1
+            if e - t + 1 >= 30:
+                runs.append((t, e + 1))
+            t = e + 1
+        else:
+            t += 1
+    ms = [
+        O2.clip_metrics(
+            dataclasses.replace(clip, positions=clip.positions[a:b], rotations=clip.rotations[a:b]),
+            pos[a:b],
+            O.Prediction(positions=pos[a:b]),
+        )
+        for a, b in runs
+    ]
+    nv = sum(b - a for a, b in runs)
+    cat = lambda k: np.concatenate([m[k] for m in ms])  # noqa: E731
+    sv, gv, ev = cat("skate_vals"), cat("ground_vals"), cat("swivel_vals")
+    jit_n = sum(m["jit_n"] for m in ms)
     return {
-        "full_cm": float(m["full"].mean() * 100),
-        "upper_cm": float(m["upper"].mean() * 100),
-        "lower_cm": float(m["lower"].mean() * 100),
-        "hand_cm": float(m["hand"].mean() * 100),
-        "jitter": float(m["jit_pred_sum"] / m["jit_n"]),
-        "jitter_gt": float(m["jit_gt_sum"] / m["jit_n"]),
-        "skate_cm_s": None if np.isnan(m["skate_clip"]) else float(m["skate_clip"]),
+        "full_cm": float(cat("full").mean() * 100),
+        "upper_cm": float(cat("upper").mean() * 100),
+        "lower_cm": float(cat("lower").mean() * 100),
+        "hand_cm": float(cat("hand").mean() * 100),
+        "jitter": float(sum(m["jit_pred_sum"] for m in ms) / jit_n),
+        "jitter_gt": float(sum(m["jit_gt_sum"] for m in ms) / jit_n),
+        "skate_cm_s": float(sv.mean()) if sv.size else None,
         "pen_p95_cm": float(np.percentile(np.maximum(0, -gv), 95)) if gv.size else None,
         "float_p95_cm": float(np.percentile(np.maximum(0, gv), 95)) if gv.size else None,
-        "pops_per_min": float(m["pops"] / (n / C.FPS / 60.0)),
+        "pops_per_min": float(sum(m["pops"] for m in ms) / (nv / C.FPS / 60.0)),
         "swivel_deg": float(ev.mean()) if ev.size else None,
         "swivel_p95_deg": float(np.percentile(ev, 95)) if ev.size else None,
         "contact_frames": int(sv.size),
+        "valid_frames": int(nv),
     }
 
 
@@ -276,21 +326,30 @@ class Cand:
     score_basis: float = np.nan
     win: tuple[int, int] = (0, 0)
     crouch_frac: float = 0.0
+    invalid_frac: float = 0.0
 
 
-def best_window(score: np.ndarray, idx: np.ndarray, n: int, w: int) -> tuple[int, int]:
-    """Window of length w maximising the mean of ``score`` (sampled at frame indices ``idx``)."""
+def best_window(
+    score: np.ndarray, idx: np.ndarray, n: int, w: int, invalid: np.ndarray | None = None
+) -> tuple[int, int] | None:
+    """Window of length w maximising the mean of ``score`` (sampled at frame indices ``idx``),
+    ignoring invalid GT frames. Windows with more than MAX_INVALID_FRAC invalid frames are not
+    allowed; None when no window qualifies."""
+    inv = np.zeros(n, bool) if invalid is None else invalid
+    samp_ok = ~inv[idx]
     if n <= w:
-        return 0, n
-    best, bs = -1e18, 0
+        return (0, n) if inv.mean() <= MAX_INVALID_FRAC and samp_ok.sum() >= 4 else None
+    best, bs = -1e18, None
     for s in range(0, n - w + 1, FPS // 2):
-        sel = (idx >= s) & (idx < s + w)
+        if inv[s : s + w].mean() > MAX_INVALID_FRAC:
+            continue
+        sel = (idx >= s) & (idx < s + w) & samp_ok
         if sel.sum() < 4:
             continue
         v = float(score[sel].mean())
         if v > best:
             best, bs = v, s
-    return bs, bs + w
+    return None if bs is None else (bs, bs + w)
 
 
 def pool_ids() -> list[str]:
@@ -345,11 +404,21 @@ def rank_pool(args, learned: Learned, log) -> tuple[list[Cand], dict]:
             log(f"  ranked {k + 1}/{len(ids)} {cid} {len(idx)} fr {time.time() - t0:.0f}s")
         eb = per_frame_err(z["pos"], gt) * 100
         el = np.array(results[cid]["err_l"])
+        inv = gt_invalid(gt)
+        win = best_window(el, idx, clip.n_frames, int(WINDOW_S * FPS), inv)
+        if win is None:
+            log(
+                f"  skip {cid}: no window with <= {MAX_INVALID_FRAC:.0%} invalid GT frames "
+                f"({inv.mean():.0%} of the clip invalid)"
+            )
+            continue
+        ok = ~inv[idx]
         c = Cand(cid, clip.dataset, clip.n_frames)
-        c.score_learned, c.score_basis = float(el.mean()), float(eb[idx].mean())
-        c.win = best_window(el, idx, clip.n_frames, int(WINDOW_S * FPS))
-        c.crouch_frac = float((gt[:, 0, 1] < 0.65).mean())
-        store[cid] = {"idx": idx, "el": el, "eb": eb[idx], "hips": gt[idx, 0, 1]}
+        c.score_learned, c.score_basis = float(el[ok].mean()), float(eb[idx][ok].mean())
+        c.win = win
+        c.crouch_frac = float((gt[~inv, 0, 1] < 0.65).mean())
+        c.invalid_frac = float(inv.mean())
+        store[cid] = {"idx": idx, "el": el, "eb": eb[idx], "hips": gt[idx, 0, 1], "inv": inv}
         cands.append(c)
     return cands, store
 
@@ -379,9 +448,9 @@ def select(cands: list[Cand], store: dict) -> list[tuple[Cand, str]]:
     for c, g in chosen:  # re-centre the window on the reason the clip was picked
         d = store[c.clip_id]
         if g == "learned-beats-basis":
-            c.win = best_window(d["eb"] - d["el"], d["idx"], c.n, w)
+            c.win = best_window(d["eb"] - d["el"], d["idx"], c.n, w, d["inv"]) or c.win
         elif g == "sit-crouch":
-            c.win = best_window(-d["hips"], d["idx"], c.n, w)
+            c.win = best_window(-d["hips"], d["idx"], c.n, w, d["inv"]) or c.win
     return chosen
 
 
@@ -398,7 +467,7 @@ def quant_pos(pos: np.ndarray, origin: np.ndarray) -> np.ndarray:
 # --- clip record ----------------------------------------------------------------------------
 
 
-def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores) -> dict:
+def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores, inv=None) -> dict:
     f0, f1 = win
     n = f1 - f0
     gap = FPS * 3 // 4
@@ -419,8 +488,10 @@ def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores)
     err: dict = {}
     jump: dict = {}
     if gt is not None and clip is not None:
-        contact, floor = gt_contact(gt)
+        inv = np.zeros(n, bool) if inv is None else inv
+        contact, floor = gt_contact(gt, inv)
         rec["floor"] = floor
+        rec["invalid"] = b64(inv.astype(np.uint8))
         rec["contact"] = b64(contact[:, 0].astype(np.uint8) | (contact[:, 1].astype(np.uint8) << 1))
         wclip = dataclasses.replace(
             clip,
@@ -428,18 +499,20 @@ def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores)
             rotations=np.ascontiguousarray(clip.rotations[f0:f1]),
         )
         for m, p in method_pos.items():
-            metrics[m] = window_metrics(wclip, p.astype(np.float64))
+            metrics[m] = window_metrics(wclip, p.astype(np.float64), inv)
             e = per_frame_err(p, gt)
             err[m] = b64(np.round(e * 1000).astype("<u2"))
             if m == "gt":
                 continue
             j = [
                 {"f": f, "k": "err", "v": round(float(e[f] * 100), 1)}
-                for f in separated_top(e, 5, gap)
+                for f in separated_top(np.where(inv, -np.inf, e), 5, gap)
             ]
-            j += [{"f": f, "k": "pop"} for f in pop_frames(gt, p)[:6]]
-            sk = np.zeros(n)
+            j += [{"f": f, "k": "pop"} for f in pop_frames(gt, p) if not inv[f]][:6]
+            sk = np.full(n, -np.inf)
+            sk[1:-1] = 0.0
             sk[1:-1] = (O2._hspeed(p[:, O2.FEET]) * contact[1:-1]).max(1) * 100.0
+            sk[inv] = -np.inf
             if sk.max() > 0:
                 j += [
                     {"f": f, "k": "skate", "v": round(float(sk[f]), 1)}
@@ -480,6 +553,9 @@ def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores)
                     per_frame_err(method_pos["basis"], gt)
                     - per_frame_err(method_pos["learned"], gt)
                 )
+                diff = (
+                    np.where(inv, 0.0, diff) - 1e3 * inv
+                )  # never pick a segment with glitch frames
             else:
                 diff = np.linalg.norm(method_pos["basis"] - method_pos["learned"], axis=-1).mean(1)
             cs = np.concatenate([[0], np.cumsum(diff)])
@@ -507,7 +583,7 @@ def main(argv=None) -> int:
     ap.add_argument("--methods", default="gt,basis,learned")
     ap.add_argument("--variant", choices=O.VARIANTS, default="clean")
     ap.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
-    ap.add_argument("--rank-stride", type=int, default=6)
+    ap.add_argument("--rank-stride", type=int, default=12)
     ap.add_argument("--workers", type=int, default=min(10, os.cpu_count() or 1))
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--no-live", action="store_true")
@@ -582,7 +658,12 @@ def main(argv=None) -> int:
             "basis_full_cm": round(c.score_basis, 2),
             "learned_full_cm": round(c.score_learned, 2),
         }
-        clips_out.append(build_clip_record(c.clip_id, g, (f0, f1), mp, gt, clip, extra, scores))
+        extra["invalid_clip_frac"] = round(c.invalid_frac, 3)
+        clips_out.append(
+            build_clip_record(
+                c.clip_id, g, (f0, f1), mp, gt, clip, extra, scores, store[c.clip_id]["inv"][f0:f1]
+            )
+        )
         log(f"  [{k + 1}/{len(chosen)}] {c.clip_id} {time.time() - t0:.0f}s")
 
     if not args.no_live:

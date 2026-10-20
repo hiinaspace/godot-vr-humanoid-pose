@@ -86,7 +86,7 @@ body.still #stage { height: 100vh; border: 0; border-radius: 0; }
   <button id="themeBtn" title="Toggle theme">Theme</button>
 </header>
 <main>
-  <div id="stage"><canvas id="cv"></canvas></div>
+  <div id="stage"><canvas id="cv"></canvas><div id="glitch" class="vlabel" style="display:none;right:8px;bottom:8px;color:var(--bad)">GT glitch frame: excluded from lists and metrics</div></div>
 
   <div id="reviewOnly" class="noStill" style="display:flex;flex-direction:column;gap:8px">
     <div class="row">
@@ -215,6 +215,7 @@ function decodeClip(c) {
     d.err[m] = Float32Array.from(u16, v => v / 1000);
   }
   if (c.contact) d.contact = b64bytes(c.contact);
+  if (c.invalid) d.invalid = b64bytes(c.invalid);
   // camera rig from the reference method (GT if present): smoothed centre, heading, head
   const ref = d.pos.gt || d.pos[NONGT[0]];
   const ctr = new Float32Array(n * 2), yaw = new Float32Array(n), head = new Float32Array(n * 3), cy = new Float32Array(n), rawy = new Float32Array(n);
@@ -291,12 +292,13 @@ function initThree() {
     for (let j = 0; j < NJ; j++) {
       const side = LSIDE.has(j) ? "l" : RSIDE.has(j) ? "r" : "c";
       const rad = j === JI.head ? 0.085 : (j === JI.left_hand || j === JI.right_hand) ? 0.04 : 0.028;
-      const mat = FOOT.includes(j) ? mats[side].clone() : mats[side];
+      const mat = FOOT.includes(j) || j === JI.head ? mats[side].clone() : mats[side];
       if (FOOT.includes(j)) mat._own = true;
       const s = new THREE.Mesh(new THREE.SphereGeometry(rad, 14, 10), mat);
       g.add(s); joints[j] = s;
     }
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.12, 10), mats.c);
+    const noseMat = new THREE.MeshLambertMaterial({ color: cols.c, transparent: true });
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.12, 10), noseMat);
     nose.matrixAutoUpdate = false; g.add(nose);
     const trails = [0, 1].map(() => {
       const geo = new THREE.BufferGeometry();
@@ -305,7 +307,7 @@ function initThree() {
       const ln = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xe5231a, transparent: true, linewidth: 2 }));
       ln.frustumCulled = false; g.add(ln); return ln;
     });
-    V[m] = { g, bones, joints, nose, trails, mats };
+    V[m] = { g, bones, joints, nose, trails, mats, noseMat, headMat: joints[JI.head].material };
   }
   for (let f = 0; f < 2; f++) {
     const r = new THREE.Mesh(new THREE.RingGeometry(0.07, 0.1, 28), new THREE.MeshBasicMaterial({ color: 0x24b560, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
@@ -428,14 +430,15 @@ function placeCam(cam, kind, d, t, aspect) {
   } else if (kind === "top") {
     cam.up.set(fx, 0, fz); cam.position.set(r.x, fl + 3.0, r.z); cam.lookAt(r.x, fl, r.z);
   } else if (kind === "fp") {
-    cam.fov = 100; const p = 50 * Math.PI / 180;
-    cam.position.set(r.hx + fx * 0.06, r.hy + 0.03, r.hz + fz * 0.06);
+    cam.fov = 90; const p = 50 * Math.PI / 180;  // headset-like vertical FOV, pitched down to see hands and feet
+    cam.position.set(r.hx + fx * 0.08, r.hy + 0.08, r.hz + fz * 0.08);  // eye point of the GT head joint
     cam.lookAt(cam.position.x + fx * Math.cos(p), cam.position.y - Math.sin(p), cam.position.z + fz * Math.cos(p));
   } else {  // free orbit around the (smoothed) subject
     const ce = Math.cos(orbit.el), cx = r.x + orbit.dist * ce * Math.sin(orbit.az), cz = r.z + orbit.dist * ce * Math.cos(orbit.az);
     const ty = fl + Math.max(0.3, r.cy);
     cam.position.set(cx, ty + orbit.dist * Math.sin(orbit.el), cz); cam.lookAt(r.x, ty, r.z);
   }
+  cam.near = kind === "fp" ? 0.15 : 0.02;
   cam.updateProjectionMatrix();
 }
 
@@ -488,7 +491,7 @@ function layoutViews() {
   }
   S.views = v;
   // DOM labels
-  stage.querySelectorAll(".vlabel").forEach(e => e.remove());
+  stage.querySelectorAll(".vlabel:not(#glitch)").forEach(e => e.remove());
   for (const vw of v) {
     if (!vw.label) continue;
     const e = document.createElement("div"); e.className = "vlabel"; e.textContent = vw.label;
@@ -526,12 +529,22 @@ function renderAll() {
     renderer.setViewport(x, y, w, h); renderer.setScissor(x, y, w, h);
     const cam = getCam(vw.cam + (vw.cam === "free" ? vw.label : ""));
     placeCam(cam, vw.cam, d, S.t, w / h);
-    for (const m of METHODS) { V[m].joints[JI.head].visible = V[m].nose.visible = V[m].bones[JI.head].visible = vw.cam !== "fp"; }
     const active = new Map(vw.methods.filter(o => d.pos[o.m]).map(o => [o.m, o.op]));
     for (const m of METHODS) {
       const sk = V[m], on = active.has(m);
       sk.g.visible = on;
-      if (on) { const op = active.get(m); for (const k of ["c", "l", "r"]) sk.mats[k].opacity = op; sk.joints.forEach(j => { if (j.material._own) j.material.opacity = op; }); sk.trails.forEach(t => t.material.opacity = op); }
+      if (!on) continue;
+      const op = active.get(m);
+      for (const k of ["c", "l", "r"]) sk.mats[k].opacity = op;
+      sk.joints.forEach(j => { if (j.material._own) j.material.opacity = op; });
+      sk.trails.forEach(t => t.material.opacity = op);
+      // head / neck: hidden in first person for every method. In blind A/B only GT's head is drawn
+      // (opaque, in the shared candidate colour), because Basis's head sits off the GT head.
+      let showHead = vw.cam !== "fp", hop = op;
+      if (abMode) { if (m === "gt") hop = 1; else showHead = false; }
+      const hcol = methodColors(abMode && m === "gt" ? NONGT[0] : m, isDark()).c;
+      sk.joints[JI.head].visible = sk.nose.visible = sk.bones[JI.head].visible = showHead;
+      sk.headMat.color.set(hcol); sk.headMat.opacity = hop; sk.noseMat.color.set(hcol); sk.noseMat.opacity = hop;
     }
     // rings only in views showing GT or any contact info
     renderer.render(scene, cam);
@@ -583,7 +596,7 @@ function updateLegend() {
   $("legend").innerHTML = METHODS.filter(m => cur().pos[m]).map(m => {
     const c = methodColors(m, dark);
     return `<span class="sw" style="background:${c.l}"></span>L <span class="sw" style="background:${c.r}"></span>R <b style="color:${c.c}">${methodLabel(m)}</b>`;
-  }).join(" &nbsp; ") + " &nbsp; green foot = GT contact; red trail = predicted foot slide during GT contact; nose cone = facing";
+  }).join(" &nbsp; ") + " &nbsp; hatched timeline = GT glitch frames; green foot = GT contact; red trail = predicted foot slide during GT contact; nose cone = facing";
 }
 function buildJumps() {
   const c = cur(), box = $("jumps"), mb = $("jumpMethodBtns"); box.innerHTML = ""; mb.innerHTML = "";
@@ -632,11 +645,21 @@ function drawStrip() {
   const n = d.n, X = t => t / (n - 1) * (w - 8) + 4;
   let mx = 0.01;
   const ms = NONGT.filter(m => d.err[m] && d.err[m].some(v => v > 0));
-  for (const m of ms) for (const v of d.err[m]) mx = Math.max(mx, v);
+  const bad = t => d.invalid && d.invalid[t];
+  for (const m of ms) for (let t = 0; t < n; t++) if (!bad(t)) mx = Math.max(mx, d.err[m][t]);
+  if (d.invalid) {  // hatched = GT glitch frames, excluded from worst-frame lists and metrics
+    const pc = document.createElement("canvas"); pc.width = pc.height = 6; const pg = pc.getContext("2d");
+    pg.strokeStyle = css("--bad"); pg.lineWidth = 1.2; pg.beginPath(); pg.moveTo(0, 6); pg.lineTo(6, 0); pg.stroke();
+    g.fillStyle = g.createPattern(pc, "repeat");
+    for (let t = 0; t < n; t++) if (bad(t)) g.fillRect(X(t) - 0.5, 0, Math.max(1, (w - 8) / n) + 1, h);
+  }
   g.lineWidth = 1.5;
   for (const m of ms) {
-    g.strokeStyle = methodColors(m, isDark()).c; g.beginPath();
-    for (let t = 0; t < n; t++) { const y = h - 12 - (d.err[m][t] / mx) * (h - 20); t ? g.lineTo(X(t), y) : g.moveTo(X(t), y); }
+    g.strokeStyle = methodColors(m, isDark()).c; g.beginPath(); let pen = false;
+    for (let t = 0; t < n; t++) {
+      if (bad(t)) { pen = false; continue; }
+      const y = h - 12 - (d.err[m][t] / mx) * (h - 20); pen ? g.lineTo(X(t), y) : g.moveTo(X(t), y); pen = true;
+    }
     g.stroke();
   }
   if (d.contact) {
@@ -777,7 +800,7 @@ const A_count = () => S.ab.answers.length;
 function setMode(m) {
   S.mode = m; document.body.classList.toggle("ab", m === "ab");
   $("tabReview").setAttribute("aria-pressed", m === "review"); $("tabAB").setAttribute("aria-pressed", m === "ab");
-  applyTheme();
+  $("glitch").style.display = "none"; applyTheme();
   if (m === "ab") { abInit(); S.layout = "over"; abShow(); } else { S.seg = null; setClip(S.ci); S.playing = true; syncPlayBtn(); }
   resize();
 }
@@ -793,6 +816,8 @@ function tick(now) {
   }
   renderAll();
   if (S.mode === "review") {
+    const dd = decodeClip(c), glitch = dd.invalid && dd.invalid[Math.round(S.t)];
+    $("glitch").style.display = glitch ? "" : "none";
     $("timeInfo").textContent = `${fmtT(S.t)} / ${fmtT(c.n)}  ·  frame ${Math.round(S.t)} of ${c.n}`;
     if (!tick.sc || Math.abs(tick.sc - S.t) > 0.01) { drawStrip(); tick.sc = S.t; }
   }

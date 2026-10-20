@@ -90,7 +90,13 @@ def main(argv=None) -> int:
     for ci in pick_clips(blob, args.clips):
         c = blob["clips"][ci]
         e = err_curve(c, "learned")
-        shots = {"good": int(np.argmin(e[30:-30]) + 30), "worst": int(np.argmax(e))}
+        if "invalid" in c:  # never pick a GT glitch frame
+            bad = np.frombuffer(base64.b64decode(c["invalid"]), dtype=np.uint8) > 0
+            e = np.where(bad, np.nan, e)
+        shots = {
+            "good": int(np.nanargmin(e[30:-30]) + 30),
+            "worst": int(np.nanargmax(e)),
+        }
         slug = re.sub(r"[^A-Za-z0-9]+", "_", c["id"]).strip("_")
         for tag, t in shots.items():
             for cam in args.cams.split(","):
