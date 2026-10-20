@@ -89,11 +89,11 @@ def main() -> int:
         else:
             e = next(x for x in j["evals"] if x["tag"] == what[5:])
             ckpt = e.get("ckpt", f".cache/sprint/runs/{e.get('run', name)}/best.pt")
+            who = ["--method", e["method"]] if "method" in e else ["--ckpt", ckpt]
             args = [
                 "-m",
                 "validation.sprint.eval",
-                "--ckpt",
-                ckpt,
+                *who,
                 "--split",
                 e.get("split", "val"),
                 "--variant",
@@ -103,7 +103,7 @@ def main() -> int:
                 "--out",
                 str(EVAL_OUT),
                 "--workers",
-                "1",
+                "14" if "method" in e else "1",
                 *e.get("flags", []),
             ]
             rc = gpu(args, logs / f"{name}.eval.log")

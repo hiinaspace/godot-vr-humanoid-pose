@@ -27,6 +27,10 @@ def main(argv=None) -> int:
     ap.add_argument("--ckpt", type=Path, help="model checkpoint from train.py (overrides --method)")
     ap.add_argument("--oracle", choices=("v1", "v2"), default="v2")
     ap.add_argument("--postfix", action="store_true", help="two-bone hand post-fix (model ckpt)")
+    ap.add_argument(
+        "--honest-fk", action="store_true", help="FK with lengths from noisy calibration"
+    )
+    ap.add_argument("--smooth", default=None, help="causal One-Euro output filter: MINCUT_HZ,BETA")
     ap.add_argument("--footlock", action="store_true", help="causal foot lock (needs contact head)")
     ap.add_argument(
         "--split",
@@ -48,7 +52,11 @@ def main(argv=None) -> int:
         from validation.sprint import train
 
         predictor = train.ModelPredictor.load(
-            args.ckpt, postfix=args.postfix, footlock=args.footlock
+            args.ckpt,
+            postfix=args.postfix,
+            footlock=args.footlock,
+            honest_fk=args.honest_fk,
+            smooth=tuple(map(float, args.smooth.split(","))) if args.smooth else None,
         )
         name = predictor.name
     sets = SPLIT_GROUPS.get(args.split, [args.split])

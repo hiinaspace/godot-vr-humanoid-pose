@@ -120,3 +120,31 @@ def foot_lock(local, root, lengths, contact_prob, blend: int = BLEND):
         target[:, [0, 2]] = xz
         _apply_chain(glob, pos, chain, target, w > 0, lengths)
     return C.local_rotations(glob)
+
+
+def one_euro(local, root, min_cutoff: float, beta: float, fps: float = C.FPS):
+    """Causal One-Euro filter on local rotations (nlerp, sign-aligned) and root position.
+    ``min_cutoff`` Hz, ``beta`` speed coefficient (per rad/s for rotations, per m/s for the root)."""
+
+    def alpha(cut):
+        tau = 1.0 / (2 * np.pi * cut)
+        return 1.0 / (1.0 + tau * fps)
+
+    T = len(local)
+    q_out, r_out = local.copy(), root.copy()
+    q_f, r_f = local[0].copy(), root[0].copy()
+    dq_f, dr_f = np.zeros(local.shape[1]), 0.0
+    a_d = alpha(1.0)  # derivative smoothing
+    for t in range(1, T):
+        q = local[t] * np.where(np.sum(local[t] * q_f, -1, keepdims=True) < 0, -1.0, 1.0)
+        spd = 2 * np.arccos(np.clip(np.abs(np.sum(q * q_f, -1)), 0, 1)) * fps  # rad/s
+        dq_f = dq_f + a_d * (spd - dq_f)
+        a = alpha(min_cutoff + beta * dq_f)[:, None]
+        q_f = q_f + a * (q - q_f)
+        q_f = q_f / np.linalg.norm(q_f, axis=-1, keepdims=True)
+        rspd = np.linalg.norm(root[t] - r_f) * fps
+        dr_f = dr_f + a_d * (rspd - dr_f)
+        ar = alpha(min_cutoff + beta * dr_f)
+        r_f = r_f + ar * (root[t] - r_f)
+        q_out[t], r_out[t] = q_f, r_f
+    return q_out, r_out

@@ -174,7 +174,10 @@ def build_data(args) -> None:
     mf = args.max_clips
     jobs = [(c, False, None) for c in cmu_tr[:mf]] + [(c, True, None) for c in cmu_tr[:mf]]
     jobs += [(c, False, None) for c in xs_tr[:mf]]
-    build_set("train", jobs)
+    if args.only in (None, "train"):
+        build_set("train", jobs)
+        if args.only == "train":
+            return
     val = doc["cmu"]["clips"]["val"][:mf] + doc["xsens"]["clips"]["val_subject"][:mf]
     build_set("val", [(c, False, None) for c in val])
 
@@ -405,11 +408,15 @@ def fk_torch(rot6: torch.Tensor, hips: torch.Tensor, lengths: torch.Tensor) -> t
 
 # --- loss ------------------------------------------------------------------------------------
 
-W = dict(rot=2.0, pos=10.0, hand=10.0, vel=10.0, contact=1.0)
+W = dict(rot=2.0, pos=10.0, hand=10.0, vel=10.0, contact=1.0, acc=0.0, cons=0.0)
+ACC_W, CONS_W = (
+    200.0,
+    100.0,
+)  # jitter terms (--jit-loss): within-window acceleration, last-output consistency
 SKATE_W = 20.0  # weight on the foot-velocity-at-contact term (m/frame units), --skate-w
 
 
-def loss_fn(out, r6, hips_rel, pc, head_pc, lengths, ct=None, skate_w=0.0):
+def loss_fn(out, r6, hips_rel, pc, head_pc, lengths, ct=None, skate_w=0.0, acc_w=0.0):
     """ct: GT contact labels [B,T,2] (float) -> adds the contact BCE and foot-velocity terms."""
     out = out.float()
     rot6, hr = decode(out)
@@ -431,7 +438,10 @@ def loss_fn(out, r6, hips_rel, pc, head_pc, lengths, ct=None, skate_w=0.0):
         / 3,
         **extra,
     )
-    wts = {**W, "skate": skate_w}
+    if acc_w:
+        d2 = lambda p: p[:, 2:] - 2 * p[:, 1:-1] + p[:, :-2]  # noqa: E731
+        terms["acc"] = (d2(pos) - d2(pc)).abs().mean()
+    wts = {**W, "skate": skate_w, "acc": acc_w}
     return sum(wts[k] * v for k, v in terms.items()), terms, pos
 
 
@@ -509,6 +519,24 @@ def feat_mask(mode: str, dev) -> torch.Tensor:
         m[6:12] = 1.0
         m[15:18] = 1.0
     return m
+
+
+def last_world(model, store, g, cfg):
+    """World positions [B,NJ,3] of the newest-frame output for windows ending at g (clean inputs)."""
+    idx, feats, st, Q, origin, head_pc = batch_inputs(
+        store, g, cfg["skel"], False, noise=True, mode=cfg.get("inputs", "full")
+    )
+    rot6, hr = decode(model(feats, st).float())
+    pc = fk_torch(rot6, head_pc + hr, store.lengths[store.cidx[g]])[:, -1]
+    return torch.einsum("bji,bkj->bki", Q, pc) + origin[:, None]
+
+
+def consistency_loss(model, store, g, cfg):
+    """Frame-to-frame consistency of the last output (what inference uses): the world displacement
+    between windows ending at g-1 and g should match the GT displacement."""
+    g0 = torch.maximum(g - 1, store.cstart[g])
+    d = last_world(model, store, g, cfg) - last_world(model, store, g0, cfg)
+    return (d - (store.pos[g] - store.pos[g0])).abs().mean()
 
 
 def batch_inputs(
@@ -589,22 +617,46 @@ class ModelPredictor:
     parallel_safe = False
 
     def __init__(
-        self, model, cfg: dict, name: str, dev: str = "cuda", postfix=False, footlock=False
+        self,
+        model,
+        cfg: dict,
+        name: str,
+        dev: str = "cuda",
+        postfix=False,
+        footlock=False,
+        honest_fk=False,
+        smooth=None,
     ):
         self.model, self.cfg, self.name, self.dev = model.to(dev).eval(), cfg, name, dev
         self.postfix, self.footlock = postfix, footlock
-        self.needs_gt = postfix or footlock
+        self.honest_fk, self.smooth = honest_fk, smooth  # smooth = (min_cutoff_hz, beta) or None
+        self.needs_gt = postfix or footlock or honest_fk
         if footlock and not cfg.get("contact_loss"):
             raise ValueError("--footlock needs a model trained with --contact-loss")
         set_window(cfg.get("window", 40))
         self.mode = cfg.get("inputs", "full")
 
     @classmethod
-    def load(cls, path: Path, dev: str = "cuda", postfix=False, footlock=False):
+    def load(
+        cls,
+        path: Path,
+        dev: str = "cuda",
+        postfix=False,
+        footlock=False,
+        honest_fk=False,
+        smooth=None,
+    ):
         ck = torch.load(path, map_location=dev, weights_only=False)
         model = build_model(ck["cfg"])
         model.load_state_dict(ck["model"])
-        tag = "".join(["+postfix" if postfix else "", "+footlock" if footlock else ""])
+        tag = "".join(
+            [
+                f"+smooth{smooth[0]:g}_{smooth[1]:g}" if smooth else "",
+                "+footlock" if footlock else "",
+                "+postfix" if postfix else "",
+                "+honestfk" if honest_fk else "",
+            ]
+        )
         return cls(
             model,
             ck["cfg"],
@@ -612,17 +664,30 @@ class ModelPredictor:
             dev,
             postfix,
             footlock,
+            honest_fk,
+            smooth,
         )
 
     def predict_clip_with_gt(self, inputs, calib, clip):
         pred = self.predict_clip_meta(inputs, calib, {"dataset": clip.dataset})
-        return self.post(pred, inputs, R.bone_lengths(clip.positions))
+        lengths = R.bone_lengths(clip.positions)
+        out = self.post(pred, inputs, lengths)
+        if (
+            self.honest_fk
+        ):  # FK with lengths from the noisy calibration scalars, not the GT skeleton
+            off = C.template_offsets(clip.dataset, calib.height_m, calib.arm_length_m)
+            pos = R.fk(out.rotations, out.root_pos, np.linalg.norm(off, axis=-1))
+            return O.Prediction(positions=pos)
+        return out
 
     def post(self, pred, inputs: np.ndarray, lengths: np.ndarray):
         """Causal per-frame / scan post-processes on a CanonPrediction (post.py)."""
         from validation.sprint import post as P
 
-        rot = pred.rotations
+        rot, root = pred.rotations, pred.root_pos
+        if self.smooth:
+            rot, root = P.one_euro(rot, root, *self.smooth)
+            pred = O2.CanonPrediction(rotations=rot, root_pos=root)
         if self.footlock:
             rot = P.foot_lock(rot, pred.root_pos, lengths, self.last_contact)
         if self.postfix:
@@ -744,7 +809,12 @@ def train(args) -> int:
             tr.lengths[tr.cidx[g]],
             tr.contact[idx[:, 1:]] if cw else None,
             args.skate_w if cw else 0.0,
+            ACC_W if args.jit_loss else 0.0,
         )
+        if args.jit_loss:
+            cons = consistency_loss(model, tr, g[:32], cfg)
+            terms["cons"] = cons
+            loss = loss + CONS_W * cons
         opt.zero_grad(set_to_none=True)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -906,6 +976,7 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build-data")
     b.add_argument("--max-clips", type=int, default=None)
+    b.add_argument("--only", choices=("train", "val"), default=None)
     t = sub.add_parser("train")
     t.add_argument("--run", required=True)
     t.add_argument("--model", choices=sorted(MODELS), default="hmdposer")
@@ -922,6 +993,9 @@ def main(argv=None) -> int:
     t.add_argument("--contact-loss", action="store_true", help="contact head + foot-velocity loss")
     t.add_argument("--skate-w", type=float, default=SKATE_W)
     t.add_argument("--inputs", choices=INPUT_MODES, default="full")
+    t.add_argument(
+        "--jit-loss", action="store_true", help="acceleration + frame-to-frame consistency terms"
+    )
     t.add_argument("--window", type=int, default=40, help="causal window / sequence length")
     t.add_argument(
         "--corrupt-aug", type=float, default=0.0, help="fraction of samples corrupted (E2)"
