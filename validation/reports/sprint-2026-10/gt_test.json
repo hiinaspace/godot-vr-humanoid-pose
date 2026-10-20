@@ -1,0 +1,3289 @@
+{
+ "method": "gt",
+ "meta": {
+  "oracle": "oracle-v1",
+  "inputs": "inputs-v1",
+  "seed": 20261019,
+  "splits": "splits-v1",
+  "conventions": "conventions-v1",
+  "fitted_noise_sha256": "baba6e3ba51e205bb0bab6454720011d08f785e0c3dfd4630055af48c4697cfd",
+  "xsens_eval_overlap": [
+   "S01",
+   "S02",
+   "S05"
+  ],
+  "xsens_val_subject": "S09"
+ },
+ "results": [
+  {
+   "clips": 118,
+   "frames": 96204,
+   "full_m": 0.0,
+   "full_macro_m": 0.0,
+   "upper_m": 0.0,
+   "upper_macro_m": 0.0,
+   "lower_m": 0.0,
+   "lower_macro_m": 0.0,
+   "rootrel_m": 0.0,
+   "rootrel_macro_m": 0.0,
+   "hand_m": 0.0,
+   "hand_macro_m": 0.0,
+   "legacy_upper_m": 0.0,
+   "legacy_upper_macro_m": 0.0,
+   "bonedir_m": 0.0,
+   "bonedir_macro_m": 0.0,
+   "mpjre_m": 6.261526204500754e-16,
+   "mpjre_macro_m": 5.714248394590735e-16,
+   "p95_full_m": 0.0,
+   "jitter": 2.2599563588185334,
+   "jitter_gt": 2.2599563588185334,
+   "gt_glitch_frames": 0,
+   "joint_err_m": {
+    "hips": 0.0,
+    "spine": 0.0,
+    "chest": 0.0,
+    "head": 0.0,
+    "left_shoulder": 0.0,
+    "left_elbow": 0.0,
+    "left_hand": 0.0,
+    "right_shoulder": 0.0,
+    "right_elbow": 0.0,
+    "right_hand": 0.0,
+    "left_knee": 0.0,
+    "left_foot": 0.0,
+    "right_knee": 0.0,
+    "right_foot": 0.0
+   },
+   "per_activity": {
+    "dance_exercise": {
+     "clips": 6,
+     "frames": 8310,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 6.898079958847631e-16,
+     "mpjre_macro_m": 6.758994476664642e-16,
+     "p95_full_m": 0.0,
+     "jitter": 1.7608200338880613,
+     "jitter_gt": 1.7608200338880613,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "floor_pose": {
+     "clips": 8,
+     "frames": 5417,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 7.516362190372951e-16,
+     "mpjre_macro_m": 7.455224369734074e-16,
+     "p95_full_m": 0.0,
+     "jitter": 4.335388107923292,
+     "jitter_gt": 4.335388107923292,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "idle_standing": {
+     "clips": 6,
+     "frames": 11728,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 6.404419804877687e-16,
+     "mpjre_macro_m": 6.401377635912055e-16,
+     "p95_full_m": 0.0,
+     "jitter": 1.6097049506349022,
+     "jitter_gt": 1.6097049506349022,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "locomotion": {
+     "clips": 67,
+     "frames": 61075,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 6.055938167754727e-16,
+     "mpjre_macro_m": 5.373547898317065e-16,
+     "p95_full_m": 0.0,
+     "jitter": 1.595913525726673,
+     "jitter_gt": 1.595913525726673,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "sitting": {
+     "clips": 6,
+     "frames": 3452,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 7.639551828921009e-16,
+     "mpjre_macro_m": 7.460371258869903e-16,
+     "p95_full_m": 0.0,
+     "jitter": 0.9292954199934336,
+     "jitter_gt": 0.9292954199934336,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "sports": {
+     "clips": 4,
+     "frames": 660,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 5.184566947584009e-16,
+     "mpjre_macro_m": 5.100477663656238e-16,
+     "p95_full_m": 0.0,
+     "jitter": 31.4992202532023,
+     "jitter_gt": 31.4992202532023,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "unknown": {
+     "clips": 21,
+     "frames": 5562,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 5.31709499612558e-16,
+     "mpjre_macro_m": 5.26121121587077e-16,
+     "p95_full_m": 0.0,
+     "jitter": 7.098266788938634,
+     "jitter_gt": 7.098266788938634,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    }
+   },
+   "per_clip": [
+    {
+     "clip": "cmu/114/114_01",
+     "frames": 161,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_02",
+     "frames": 871,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_03",
+     "frames": 1906,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_04",
+     "frames": 448,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_05",
+     "frames": 1362,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_06",
+     "frames": 512,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_07",
+     "frames": 810,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_08",
+     "frames": 804,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_09",
+     "frames": 1139,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_10",
+     "frames": 4029,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_11",
+     "frames": 1741,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_12",
+     "frames": 561,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_13",
+     "frames": 1566,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_14",
+     "frames": 2927,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_15",
+     "frames": 692,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_16",
+     "frames": 865,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_01",
+     "frames": 357,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_02",
+     "frames": 343,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_03",
+     "frames": 249,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_04",
+     "frames": 323,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_05",
+     "frames": 354,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_06",
+     "frames": 272,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_07",
+     "frames": 348,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_08",
+     "frames": 322,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_09",
+     "frames": 240,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_10",
+     "frames": 262,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_11",
+     "frames": 346,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_12",
+     "frames": 354,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_13",
+     "frames": 341,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_14",
+     "frames": 383,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_15",
+     "frames": 320,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_16",
+     "frames": 331,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_17",
+     "frames": 323,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_18",
+     "frames": 296,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_19",
+     "frames": 306,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_20",
+     "frames": 279,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_21",
+     "frames": 377,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_22",
+     "frames": 324,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_23",
+     "frames": 327,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_24",
+     "frames": 355,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_25",
+     "frames": 293,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_26",
+     "frames": 326,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_27",
+     "frames": 327,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_28",
+     "frames": 349,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_29",
+     "frames": 292,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_30",
+     "frames": 413,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_31",
+     "frames": 104,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_32",
+     "frames": 939,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_01",
+     "frames": 497,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_02",
+     "frames": 624,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_03",
+     "frames": 551,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_04",
+     "frames": 543,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_05",
+     "frames": 632,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_06",
+     "frames": 592,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_07",
+     "frames": 346,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_08",
+     "frames": 392,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_09",
+     "frames": 1147,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_10",
+     "frames": 889,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_11",
+     "frames": 584,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_12",
+     "frames": 384,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_13",
+     "frames": 658,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_14",
+     "frames": 966,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_01",
+     "frames": 415,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_02",
+     "frames": 469,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_03",
+     "frames": 512,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_04",
+     "frames": 552,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_06",
+     "frames": 1781,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_07",
+     "frames": 618,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_08",
+     "frames": 449,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_09",
+     "frames": 408,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_01",
+     "frames": 2621,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_02",
+     "frames": 941,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_03",
+     "frames": 1214,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_04",
+     "frames": 1866,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_05",
+     "frames": 3366,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_06",
+     "frames": 1322,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_07",
+     "frames": 4193,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_08",
+     "frames": 1517,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_09",
+     "frames": 1333,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_10",
+     "frames": 2254,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_11",
+     "frames": 1639,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_12",
+     "frames": 2351,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_13",
+     "frames": 2580,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_14",
+     "frames": 832,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_15",
+     "frames": 2687,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_16",
+     "frames": 2909,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_17",
+     "frames": 2216,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_18",
+     "frames": 2449,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_19",
+     "frames": 2247,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_20",
+     "frames": 767,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_21",
+     "frames": 706,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_22",
+     "frames": 2611,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/42/42_01",
+     "frames": 567,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_01",
+     "frames": 232,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_02",
+     "frames": 133,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_03",
+     "frames": 198,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_04",
+     "frames": 158,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_05",
+     "frames": 162,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_06",
+     "frames": 163,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_07",
+     "frames": 156,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_08",
+     "frames": 84,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_09",
+     "frames": 100,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_10",
+     "frames": 168,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_11",
+     "frames": 173,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_12",
+     "frames": 151,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_13",
+     "frames": 1262,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_14",
+     "frames": 224,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_15",
+     "frames": 220,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_16",
+     "frames": 247,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_17",
+     "frames": 261,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_18",
+     "frames": 246,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_19",
+     "frames": 244,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_20",
+     "frames": 288,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/87/87_01",
+     "frames": 308,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/87/87_02",
+     "frames": 172,
+     "activity": "sports",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/87/87_03",
+     "frames": 124,
+     "activity": "sports",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/87/87_04",
+     "frames": 108,
+     "activity": "sports",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/87/87_05",
+     "frames": 256,
+     "activity": "sports",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    }
+   ],
+   "skipped_short_clips": 1,
+   "seconds": 0.2819387359995744,
+   "split": "cmu_test",
+   "variant": "clean",
+   "quick": false
+  },
+  {
+   "clips": 118,
+   "frames": 96204,
+   "full_m": 0.0,
+   "full_macro_m": 0.0,
+   "upper_m": 0.0,
+   "upper_macro_m": 0.0,
+   "lower_m": 0.0,
+   "lower_macro_m": 0.0,
+   "rootrel_m": 0.0,
+   "rootrel_macro_m": 0.0,
+   "hand_m": 0.0,
+   "hand_macro_m": 0.0,
+   "legacy_upper_m": 0.0,
+   "legacy_upper_macro_m": 0.0,
+   "bonedir_m": 0.0,
+   "bonedir_macro_m": 0.0,
+   "mpjre_m": 6.261526204500754e-16,
+   "mpjre_macro_m": 5.714248394590735e-16,
+   "p95_full_m": 0.0,
+   "jitter": 2.2599563588185334,
+   "jitter_gt": 2.2599563588185334,
+   "gt_glitch_frames": 0,
+   "joint_err_m": {
+    "hips": 0.0,
+    "spine": 0.0,
+    "chest": 0.0,
+    "head": 0.0,
+    "left_shoulder": 0.0,
+    "left_elbow": 0.0,
+    "left_hand": 0.0,
+    "right_shoulder": 0.0,
+    "right_elbow": 0.0,
+    "right_hand": 0.0,
+    "left_knee": 0.0,
+    "left_foot": 0.0,
+    "right_knee": 0.0,
+    "right_foot": 0.0
+   },
+   "per_activity": {
+    "dance_exercise": {
+     "clips": 6,
+     "frames": 8310,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 6.898079958847631e-16,
+     "mpjre_macro_m": 6.758994476664642e-16,
+     "p95_full_m": 0.0,
+     "jitter": 1.7608200338880613,
+     "jitter_gt": 1.7608200338880613,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "floor_pose": {
+     "clips": 8,
+     "frames": 5417,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 7.516362190372951e-16,
+     "mpjre_macro_m": 7.455224369734074e-16,
+     "p95_full_m": 0.0,
+     "jitter": 4.335388107923292,
+     "jitter_gt": 4.335388107923292,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "idle_standing": {
+     "clips": 6,
+     "frames": 11728,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 6.404419804877687e-16,
+     "mpjre_macro_m": 6.401377635912055e-16,
+     "p95_full_m": 0.0,
+     "jitter": 1.6097049506349022,
+     "jitter_gt": 1.6097049506349022,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "locomotion": {
+     "clips": 67,
+     "frames": 61075,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 6.055938167754727e-16,
+     "mpjre_macro_m": 5.373547898317065e-16,
+     "p95_full_m": 0.0,
+     "jitter": 1.595913525726673,
+     "jitter_gt": 1.595913525726673,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "sitting": {
+     "clips": 6,
+     "frames": 3452,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 7.639551828921009e-16,
+     "mpjre_macro_m": 7.460371258869903e-16,
+     "p95_full_m": 0.0,
+     "jitter": 0.9292954199934336,
+     "jitter_gt": 0.9292954199934336,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "sports": {
+     "clips": 4,
+     "frames": 660,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 5.184566947584009e-16,
+     "mpjre_macro_m": 5.100477663656238e-16,
+     "p95_full_m": 0.0,
+     "jitter": 31.4992202532023,
+     "jitter_gt": 31.4992202532023,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    },
+    "unknown": {
+     "clips": 21,
+     "frames": 5562,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 5.31709499612558e-16,
+     "mpjre_macro_m": 5.26121121587077e-16,
+     "p95_full_m": 0.0,
+     "jitter": 7.098266788938634,
+     "jitter_gt": 7.098266788938634,
+     "gt_glitch_frames": 0,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    }
+   },
+   "per_clip": [
+    {
+     "clip": "cmu/114/114_01",
+     "frames": 161,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_02",
+     "frames": 871,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_03",
+     "frames": 1906,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_04",
+     "frames": 448,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_05",
+     "frames": 1362,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_06",
+     "frames": 512,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_07",
+     "frames": 810,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_08",
+     "frames": 804,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_09",
+     "frames": 1139,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_10",
+     "frames": 4029,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_11",
+     "frames": 1741,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_12",
+     "frames": 561,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_13",
+     "frames": 1566,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_14",
+     "frames": 2927,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_15",
+     "frames": 692,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/114/114_16",
+     "frames": 865,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_01",
+     "frames": 357,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_02",
+     "frames": 343,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_03",
+     "frames": 249,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_04",
+     "frames": 323,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_05",
+     "frames": 354,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_06",
+     "frames": 272,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_07",
+     "frames": 348,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_08",
+     "frames": 322,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_09",
+     "frames": 240,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_10",
+     "frames": 262,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_11",
+     "frames": 346,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_12",
+     "frames": 354,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_13",
+     "frames": 341,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_14",
+     "frames": 383,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_15",
+     "frames": 320,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_16",
+     "frames": 331,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_17",
+     "frames": 323,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_18",
+     "frames": 296,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_19",
+     "frames": 306,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_20",
+     "frames": 279,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_21",
+     "frames": 377,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_22",
+     "frames": 324,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_23",
+     "frames": 327,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_24",
+     "frames": 355,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_25",
+     "frames": 293,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_26",
+     "frames": 326,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_27",
+     "frames": 327,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_28",
+     "frames": 349,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_29",
+     "frames": 292,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_30",
+     "frames": 413,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_31",
+     "frames": 104,
+     "activity": "sitting",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/118/118_32",
+     "frames": 939,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_01",
+     "frames": 497,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_02",
+     "frames": 624,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_03",
+     "frames": 551,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_04",
+     "frames": 543,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_05",
+     "frames": 632,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_06",
+     "frames": 592,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_07",
+     "frames": 346,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_08",
+     "frames": 392,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_09",
+     "frames": 1147,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_10",
+     "frames": 889,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_11",
+     "frames": 584,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_12",
+     "frames": 384,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_13",
+     "frames": 658,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/131/131_14",
+     "frames": 966,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_01",
+     "frames": 415,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_02",
+     "frames": 469,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_03",
+     "frames": 512,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_04",
+     "frames": 552,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_06",
+     "frames": 1781,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_07",
+     "frames": 618,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_08",
+     "frames": 449,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/140/140_09",
+     "frames": 408,
+     "activity": "floor_pose",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_01",
+     "frames": 2621,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_02",
+     "frames": 941,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_03",
+     "frames": 1214,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_04",
+     "frames": 1866,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_05",
+     "frames": 3366,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_06",
+     "frames": 1322,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_07",
+     "frames": 4193,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_08",
+     "frames": 1517,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_09",
+     "frames": 1333,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_10",
+     "frames": 2254,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_11",
+     "frames": 1639,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_12",
+     "frames": 2351,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_13",
+     "frames": 2580,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_14",
+     "frames": 832,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_15",
+     "frames": 2687,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_16",
+     "frames": 2909,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_17",
+     "frames": 2216,
+     "activity": "idle_standing",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_18",
+     "frames": 2449,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_19",
+     "frames": 2247,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_20",
+     "frames": 767,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_21",
+     "frames": 706,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/142/142_22",
+     "frames": 2611,
+     "activity": "locomotion",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/42/42_01",
+     "frames": 567,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_01",
+     "frames": 232,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_02",
+     "frames": 133,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_03",
+     "frames": 198,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_04",
+     "frames": 158,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_05",
+     "frames": 162,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_06",
+     "frames": 163,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_07",
+     "frames": 156,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_08",
+     "frames": 84,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_09",
+     "frames": 100,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_10",
+     "frames": 168,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_11",
+     "frames": 173,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_12",
+     "frames": 151,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_13",
+     "frames": 1262,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_14",
+     "frames": 224,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_15",
+     "frames": 220,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_16",
+     "frames": 247,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_17",
+     "frames": 261,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_18",
+     "frames": 246,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_19",
+     "frames": 244,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/84/84_20",
+     "frames": 288,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/87/87_01",
+     "frames": 308,
+     "activity": "dance_exercise",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/87/87_02",
+     "frames": 172,
+     "activity": "sports",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/87/87_03",
+     "frames": 124,
+     "activity": "sports",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/87/87_04",
+     "frames": 108,
+     "activity": "sports",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "cmu/87/87_05",
+     "frames": 256,
+     "activity": "sports",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    }
+   ],
+   "skipped_short_clips": 1,
+   "seconds": 0.3044999090016063,
+   "split": "cmu_test",
+   "variant": "corrupted",
+   "quick": false
+  },
+  {
+   "clips": 11,
+   "frames": 126192,
+   "full_m": 0.0,
+   "full_macro_m": 0.0,
+   "upper_m": 0.0,
+   "upper_macro_m": 0.0,
+   "lower_m": 0.0,
+   "lower_macro_m": 0.0,
+   "rootrel_m": 0.0,
+   "rootrel_macro_m": 0.0,
+   "hand_m": 0.0,
+   "hand_macro_m": 0.0,
+   "legacy_upper_m": 0.0,
+   "legacy_upper_macro_m": 0.0,
+   "bonedir_m": 0.0,
+   "bonedir_macro_m": 0.0,
+   "mpjre_m": 3.9890873016413724e-16,
+   "mpjre_macro_m": 3.6345425821733503e-16,
+   "p95_full_m": 0.0,
+   "jitter": 2.0434420687119164,
+   "jitter_gt": 2.0434420687119164,
+   "gt_glitch_frames": 3,
+   "joint_err_m": {
+    "hips": 0.0,
+    "spine": 0.0,
+    "chest": 0.0,
+    "head": 0.0,
+    "left_shoulder": 0.0,
+    "left_elbow": 0.0,
+    "left_hand": 0.0,
+    "right_shoulder": 0.0,
+    "right_elbow": 0.0,
+    "right_hand": 0.0,
+    "left_knee": 0.0,
+    "left_foot": 0.0,
+    "right_knee": 0.0,
+    "right_foot": 0.0
+   },
+   "per_activity": {
+    "unknown": {
+     "clips": 11,
+     "frames": 126192,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 3.9890873016413724e-16,
+     "mpjre_macro_m": 3.6345425821733503e-16,
+     "p95_full_m": 0.0,
+     "jitter": 2.0434420687119164,
+     "jitter_gt": 2.0434420687119164,
+     "gt_glitch_frames": 3,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    }
+   },
+   "per_clip": [
+    {
+     "clip": "xsens/S01/eval_S01_A09_3",
+     "frames": 1881,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S01/eval_S01_A09_3_mirror",
+     "frames": 1877,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S02/eval_S02_A04",
+     "frames": 14766,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S02/eval_S02_A04_mirror",
+     "frames": 14762,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S02/eval_S02_A09_3",
+     "frames": 1975,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S02/eval_S02_A09_3_mirror",
+     "frames": 1971,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S05/eval_S05_A01",
+     "frames": 10571,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S05/eval_S05_A01_mirror",
+     "frames": 10567,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/named/eval_body_directions_1",
+     "frames": 9250,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/named/eval_game_1",
+     "frames": 54059,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/named/eval_squat_1",
+     "frames": 4513,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    }
+   ],
+   "skipped_short_clips": 0,
+   "seconds": 0.8409611770002812,
+   "split": "xsens_eval",
+   "variant": "clean",
+   "quick": false
+  },
+  {
+   "clips": 11,
+   "frames": 126192,
+   "full_m": 0.0,
+   "full_macro_m": 0.0,
+   "upper_m": 0.0,
+   "upper_macro_m": 0.0,
+   "lower_m": 0.0,
+   "lower_macro_m": 0.0,
+   "rootrel_m": 0.0,
+   "rootrel_macro_m": 0.0,
+   "hand_m": 0.0,
+   "hand_macro_m": 0.0,
+   "legacy_upper_m": 0.0,
+   "legacy_upper_macro_m": 0.0,
+   "bonedir_m": 0.0,
+   "bonedir_macro_m": 0.0,
+   "mpjre_m": 3.9890873016413724e-16,
+   "mpjre_macro_m": 3.6345425821733503e-16,
+   "p95_full_m": 0.0,
+   "jitter": 2.0434420687119164,
+   "jitter_gt": 2.0434420687119164,
+   "gt_glitch_frames": 3,
+   "joint_err_m": {
+    "hips": 0.0,
+    "spine": 0.0,
+    "chest": 0.0,
+    "head": 0.0,
+    "left_shoulder": 0.0,
+    "left_elbow": 0.0,
+    "left_hand": 0.0,
+    "right_shoulder": 0.0,
+    "right_elbow": 0.0,
+    "right_hand": 0.0,
+    "left_knee": 0.0,
+    "left_foot": 0.0,
+    "right_knee": 0.0,
+    "right_foot": 0.0
+   },
+   "per_activity": {
+    "unknown": {
+     "clips": 11,
+     "frames": 126192,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 3.9890873016413724e-16,
+     "mpjre_macro_m": 3.6345425821733503e-16,
+     "p95_full_m": 0.0,
+     "jitter": 2.0434420687119164,
+     "jitter_gt": 2.0434420687119164,
+     "gt_glitch_frames": 3,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    }
+   },
+   "per_clip": [
+    {
+     "clip": "xsens/S01/eval_S01_A09_3",
+     "frames": 1881,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S01/eval_S01_A09_3_mirror",
+     "frames": 1877,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S02/eval_S02_A04",
+     "frames": 14766,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S02/eval_S02_A04_mirror",
+     "frames": 14762,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S02/eval_S02_A09_3",
+     "frames": 1975,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S02/eval_S02_A09_3_mirror",
+     "frames": 1971,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S05/eval_S05_A01",
+     "frames": 10571,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S05/eval_S05_A01_mirror",
+     "frames": 10567,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/named/eval_body_directions_1",
+     "frames": 9250,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/named/eval_game_1",
+     "frames": 54059,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/named/eval_squat_1",
+     "frames": 4513,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    }
+   ],
+   "skipped_short_clips": 0,
+   "seconds": 1.0668857589989784,
+   "split": "xsens_eval",
+   "variant": "corrupted",
+   "quick": false
+  },
+  {
+   "clips": 12,
+   "frames": 156879,
+   "full_m": 0.0,
+   "full_macro_m": 0.0,
+   "upper_m": 0.0,
+   "upper_macro_m": 0.0,
+   "lower_m": 0.0,
+   "lower_macro_m": 0.0,
+   "rootrel_m": 0.0,
+   "rootrel_macro_m": 0.0,
+   "hand_m": 0.0,
+   "hand_macro_m": 0.0,
+   "legacy_upper_m": 0.0,
+   "legacy_upper_macro_m": 0.0,
+   "bonedir_m": 0.0,
+   "bonedir_macro_m": 0.0,
+   "mpjre_m": 4.183379390807347e-16,
+   "mpjre_macro_m": 4.242062149216959e-16,
+   "p95_full_m": 0.0,
+   "jitter": 2.2235788866111967,
+   "jitter_gt": 2.2235788866111967,
+   "gt_glitch_frames": 118,
+   "joint_err_m": {
+    "hips": 0.0,
+    "spine": 0.0,
+    "chest": 0.0,
+    "head": 0.0,
+    "left_shoulder": 0.0,
+    "left_elbow": 0.0,
+    "left_hand": 0.0,
+    "right_shoulder": 0.0,
+    "right_elbow": 0.0,
+    "right_hand": 0.0,
+    "left_knee": 0.0,
+    "left_foot": 0.0,
+    "right_knee": 0.0,
+    "right_foot": 0.0
+   },
+   "per_activity": {
+    "unknown": {
+     "clips": 12,
+     "frames": 156879,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 4.183379390807347e-16,
+     "mpjre_macro_m": 4.242062149216959e-16,
+     "p95_full_m": 0.0,
+     "jitter": 2.2235788866111967,
+     "jitter_gt": 2.2235788866111967,
+     "gt_glitch_frames": 118,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    }
+   },
+   "per_clip": [
+    {
+     "clip": "xsens/S09/train_S09_A02",
+     "frames": 12847,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A02_mirror",
+     "frames": 12843,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A03",
+     "frames": 17204,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A03_mirror",
+     "frames": 17200,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A04",
+     "frames": 24446,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A04_mirror",
+     "frames": 24442,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A05",
+     "frames": 5344,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A05_2",
+     "frames": 9117,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A05_2_mirror",
+     "frames": 9113,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A05_mirror",
+     "frames": 5339,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A09",
+     "frames": 9494,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A09_mirror",
+     "frames": 9490,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    }
+   ],
+   "skipped_short_clips": 0,
+   "seconds": 0.43182530699778,
+   "split": "xsens_val",
+   "variant": "clean",
+   "quick": false
+  },
+  {
+   "clips": 12,
+   "frames": 156879,
+   "full_m": 0.0,
+   "full_macro_m": 0.0,
+   "upper_m": 0.0,
+   "upper_macro_m": 0.0,
+   "lower_m": 0.0,
+   "lower_macro_m": 0.0,
+   "rootrel_m": 0.0,
+   "rootrel_macro_m": 0.0,
+   "hand_m": 0.0,
+   "hand_macro_m": 0.0,
+   "legacy_upper_m": 0.0,
+   "legacy_upper_macro_m": 0.0,
+   "bonedir_m": 0.0,
+   "bonedir_macro_m": 0.0,
+   "mpjre_m": 4.183379390807347e-16,
+   "mpjre_macro_m": 4.242062149216959e-16,
+   "p95_full_m": 0.0,
+   "jitter": 2.2235788866111967,
+   "jitter_gt": 2.2235788866111967,
+   "gt_glitch_frames": 118,
+   "joint_err_m": {
+    "hips": 0.0,
+    "spine": 0.0,
+    "chest": 0.0,
+    "head": 0.0,
+    "left_shoulder": 0.0,
+    "left_elbow": 0.0,
+    "left_hand": 0.0,
+    "right_shoulder": 0.0,
+    "right_elbow": 0.0,
+    "right_hand": 0.0,
+    "left_knee": 0.0,
+    "left_foot": 0.0,
+    "right_knee": 0.0,
+    "right_foot": 0.0
+   },
+   "per_activity": {
+    "unknown": {
+     "clips": 12,
+     "frames": 156879,
+     "full_m": 0.0,
+     "full_macro_m": 0.0,
+     "upper_m": 0.0,
+     "upper_macro_m": 0.0,
+     "lower_m": 0.0,
+     "lower_macro_m": 0.0,
+     "rootrel_m": 0.0,
+     "rootrel_macro_m": 0.0,
+     "hand_m": 0.0,
+     "hand_macro_m": 0.0,
+     "legacy_upper_m": 0.0,
+     "legacy_upper_macro_m": 0.0,
+     "bonedir_m": 0.0,
+     "bonedir_macro_m": 0.0,
+     "mpjre_m": 4.183379390807347e-16,
+     "mpjre_macro_m": 4.242062149216959e-16,
+     "p95_full_m": 0.0,
+     "jitter": 2.2235788866111967,
+     "jitter_gt": 2.2235788866111967,
+     "gt_glitch_frames": 118,
+     "joint_err_m": {
+      "hips": 0.0,
+      "spine": 0.0,
+      "chest": 0.0,
+      "head": 0.0,
+      "left_shoulder": 0.0,
+      "left_elbow": 0.0,
+      "left_hand": 0.0,
+      "right_shoulder": 0.0,
+      "right_elbow": 0.0,
+      "right_hand": 0.0,
+      "left_knee": 0.0,
+      "left_foot": 0.0,
+      "right_knee": 0.0,
+      "right_foot": 0.0
+     }
+    }
+   },
+   "per_clip": [
+    {
+     "clip": "xsens/S09/train_S09_A02",
+     "frames": 12847,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A02_mirror",
+     "frames": 12843,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A03",
+     "frames": 17204,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A03_mirror",
+     "frames": 17200,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A04",
+     "frames": 24446,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A04_mirror",
+     "frames": 24442,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A05",
+     "frames": 5344,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A05_2",
+     "frames": 9117,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A05_2_mirror",
+     "frames": 9113,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A05_mirror",
+     "frames": 5339,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A09",
+     "frames": 9494,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    },
+    {
+     "clip": "xsens/S09/train_S09_A09_mirror",
+     "frames": 9490,
+     "activity": "unknown",
+     "full_cm": 0.0,
+     "upper_cm": 0.0,
+     "lower_cm": 0.0
+    }
+   ],
+   "skipped_short_clips": 0,
+   "seconds": 0.5873412969995115,
+   "split": "xsens_val",
+   "variant": "corrupted",
+   "quick": false
+  }
+ ]
+}

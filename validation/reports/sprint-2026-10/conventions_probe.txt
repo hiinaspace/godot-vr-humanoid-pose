@@ -1,0 +1,59 @@
+
+== CMU: 210 clips, 170145 frames @ 60 Hz
+  [PASS] left shoulder on +up x forward side (>= 0.93): 0.9591 of 147444 frames
+  [PASS] left elbow on +up x forward side (>= 0.93): 0.9583 of 147444 frames
+  [PASS] left hand on +up x forward side (>= 0.85): 0.9547 of 147444 frames
+  [PASS] left knee on +up x forward side (>= 0.93): 0.9585 of 147444 frames
+  [PASS] left foot on +up x forward side (>= 0.85): 0.9413 of 147444 frames
+  [PASS] walking direction == label-implied forward: median cos 0.99, 0.884 of 30440 walking frames forward
+  [PASS] head rotation +Z == body forward: median cos 0.982
+  [PASS] head above hips (+Y up): 0.9510 of frames
+  [PASS] floor at Y~0 (per-clip min ankle height): median 0.021 m, 0.00 of clips dip >10 cm below the floor (Xsens A09 clips go up to 0.8 m below: stairs/drift, kept)
+  [PASS] bone lengths stable (median CV per bone < 3%, foot bones < 6%): worst right_knee-right_foot 0.0414
+  [PASS] units are metres (calibrated height): median 1.603 m
+  [PASS] incoming-bone rotation offsets ~constant (mean angle to mean dir): worst left_foot 6.5 deg; arms/torso 4.1 deg
+  [info] template-FK floor with GT rotations: 4.93 cm MPJPE-full
+
+== Xsens (non-mirror): 56 clips, 998983 frames @ 60 Hz
+  [PASS] left shoulder on +up x forward side (>= 0.93): 0.9945 of 677770 frames
+  [PASS] left elbow on +up x forward side (>= 0.93): 0.9912 of 677770 frames
+  [PASS] left hand on +up x forward side (>= 0.85): 0.9735 of 677770 frames
+  [PASS] left knee on +up x forward side (>= 0.93): 0.9860 of 677770 frames
+  [PASS] left foot on +up x forward side (>= 0.85): 0.9549 of 677770 frames
+  [PASS] walking direction == label-implied forward: median cos 0.97, 0.868 of 32765 walking frames forward
+  [PASS] head rotation +Z == body forward: median cos 0.973
+  [PASS] head above hips (+Y up): 0.9873 of frames
+  [PASS] floor at Y~0 (per-clip min ankle height): median 0.046 m, 0.16 of clips dip >10 cm below the floor (Xsens A09 clips go up to 0.8 m below: stairs/drift, kept)
+  [PASS] bone lengths stable (median CV per bone < 3%, foot bones < 6%): worst head-chest 0.0059
+  [PASS] units are metres (calibrated height): median 1.560 m
+  [PASS] incoming-bone rotation offsets ~constant (mean angle to mean dir): worst left_knee 11.8 deg; arms/torso 3.2 deg
+  [info] template-FK floor with GT rotations: 6.54 cm MPJPE-full
+
+== Xsens mirror clips (labels must also be left=+up x forward): 3 clips, 45540 frames @ 60 Hz
+  [PASS] left shoulder on +up x forward side (>= 0.93): 0.9960 of 9159 frames
+  [PASS] left elbow on +up x forward side (>= 0.93): 0.9962 of 9159 frames
+  [PASS] left hand on +up x forward side (>= 0.85): 0.9902 of 9159 frames
+  [PASS] left knee on +up x forward side (>= 0.93): 0.9972 of 9159 frames
+  [PASS] left foot on +up x forward side (>= 0.85): 0.9763 of 9159 frames
+  [skip] walking direction: only 730 walking frames
+  [PASS] head rotation +Z == body forward: median cos 0.997
+  [PASS] head above hips (+Y up): 1.0000 of frames
+  [PASS] floor at Y~0 (per-clip min ankle height): median 0.080 m, 0.00 of clips dip >10 cm below the floor (Xsens A09 clips go up to 0.8 m below: stairs/drift, kept)
+  [PASS] bone lengths stable (median CV per bone < 3%, foot bones < 6%): worst head-chest 0.0055
+  [PASS] units are metres (calibrated height): median 1.475 m
+  [PASS] incoming-bone rotation offsets ~constant (mean angle to mean dir): worst left_shoulder 4.3 deg; arms/torso 4.3 deg
+  [info] template-FK floor with GT rotations: 6.16 cm MPJPE-full
+
+== Xsens mirror pairs (orig vs *_mirror)
+  [PASS] eval_S01_A09_3_mirror == x-reflected orig with L/R labels swapped: lag +0 fr, mean joint err 0.00 cm (without label swap 35.7 cm)
+  [PASS] eval_S02_A04_mirror == x-reflected orig with L/R labels swapped: lag +0 fr, mean joint err 0.00 cm (without label swap 28.7 cm)
+  [PASS] eval_S02_A09_3_mirror == x-reflected orig with L/R labels swapped: lag +0 fr, mean joint err 0.00 cm (without label swap 26.7 cm)
+  [PASS] eval_S05_A01_mirror == x-reflected orig with L/R labels swapped: lag +0 fr, mean joint err 0.00 cm (without label swap 25.5 cm)
+  [PASS] train_S09_A02_mirror == x-reflected orig with L/R labels swapped: lag +0 fr, mean joint err 0.00 cm (without label swap 33.5 cm)
+  [PASS] train_S09_A03_mirror == x-reflected orig with L/R labels swapped: lag +0 fr, mean joint err 0.00 cm (without label swap 30.5 cm)
+  [PASS] train_S09_A04_mirror == x-reflected orig with L/R labels swapped: lag +0 fr, mean joint err 0.00 cm (without label swap 32.4 cm)
+  [PASS] train_S09_A05_2_mirror == x-reflected orig with L/R labels swapped: lag +0 fr, mean joint err 0.00 cm (without label swap 35.5 cm)
+  [PASS] train_S09_A05_mirror == x-reflected orig with L/R labels swapped: lag +0 fr, mean joint err 0.00 cm (without label swap 31.9 cm)
+  [PASS] train_S09_A09_mirror == x-reflected orig with L/R labels swapped: lag +0 fr, mean joint err 0.00 cm (without label swap 28.6 cm)
+
+RESULT: PASS

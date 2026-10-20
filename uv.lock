@@ -814,6 +814,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "matplotlib" },
+    { name = "numpy" },
     { name = "polars" },
 ]
 
@@ -834,6 +835,7 @@ ml = [
 [package.metadata]
 requires-dist = [
     { name = "matplotlib", specifier = ">=3.10.9" },
+    { name = "numpy", specifier = ">=2.4.6" },
     { name = "polars", specifier = ">=1.40.1" },
 ]
 
