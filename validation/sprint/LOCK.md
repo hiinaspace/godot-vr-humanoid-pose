@@ -66,4 +66,4 @@ Round 2 / early Round 3 numbers (v2) are kept under `eval_v2` for Basis and the 
 
 | file | sha256 |
 |---|---|
-| validation/sprint/oracle_v3.py | $H |
+| validation/sprint/oracle_v3.py | aff25b81d6bca90e5e79a8fa2f2210a0dade933130990e9bb8b1303fb1b0e797 |

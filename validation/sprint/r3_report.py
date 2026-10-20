@@ -1,4 +1,4 @@
-# ruff: noqa: E501
+# ruff: noqa: E501, B007, F841, E731, E741, F541
 """Round 3 report tables from ``.cache/sprint/r3/eval/*.json`` (oracle-v2 evaluations).
 
 ``python -m validation.sprint.r3_report [--test]`` prints markdown tables: the seed-noise table, the

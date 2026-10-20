@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Baselines behind the oracle's Predictor interface: GT passthrough variants and Basis."""
 
 from __future__ import annotations
