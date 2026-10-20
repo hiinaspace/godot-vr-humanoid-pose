@@ -88,3 +88,52 @@ def test_contact_labels_match_oracle_rule():
     floor = np.percentile(gf[..., 1].min(1), 2)
     ref = (gf[1:-1, :, 1] < floor + 0.05) & (O2._hspeed(gf) < 0.10)
     assert (lab[1:-1] == ref).all()
+
+
+def test_valid_mask_flags_jumps_and_bad_bones():
+    from validation.sprint import oracle_v3 as O3
+
+    n = 100
+    pos = np.zeros((n, C.NJ, 3))
+    for j in range(1, C.NJ):
+        pos[:, j] = pos[:, C.PARENT[j]] + np.array([0.0, 0.1, 0.0])
+    ok = O3.valid_mask(pos)
+    assert ok.all()
+    jump = pos.copy()
+    jump[50:] += np.array([2.0, 0.0, 0.0])  # a global 2 m step at frame 50
+    ok = O3.valid_mask(jump)
+    assert (
+        not ok[45:56].any() and ok[:44].all() and ok[57:].all()
+    )  # +-5 dilation around frames 49/50
+    bone = pos.copy()
+    bone[30, C.J["left_elbow"]] += np.array([0.0, 0.0, 0.2])  # bone 3x too long on one frame
+    ok = O3.valid_mask(bone)
+    assert not ok[30] and ok[:24].all()
+
+
+def test_stream_pipeline_is_per_frame_and_consistent():
+    import torch
+
+    from validation.sprint import train as T
+
+    torch.manual_seed(0)
+    raw = torch.randn(2, 31, 24)
+    raw[..., 3:7] = torch.nn.functional.normalize(raw[..., 3:7], dim=-1)
+    raw[..., 10:14] = torch.nn.functional.normalize(raw[..., 10:14], dim=-1)
+    raw[..., 17:21] = torch.nn.functional.normalize(raw[..., 17:21], dim=-1)
+    f, Q, o, h = T.make_feats_stream(raw)
+    f2, *_ = T.make_feats_stream(
+        raw[:, 10:]
+    )  # dropping history changes nothing but the first frame
+    assert torch.allclose(f[:, 10:], f2, atol=1e-5)
+    m = T.HMDPoser(d=32, ff=64, heads=4, layers=1, blocks=1)
+    m.eval()
+    st = torch.zeros(2, 5)
+    with torch.no_grad():
+        full, _ = m.forward_stream(f, st)
+        s = None
+        parts = []
+        for a in range(0, 30, 7):
+            o_, s = m.forward_stream(f[:, a : a + 7], st, s)
+            parts.append(o_)
+    assert torch.allclose(full, torch.cat(parts, 1), atol=1e-5)

@@ -226,6 +226,17 @@ class Store:
         self.noise = (
             torch.rand(len(start), 3, generator=torch.Generator().manual_seed(7)) * 0.1 + 0.95
         ).to(dev)
+        from validation.sprint import oracle_v3 as O3
+
+        pos_np = self.pos.cpu().numpy().astype(np.float64)
+        valid = np.concatenate(
+            [O3.valid_mask(pos_np[a : a + n]) for a, n in zip(start, length, strict=True)]
+        )
+        self.valid = torch.from_numpy(valid).to(
+            dev
+        )  # oracle-v3 GT-validity (loss / selection mask)
+        self.start_dev = torch.from_numpy(start.astype(np.int64)).to(dev)
+        self.length_dev = torch.from_numpy(length.astype(np.int64)).to(dev)
         self.contact = torch.from_numpy(contact_labels(self.pos.cpu().numpy(), start, length)).to(
             dev
         )
@@ -297,6 +308,162 @@ def make_feats(raw: torch.Tensor, wrist: torch.Tensor | None = None):
     return feats, Q, origin, Pc[:, 1:, 0]
 
 
+def make_feats_stream(raw: torch.Tensor):
+    """Per-frame canonicalisation (no window). raw [B,T+1,24] -> feats [B,T,NT,18], Q [B,T,3,3],
+    origin [B,T,3], head_pc [B,T,3]; frame t is expressed in the frame of its own head heading and
+    xz-origin (so nothing depends on history); velocities use frames t-1 -> t, rotated by Q_t."""
+    P = torch.stack([raw[..., 0:3], raw[..., 7:10], raw[..., 14:17]], 2)
+    Rm = qmat(torch.stack([raw[..., 3:7], raw[..., 10:14], raw[..., 17:21]], 2))
+    f, u = Rm[:, :, 0, :, 2], Rm[:, :, 0, :, 1]
+    fxz, uxz = f[..., [0, 2]], u[..., [0, 2]]
+    wgt = (1 - fxz.norm(dim=-1, keepdim=True) / 0.5).clamp(0, 1)
+    d = fxz - wgt * torch.sign(f[..., 1:2]) * uxz
+    th = torch.atan2(d[..., 0], d[..., 1])
+    c, s_, o, z = torch.cos(th), torch.sin(th), torch.ones_like(th), torch.zeros_like(th)
+    Q = torch.stack([c, z, -s_, z, o, z, s_, z, c], -1).reshape(*th.shape, 3, 3)
+    origin = P[:, :, 0].clone()
+    origin[..., 1] = 0
+    Pc = torch.einsum("btij,btkj->btki", Q, P - origin[:, :, None])
+    Rc = Q[:, :, None] @ Rm
+    Rh = Rc[:, :, 0]
+    ph = torch.einsum("btji,btkj->btki", Rh, Pc[:, :, 1:] - Pc[:, :, :1])
+    rh = Rh[:, :, None].transpose(-1, -2) @ Rc[:, :, 1:]
+    Pt = torch.cat([Pc, ph], 2)
+    Rt = torch.cat([Rc, rh], 2)
+    v_world = torch.einsum("btij,btkj->btki", Q[:, 1:], P[:, 1:] - P[:, :-1]) * 30.0
+    v_head = (ph[:, 1:] - ph[:, :-1]) * 30.0
+    vel = torch.cat([v_world, v_head], 2)
+    # angular velocity: world-frame delta of the tracker rotation expressed in the current frame
+    dR_w = Rm[:, 1:] @ Rm[:, :-1].transpose(-1, -2)
+    dR_w = Q[:, 1:, None] @ dR_w @ Q[:, 1:, None].transpose(-1, -2)
+    dR_h = rh[:, 1:] @ rh[:, :-1].transpose(-1, -2)
+    ang = (sixd(torch.cat([dR_w, dR_h], 2)) - ID6.to(raw.device)) * 10.0
+    feats = torch.cat([sixd(Rt[:, 1:]), ang, Pt[:, 1:], vel], -1)
+    return feats, Q[:, 1:], origin[:, 1:], Pc[:, 1:, 0]
+
+
+def make_targets_stream(store: Store, idx: torch.Tensor, Q, origin, head_pc):
+    """idx [B,T] -> GT rot6 (root in the frame-t canonical frame), canonical positions, world positions."""
+    r6 = store.rot6[idx].clone()
+    r6[:, :, 0] = sixd(Q @ sixd2mat(r6[:, :, 0]))
+    pw = store.pos[idx]
+    pc = torch.einsum("btij,btkj->btki", Q, pw - origin[:, :, None])
+    return r6, pc, pw
+
+
+class StreamSampler:
+    """``nb`` parallel streams, each walking through a clip in chunks of ``S`` frames (truncated BPTT):
+    the LSTM state is carried across chunks and reset at clip starts, at random mid-clip starts
+    (50 % of new clips) and with probability ``reset_p`` per chunk (state-reset augmentation)."""
+
+    def __init__(self, store: Store, nb: int, S: int, xs_frac: float, reset_p: float, gen):
+        self.st, self.nb, self.S, self.xs, self.rp, self.gen = store, nb, S, xs_frac, reset_p, gen
+        dev = store.dev
+        self.cl = torch.zeros(nb, dtype=torch.long, device=dev)
+        self.pos = torch.full((nb,), 10**9, dtype=torch.long, device=dev)
+        self.calnoise = torch.ones(nb, 3, device=dev)
+
+    def next(self):
+        st, dev = self.st, self.st.dev
+        need = self.pos >= st.length_dev[self.cl]
+        if need.any():
+            g = st.sample(self.nb, self.xs, self.gen)
+            c = st.cidx[g]
+            off = g - st.cstart[g]
+            rnd = torch.rand(self.nb, device=dev, generator=self.gen) < 0.5
+            self.cl = torch.where(need, c, self.cl)
+            self.pos = torch.where(need, torch.where(rnd, off, torch.zeros_like(off)), self.pos)
+            cn = torch.rand(self.nb, 3, device=dev, generator=self.gen) * 0.1 + 0.95
+            self.calnoise = torch.where(need[:, None], cn, self.calnoise)
+        reset = need | (torch.rand(self.nb, device=dev, generator=self.gen) < self.rp)
+        base = st.start_dev[self.cl]
+        ln = st.length_dev[self.cl]
+        t = self.pos[:, None] - 1 + torch.arange(self.S + 1, device=dev)[None]
+        idx = base[:, None] + torch.minimum(t.clamp(min=0), (ln - 1)[:, None])
+        vm = (self.pos[:, None] + torch.arange(self.S, device=dev)[None]) < ln[:, None]
+        self.pos = self.pos + self.S
+        return idx, vm, reset
+
+
+def stream_batch(store: Store, idx, cl, calnoise, skel, aug, gen, mode, corrupt, cgen):
+    raw_wr = None
+    if aug:
+        wr = wrist_aug(len(idx), idx.shape[1], idx.device, gen)
+        cmu = (store.ds_dev[cl] == 0)[:, None, None, None, None]
+        raw_wr = torch.where(cmu, wr, torch.eye(3, device=idx.device).expand_as(wr))
+    raw = store.inp[idx]
+    if corrupt > 0:
+        raw = corrupt_raw(raw, cgen, corrupt)
+    if raw_wr is not None:
+        pass
+    feats, Q, origin, head_pc = make_feats_stream(
+        raw if raw_wr is None else _apply_wrist(raw, raw_wr)
+    )
+    if mode != "full":
+        feats = feats * feat_mask(mode, idx.device)
+    st = static_feats(store.calib_dev[cl] * calnoise, store.ds_dev[cl], skel)
+    return feats, st, Q, origin, head_pc
+
+
+def _apply_wrist(raw: torch.Tensor, wr: torch.Tensor) -> torch.Tensor:
+    """Rotate the two hand-tracker quaternions by wr [B,T,2,3,3] (R @ Rw) - on raw quaternions."""
+    q = torch.stack([raw[..., 10:14], raw[..., 17:21]], 2)
+    m = qmat(q) @ wr
+    qn = mat2quat(m)
+    out = raw.clone()
+    out[..., 10:14], out[..., 17:21] = qn[:, :, 0], qn[:, :, 1]
+    return out
+
+
+@torch.no_grad()
+def quick_val_stream(
+    model,
+    store: Store,
+    skel: bool,
+    clip_stride=6,
+    max_frames=3000,
+    mode="full",
+    mask=False,
+    chunk=512,
+):
+    """Streaming validation: whole clips (first ``max_frames``) through the model with carried state."""
+    model.eval()
+    res = {}
+    dev = store.dev
+    for d, name in ((0, "cmu"), (1, "xsens")):
+        cl_ids = [c for c in range(len(store.start)) if int(store.ds[c]) == d][::clip_stride]
+        if not cl_ids:
+            continue
+        acc = dict(full=0.0, upper=0.0, lower=0.0, loss=0.0, n=0.0)
+        for c in cl_ids:
+            n = min(int(store.length[c]), max_frames)
+            base = int(store.start[c])
+            state = None
+            for a in range(0, n, chunk):
+                b = min(n, a + chunk)
+                idx = (base + torch.arange(a - 1, b, device=dev).clamp(min=0))[None]
+                cl = torch.tensor([c], device=dev)
+                feats, st, Q, origin, head_pc = stream_batch(
+                    store, idx, cl, store.noise[cl], skel, False, None, mode, 0.0, None
+                )
+                out, state = model.forward_stream(feats, st, state)
+                r6, pc, pw = make_targets_stream(store, idx[:, 1:], Q, origin, head_pc)
+                m = store.valid[idx[:, 1:]].float() if mask else torch.ones(1, b - a, device=dev)
+                loss, _, pos = loss_fn(out, r6, None, pc, head_pc, store.lengths[cl], m=m)
+                e = (pos - pc).norm(dim=-1)
+                for k, ix in (("full", NONIN), ("upper", UPPER), ("lower", LOWER)):
+                    acc[k] += (e[:, :, ix].mean(-1) * m).sum().item()
+                acc["loss"] += loss.item() * m.sum().item()
+                acc["n"] += m.sum().item()
+        res[name] = {
+            k: v / max(acc["n"], 1) * (100 if k != "loss" else 1)
+            for k, v in acc.items()
+            if k != "n"
+        }
+    model.train()
+    return res
+
+
 def window(store: Store, g: torch.Tensor):
     idx = g[:, None] + torch.arange(-L, 1, device=g.device)[None]
     return torch.maximum(idx, store.cstart[g][:, None])  # [B, L+1], clamped at the clip start
@@ -342,6 +509,11 @@ class HMDPoser(nn.Module):
                         nn.init.orthogonal_(p)
 
     def forward(self, feats: torch.Tensor, static: torch.Tensor) -> torch.Tensor:
+        return self.forward_stream(feats, static)[0]
+
+    def forward_stream(self, feats: torch.Tensor, static: torch.Tensor, state=None):
+        """feats [B,T,NT,18] -> (out [B,T,nout], state). ``state`` = per block, per token (h, c) of the
+        temporal LSTMs ([1,B,d] each) or None (zeros). The spatial transformer is per frame."""
         b, t = feats.shape[:2]
         sl = [slice(0, 6), slice(6, 12), slice(12, 15), slice(15, 18)]
         toks = [
@@ -352,10 +524,16 @@ class HMDPoser(nn.Module):
         ]
         toks.append(self.norm(self.static(static))[:, None].expand(b, t, -1))
         x = torch.stack(toks, 2)
-        for lstm, sp in zip(self.lstm, self.spatial, strict=True):
-            x = torch.stack([lstm[k](x[:, :, k])[0] for k in range(NT + 1)], 2)
-            x = sp(x.reshape(b * t, NT + 1, -1)).reshape(b, t, NT + 1, -1)
-        return self.head(x.reshape(b, t, -1))
+        new = []
+        for bi, (lstm, sp) in enumerate(zip(self.lstm, self.spatial, strict=True)):
+            outs, st_b = [], []
+            for k in range(NT + 1):
+                o, hc = lstm[k](x[:, :, k], None if state is None else state[bi][k])
+                outs.append(o)
+                st_b.append(hc)
+            new.append(st_b)
+            x = sp(torch.stack(outs, 2).reshape(b * t, NT + 1, -1)).reshape(b, t, NT + 1, -1)
+        return self.head(x.reshape(b, t, -1)), new
 
 
 class AvatarPoser(nn.Module):
@@ -416,33 +594,64 @@ ACC_W, CONS_W = (
 SKATE_W = 20.0  # weight on the foot-velocity-at-contact term (m/frame units), --skate-w
 
 
-def loss_fn(out, r6, hips_rel, pc, head_pc, lengths, ct=None, skate_w=0.0, acc_w=0.0):
-    """ct: GT contact labels [B,T,2] (float) -> adds the contact BCE and foot-velocity terms."""
+def _mm(x: torch.Tensor, m: torch.Tensor | None) -> torch.Tensor:
+    """Mean of x [B,T,...] over everything, weighting frames by m [B,T] (None = plain mean)."""
+    if m is None:
+        return x.mean()
+    x = x.reshape(x.shape[0], x.shape[1], -1).mean(-1)
+    return (x * m).sum() / m.sum().clamp(min=1.0)
+
+
+def loss_fn(
+    out, r6, hips_rel, pc, head_pc, lengths, ct=None, skate_w=0.0, acc_w=0.0, m=None, world=None
+):
+    """ct: GT contact labels [B,T,2] -> contact BCE + foot-velocity terms. m: [B,T] frame weights
+    (GT-validity mask). world: (pred, target) positions in one common frame for the motion terms
+    (streaming mode, where every frame has its own canonical frame)."""
     out = out.float()
     rot6, hr = decode(out)
     pos = fk_torch(rot6, head_pc + hr, lengths)
-    extra = {}
-    if ct is not None and out.shape[-1] > OUT:
-        extra["contact"] = F.binary_cross_entropy_with_logits(out[..., OUT:], ct)
-        v = (pos[:, 1:, FEET] - pos[:, :-1, FEET])[..., [0, 2]]
-        m = ct[:, 1:] * ct[:, :-1]
-        speed = torch.sqrt((v**2).sum(-1) + 1e-8) * m
-        extra["skate"] = speed.sum() / m.sum().clamp(min=1.0)
+    pv, pcv = (pos, pc) if world is None else (world(pos), world.target)
+    m1 = None if m is None else m
     terms = dict(
-        rot=(rot6 - r6).abs().mean(),
-        pos=(pos - pc).abs().mean(),
-        hand=(pos[:, :, HANDS] - pc[:, :, HANDS]).abs().mean(),
+        rot=_mm((rot6 - r6).abs(), m1),
+        pos=_mm((pos - pc).abs(), m1),
+        hand=_mm((pos[:, :, HANDS] - pc[:, :, HANDS]).abs(), m1),
         vel=sum(
-            (pos[:, k:] - pos[:, :-k] - (pc[:, k:] - pc[:, :-k])).abs().mean() for k in (1, 3, 5)
+            _mm(
+                (pv[:, k:] - pv[:, :-k] - (pcv[:, k:] - pcv[:, :-k])).abs(),
+                None if m is None else m[:, k:] * m[:, :-k],
+            )
+            for k in (1, 3, 5)
         )
         / 3,
-        **extra,
     )
+    if ct is not None and out.shape[-1] > OUT:
+        terms["contact"] = _mm(
+            F.binary_cross_entropy_with_logits(out[..., OUT:], ct, reduction="none"), m1
+        )
+        v = (pv[:, 1:, FEET] - pv[:, :-1, FEET])[..., [0, 2]]
+        mc = ct[:, 1:] * ct[:, :-1]
+        if m is not None:
+            mc = mc * (m[:, 1:] * m[:, :-1])[..., None]
+        speed = torch.sqrt((v**2).sum(-1) + 1e-8) * mc
+        terms["skate"] = speed.sum() / mc.sum().clamp(min=1.0)
     if acc_w:
         d2 = lambda p: p[:, 2:] - 2 * p[:, 1:-1] + p[:, :-2]  # noqa: E731
-        terms["acc"] = (d2(pos) - d2(pc)).abs().mean()
+        ma = None if m is None else m[:, 2:] * m[:, 1:-1] * m[:, :-2]
+        terms["acc"] = _mm((d2(pv) - d2(pcv)).abs(), ma)
     wts = {**W, "skate": skate_w, "acc": acc_w}
     return sum(wts[k] * v for k, v in terms.items()), terms, pos
+
+
+class World:
+    """Callable canonical->world conversion for streaming (per-frame Q, origin) + the world target."""
+
+    def __init__(self, Q, origin, target):
+        self.Q, self.origin, self.target = Q, origin, target
+
+    def __call__(self, pos):
+        return torch.einsum("btji,btkj->btki", self.Q, pos) + self.origin[:, :, None]
 
 
 # Fitted corruption model (validation/reports/fitted_tracker_noise.json, rounded) per tracker
@@ -572,7 +781,9 @@ def batch_inputs(
 
 
 @torch.no_grad()
-def quick_val(model, store: Store, skel: bool, stride=8, bs=512, max_frames=40000, mode="full"):
+def quick_val(
+    model, store: Store, skel: bool, stride=8, bs=512, max_frames=40000, mode="full", mask=False
+):
     """Subsampled val metrics (cm) per dataset: pooled end-frames every ``stride`` frames."""
     model.eval()
     res = {}
@@ -582,6 +793,8 @@ def quick_val(model, store: Store, skel: bool, stride=8, bs=512, max_frames=4000
         lo, hi = store.range[d]
         gs = torch.arange(lo, hi, stride, device=store.dev)
         gs = gs[:: max(1, len(gs) // max_frames)]
+        if mask:
+            gs = gs[store.valid[gs]]
         acc = dict(full=0.0, upper=0.0, lower=0.0, loss=0.0, n=0)
         for i in range(0, len(gs), bs):
             g = gs[i : i + bs]
@@ -698,6 +911,30 @@ class ModelPredictor:
         return O2.CanonPrediction(rotations=rot, root_pos=pred.root_pos)
 
     @torch.no_grad()
+    def _predict_stream(self, x, st, mask, bs=1024):
+        """x [T+1,24] (first frame duplicated as the 'previous' frame). Stateful chunked inference; the
+        result equals stepping frame by frame (the LSTM state is carried across chunks)."""
+        rots, roots, cts, state = [], [], [], None
+        for a in range(0, len(x) - 1, bs):
+            raw = x[a : min(len(x), a + bs + 1)][None]
+            feats, Q, origin, head_pc = make_feats_stream(raw)
+            if mask is not None:
+                feats = feats * mask
+            out, state = self.model.forward_stream(feats, st, state)
+            out = out.float()[0]
+            Q, origin, head_pc = Q[0], origin[0], head_pc[0]
+            if out.shape[-1] > OUT:
+                cts.append(torch.sigmoid(out[:, OUT:]).cpu().numpy())
+            rot6, hr = decode(out)
+            m = sixd2mat(rot6)  # [n,NJ,3,3] canonical frame of each frame
+            m = torch.cat([(Q.transpose(-1, -2) @ m[:, 0])[:, None], m[:, 1:]], 1)
+            hips = (Q.transpose(-1, -2) @ (head_pc + hr)[..., None]).squeeze(-1) + origin
+            rots.append(mat2quat(m).double().cpu().numpy())
+            roots.append(hips.double().cpu().numpy())
+        self.last_contact = np.concatenate(cts) if cts else None
+        return O2.CanonPrediction(rotations=np.concatenate(rots), root_pos=np.concatenate(roots))
+
+    @torch.no_grad()
     def predict_clip_meta(self, inputs: np.ndarray, calib: O.Calib, meta: dict, bs=1024):
         x = torch.tensor(inputs, dtype=torch.float32, device=self.dev)
         x = torch.cat([x[:1].expand(L, -1), x])  # causal left padding with the first frame
@@ -707,6 +944,8 @@ class ModelPredictor:
         ds = torch.tensor([0 if meta["dataset"] == "cmu" else 1], device=self.dev)
         st = static_feats(cal, ds, self.cfg.get("skel", True))
         mask = None if self.mode == "full" else feat_mask(self.mode, self.dev)
+        if self.cfg.get("streaming"):
+            return self._predict_stream(x[L - 1 :], st, mask, bs=max(bs, 1024))
         rots, roots, cts = [], [], []
         for i in range(0, len(inputs), bs):
             t = torch.arange(i, min(i + bs, len(inputs)), device=self.dev)
@@ -732,8 +971,47 @@ class ModelPredictor:
 # --- training --------------------------------------------------------------------------------
 
 
+def window_step(args, cfg, model, tr, gen, cgen, cw, opt):
+    g = tr.sample(args.bs, args.xs_frac, gen)
+    idx, feats, st, Q, origin, head_pc = batch_inputs(
+        tr,
+        g,
+        cfg["skel"],
+        not args.no_wrist_aug,
+        gen,
+        mode=args.inputs,
+        corrupt=args.corrupt_aug,
+        cgen=cgen,
+    )
+    r6, hips_rel, pc = make_targets(tr, idx[:, 1:], Q, origin, head_pc)
+    with torch.autocast("cuda", torch.bfloat16, enabled=args.bf16):
+        out = model(feats, st)
+    m = tr.valid[idx[:, 1:]].float() if args.gt_mask else None
+    loss, terms, _ = loss_fn(
+        out,
+        r6,
+        hips_rel,
+        pc,
+        head_pc,
+        tr.lengths[tr.cidx[g]],
+        tr.contact[idx[:, 1:]] if cw else None,
+        args.skate_w if cw else 0.0,
+        ACC_W if args.jit_loss else 0.0,
+        m,
+    )
+    if args.jit_loss:
+        cons = consistency_loss(model, tr, g[:32], cfg)
+        terms["cons"] = cons
+        loss = loss + CONS_W * cons
+    opt.zero_grad(set_to_none=True)
+    loss.backward()
+    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    opt.step()
+    return loss, terms
+
+
 def train(args) -> int:
-    dev = "cuda"
+    dev = os.environ.get("SPRINT_DEV", "cuda")
     torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = True
     run = RUNS / args.run
     run.mkdir(parents=True, exist_ok=True)
@@ -785,42 +1063,53 @@ def train(args) -> int:
             run / name,
         )
 
+    stream = sstate = None
+    if args.streaming:
+        stream = StreamSampler(tr, args.stream_bs, args.stream_len, args.xs_frac, args.reset_p, gen)
     while step < args.steps:
         for gparam in opt.param_groups:
             gparam["lr"] = args.lr * sched(step)
-        g = tr.sample(args.bs, args.xs_frac, gen)
-        idx, feats, st, Q, origin, head_pc = batch_inputs(
-            tr,
-            g,
-            cfg["skel"],
-            not args.no_wrist_aug,
-            gen,
-            mode=args.inputs,
-            corrupt=args.corrupt_aug,
-            cgen=cgen,
-        )
-        r6, hips_rel, pc = make_targets(tr, idx[:, 1:], Q, origin, head_pc)
-        with torch.autocast("cuda", torch.bfloat16, enabled=args.bf16):
-            out = model(feats, st)
-        loss, terms, _ = loss_fn(
-            out,
-            r6,
-            hips_rel,
-            pc,
-            head_pc,
-            tr.lengths[tr.cidx[g]],
-            tr.contact[idx[:, 1:]] if cw else None,
-            args.skate_w if cw else 0.0,
-            ACC_W if args.jit_loss else 0.0,
-        )
-        if args.jit_loss:
-            cons = consistency_loss(model, tr, g[:32], cfg)
-            terms["cons"] = cons
-            loss = loss + CONS_W * cons
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        opt.step()
+        if stream is not None:
+            idx, vm, reset = stream.next()
+            feats, st, Q, origin, head_pc = stream_batch(
+                tr,
+                idx,
+                stream.cl,
+                stream.calnoise,
+                cfg["skel"],
+                not args.no_wrist_aug,
+                gen,
+                args.inputs,
+                args.corrupt_aug,
+                cgen,
+            )
+            if sstate is not None:  # carry the LSTM state, zero it where a stream restarts
+                keep = (~reset).float()[None, :, None]
+                sstate = [
+                    [(h.detach() * keep, c_.detach() * keep) for h, c_ in blk] for blk in sstate
+                ]
+            out, sstate = model.forward_stream(feats, st, sstate)
+            r6, pc, pw = make_targets_stream(tr, idx[:, 1:], Q, origin, head_pc)
+            m = vm.float() * (tr.valid[idx[:, 1:]].float() if args.gt_mask else 1.0)
+            loss, terms, _ = loss_fn(
+                out,
+                r6,
+                None,
+                pc,
+                head_pc,
+                tr.lengths[tr.cidx[idx[:, 1]]],
+                tr.contact[idx[:, 1:]] if cw else None,
+                args.skate_w if cw else 0.0,
+                ACC_W if args.jit_loss else 0.0,
+                m,
+                World(Q, origin, pw),
+            )
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+        else:
+            loss, terms = window_step(args, cfg, model, tr, gen, cgen, cw, opt)
         step += 1
         if step % 100 == 0:
             mlflow.log_metrics(
@@ -836,10 +1125,16 @@ def train(args) -> int:
         done = step >= args.steps
         timeout = (time.time() - t0) > args.time_min * 60
         if step % args.val_every == 0 or done or timeout:
-            v = quick_val(model, va, cfg["skel"], mode=args.inputs)
-            t = quick_val(
-                model, tr, cfg["skel"], stride=64, max_frames=20000, mode=args.inputs
-            )  # train error, same metric
+            if stream is not None:
+                v = quick_val_stream(model, va, cfg["skel"], mode=args.inputs, mask=args.gt_mask)
+                t = quick_val_stream(
+                    model, tr, cfg["skel"], clip_stride=60, max_frames=1500, mode=args.inputs
+                )
+            else:
+                v = quick_val(model, va, cfg["skel"], mode=args.inputs, mask=args.gt_mask)
+                t = quick_val(
+                    model, tr, cfg["skel"], stride=64, max_frames=20000, mode=args.inputs
+                )  # train error, same metric
             sel = float(np.mean([v[d]["full"] for d in v]))
             hist.append(dict(step=step, val=v, train=t, sel=sel))
             mlflow.log_metrics({f"val/{d}_{k}": x for d in v for k, x in v[d].items()}, step=step)
@@ -996,6 +1291,17 @@ def main(argv=None) -> int:
     t.add_argument("--skate-w", type=float, default=SKATE_W)
     t.add_argument("--contact-w", type=float, default=1.0, help="weight of the contact BCE")
     t.add_argument("--inputs", choices=INPUT_MODES, default="full")
+    t.add_argument(
+        "--gt-mask", action="store_true", help="oracle-v3 GT-validity mask in loss/selection"
+    )
+    t.add_argument(
+        "--streaming", action="store_true", help="stateful LSTM, per-frame canonicalisation, TBPTT"
+    )
+    t.add_argument("--stream-bs", type=int, default=32, help="parallel streams per step")
+    t.add_argument("--stream-len", type=int, default=240, help="frames per truncated-BPTT chunk")
+    t.add_argument(
+        "--reset-p", type=float, default=0.05, help="per-chunk LSTM state-reset probability"
+    )
     t.add_argument(
         "--jit-loss", action="store_true", help="acceleration + frame-to-frame consistency terms"
     )

@@ -11,7 +11,7 @@ import argparse
 import os
 from pathlib import Path
 
-from validation.sprint import baselines, oracle, oracle_v2
+from validation.sprint import baselines, oracle, oracle_v2, oracle_v3
 from validation.sprint import splits as S
 
 SPLIT_GROUPS = {
@@ -25,7 +25,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--method", default="basis", choices=sorted(baselines._REGISTRY))
     ap.add_argument("--ckpt", type=Path, help="model checkpoint from train.py (overrides --method)")
-    ap.add_argument("--oracle", choices=("v1", "v2"), default="v2")
+    ap.add_argument("--oracle", choices=("v1", "v2", "v3"), default="v3")
     ap.add_argument("--postfix", action="store_true", help="two-bone hand post-fix (model ckpt)")
     ap.add_argument(
         "--honest-fk", action="store_true", help="FK with lengths from noisy calibration"
@@ -45,11 +45,11 @@ def main(argv=None) -> int:
     ap.add_argument("--tag", default=None, help="report file stem (default method_split)")
     args = ap.parse_args(argv)
 
-    mod = oracle_v2 if args.oracle == "v2" else oracle
+    mod = {"v1": oracle, "v2": oracle_v2, "v3": oracle_v3}[args.oracle]
     predictor, name = args.method, args.method
     if args.ckpt:
-        if args.oracle != "v2":
-            ap.error("--ckpt needs --oracle v2")
+        if args.oracle == "v1":
+            ap.error("--ckpt needs --oracle v2 or v3")
         from validation.sprint import train
 
         predictor = train.ModelPredictor.load(
@@ -76,8 +76,8 @@ def main(argv=None) -> int:
             )
             results.append(r)
     tag = args.tag or f"{name}_{args.split}" + ("_quick" if args.quick else "")
-    if args.oracle == "v2":
-        tag += "_v2" if not args.tag else ""
+    if args.oracle != "v1" and not args.tag:
+        tag += f"_{args.oracle}"
     path = mod.write_report(name, results, args.out, tag)
     print(f"wrote {path}")
     print(path.read_text())

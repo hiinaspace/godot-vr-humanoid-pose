@@ -40,8 +40,12 @@ def main() -> int:
     ap.add_argument("ckpt", type=Path)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--variant", default="clean")
+    ap.add_argument("--dev", default="cuda")
     args = ap.parse_args()
-    pred = T.ModelPredictor.load(args.ckpt)
+    import torch
+
+    torch.set_num_threads(3)
+    pred = T.ModelPredictor.load(args.ckpt, dev=args.dev)
     ids = S.clip_ids("cmu_val")[::8] + S.clip_ids("xsens_val")
     acc = {(c, b): dict(jp=0.0, jg=0.0, n=0, up=[], lo=[], lag=[]) for c, b in [(0, 0), *GRID]}
     for cid in ids:

@@ -51,3 +51,19 @@ step 40 -> 25); the full probe passes.
 |---|---|
 | validation/sprint/splits_v2.json | ea8c92e17c09c0b487cd26723d15494185002ef5fb423bc24471c8d8ba60a0c7 |
 | validation/sprint/dedupe_pairs_v1.json | eceef758aa60f44f190822768ec7778534a083bbe630f014a31b45e130fae8fd |
+
+# oracle-v3 (2026-10-20, Round 3)
+
+Add-only over oracle-v2 (v1 and v2 files and hashes above unchanged). Adds a per-frame GT-validity mask
+(`oracle_v3.valid_mask`): a frame is invalid if any joint jumps > 0.5 m to the previous or next frame, or
+any bone length is > 35 % off the clip median (a tighter 15 % bound flagged 20-36 % of frames in legitimate
+CMU clips, whose virtual joints are not rigid); the mask is dilated by +-5 frames. Masked frames are
+excluded from every metric (jitter: fully valid 4-frame windows; skate / pen / float: valid t-1, t, t+1 and
+the floor percentile over valid frames; pops: both frames valid; swivel: valid frames). `eval.py`
+defaults to `--oracle v3`; the masked fraction per set is printed and stored (`masked_frac`, and
+`masked_clips` when a set exceeds 2 %). Splits are splits-v2. Masked fraction: CMU val 0.07 %, S09 0.58 %.
+Round 2 / early Round 3 numbers (v2) are kept under `eval_v2` for Basis and the final model only.
+
+| file | sha256 |
+|---|---|
+| validation/sprint/oracle_v3.py | $H |
