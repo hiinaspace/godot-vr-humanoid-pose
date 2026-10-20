@@ -36,6 +36,7 @@ ESTIMATOR_CHOICES = (
     "basis_arm_swivel",
     "basis_shrug",
     "basis_research",
+    "learned",
 )
 
 
@@ -57,6 +58,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=ESTIMATOR_CHOICES,
         default="basis_research",
         help="Python estimator used for live estimate_response messages.",
+    )
+    parser.add_argument(
+        "--learned-model",
+        type=Path,
+        help="ONNX graph for --estimator learned (validation.sprint.export_onnx output).",
+    )
+    parser.add_argument("--learned-threads", type=int, help="onnxruntime intra-op threads (default 1)")
+    parser.add_argument(
+        "--learned-frame",
+        choices=("godot", "model"),
+        help="'godot' maps Godot hand frames to the training convention; 'model' = pass through.",
+    )
+    parser.add_argument("--learned-skeleton", choices=("xsens", "cmu"))
+    parser.add_argument(
+        "--no-raw-log",
+        action="store_true",
+        help="Do not append every message to raw_messages.ndjson (saves a file write per frame).",
     )
     parser.add_argument(
         "--no-estimation",
@@ -99,7 +117,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    writer = LiveCaptureParquetWriter(args.output_dir, session_id=args.session_id)
+    if args.estimator == "learned":
+        from validation.vr_pose_validation import learned_estimator
+
+        learned_estimator.configure(
+            model_path=str(args.learned_model) if args.learned_model else None,
+            threads=args.learned_threads,
+            frame=args.learned_frame,
+            skeleton=args.learned_skeleton,
+        )
+    writer = LiveCaptureParquetWriter(
+        args.output_dir, session_id=args.session_id, raw_log=not args.no_raw_log
+    )
     stop_event = Event()
     backend = None
     estimator_name = (

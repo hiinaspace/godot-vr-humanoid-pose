@@ -91,7 +91,9 @@ class LiveCaptureParquetWriter:
         *,
         session_id: str | None = None,
         compression: ParquetCompression = "zstd",
+        raw_log: bool = True,
     ) -> None:
+        self.raw_log = raw_log
         self.session_id = session_id or new_session_id()
         self.paths = live_capture_paths(output_dir, self.session_id)
         self.compression = compression
@@ -105,6 +107,8 @@ class LiveCaptureParquetWriter:
         self._joints: list[dict[str, Any]] = []
 
     def append_raw_message(self, message: Mapping[str, Any]) -> None:
+        if not self.raw_log:
+            return
         self.paths.session_dir.mkdir(parents=True, exist_ok=True)
         with self.paths.raw_messages_path.open("ab") as handle:
             handle.write(

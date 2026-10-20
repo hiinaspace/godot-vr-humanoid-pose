@@ -31,6 +31,7 @@ type EstimatorName = Literal[
     "basis_shrug",
     "basis_research",
     "basis_dual_frame",
+    "learned",
 ]
 
 __all__ = [
@@ -155,6 +156,10 @@ def create_estimator(name: EstimatorName) -> PoseEstimator:
         )
     if name == "basis_dual_frame":
         return BasisPortEstimator(_dual_frame_settings())
+    if name == "learned":
+        from validation.vr_pose_validation.learned_estimator import LearnedEstimator
+
+        return LearnedEstimator()
     raise ValueError(f"Unknown estimator: {name}")
 
 
