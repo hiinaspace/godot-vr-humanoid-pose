@@ -44,6 +44,21 @@ class GroundTruthRotations(GroundTruth):
         )
 
 
+class GroundTruthCanon(GroundTruth):
+    """GT canonical-rest rotations through oracle-v2 FK with GT bone lengths (oracle-v2 only).
+
+    Measures the FK floor of the rotation path (clip-median lengths vs per-frame lengths)."""
+
+    name = "gt_canon"
+
+    def predict_clip_with_gt(self, inputs, calib, clip):
+        from validation.sprint import oracle_v2, rest
+
+        return oracle_v2.CanonPrediction(
+            rotations=rest.canonical_local(clip), root_pos=clip.positions[:, 0].copy()
+        )
+
+
 class Basis:
     """The in-repo procedural Basis port (``basis_research``), untuned and run as is."""
 
@@ -103,7 +118,12 @@ class Basis:
         return Prediction(positions=pos)
 
 
-_REGISTRY = {"gt": GroundTruth, "gt_rot": GroundTruthRotations, "basis": Basis}
+_REGISTRY = {
+    "gt": GroundTruth,
+    "gt_rot": GroundTruthRotations,
+    "gt_canon": GroundTruthCanon,
+    "basis": Basis,
+}
 
 
 def create(name: str):
