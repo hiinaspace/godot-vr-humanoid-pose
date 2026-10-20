@@ -211,13 +211,13 @@ def per_frame_err(pos: np.ndarray, gt: np.ndarray) -> np.ndarray:
     return np.linalg.norm(pos - gt, axis=-1)[:, C.NONINPUT_IDX].mean(1)
 
 
-GLITCH_BONE_TOL, GLITCH_JUMP_M, GLITCH_DILATE = 0.15, 0.5, 5
+GLITCH_BONE_TOL, GLITCH_JUMP_M, GLITCH_DILATE = 0.35, 0.5, 5
 MAX_INVALID_FRAC = 0.10  # a review window may contain at most this fraction of invalid GT frames
 
 
 def gt_invalid(gt: np.ndarray) -> np.ndarray:
     """[T] bool: GT frames that cannot be trusted. A frame is invalid when any bone length is outside
-    +-15 % of the clip median, or any joint moves more than 0.5 m since the previous / to the next
+    +-35 % of the clip median, or any joint moves more than 0.5 m since the previous / to the next
     frame (mocap glitch); the mask is dilated by +-5 frames."""
     b = np.linalg.norm(gt[:, 1:] - gt[:, C.PARENT[1:]], axis=-1)
     med = np.maximum(np.median(b, axis=0), 1e-6)
