@@ -21,7 +21,7 @@ Graph I/O (``<out>.json`` carries the same plus config; ONNX ``metadata_props`` 
 Positions come from FK(rot, hips, bone lengths) in ``runtime.py`` (13 joints; tests below).
 
 Exactness-preserving trim for hmdposer: the second spatial transformer is per-timestep, so only the
-newest timestep is evaluated (bit-identical outputs to ``model(feats, static)[:, -1]``, checked by
+newest timestep is evaluated (outputs equal ``model(feats, static)[:, -1]`` to ~1e-6, checked by
 ``--verify``).
 """
 
@@ -95,18 +95,28 @@ def hmd_last_step(model, feats: torch.Tensor, static: torch.Tensor) -> torch.Ten
     raise AssertionError
 
 
+def feat_mask(mode: str) -> torch.Tensor:
+    """Per-token feature mask [18] = [rot6 | angvel6 | pos3 | linvel3] (Round 3 ``--inputs``: ``pos``
+    keeps positions, ``posrot`` adds rotations, ``full`` everything; identical to train.feat_mask)."""
+    if mode not in ("pos", "posrot", "full"):
+        raise ValueError(f"unknown inputs mode {mode!r}")
+    m = torch.zeros(18)
+    m[12:15] = 1.0
+    if mode in ("posrot", "full"):
+        m[0:6] = 1.0
+    if mode == "full":
+        m[6:12] = 1.0
+        m[15:18] = 1.0
+    return m
+
+
 class StepGraph(nn.Module):
     def __init__(self, model: nn.Module, cfg: dict, nout: int):
         super().__init__()
         self.model, self.nout = model, nout
         self.hmd = cfg["model"] == "hmdposer"
         mode = cfg.get("inputs", "full")
-        self.register_buffer(
-            "mask",
-            T.feat_mask(mode, "cpu")
-            if hasattr(T, "feat_mask") and mode != "full"
-            else torch.ones(18),
-        )
+        self.register_buffer("mask", feat_mask(mode))
 
     def forward(self, raw: torch.Tensor, static: torch.Tensor):
         feats, Q, origin, head_pc = T.make_feats(raw)

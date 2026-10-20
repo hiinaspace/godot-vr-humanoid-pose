@@ -1567,6 +1567,8 @@ func _apply_user_args() -> void:
 			stream_host = args[index + 1]
 		if args[index] == "--capture-port" and index + 1 < args.size():
 			stream_port = int(args[index + 1])
+		if args[index] == "--estimate-hz" and index + 1 < args.size():
+			estimate_sample_rate_hz = float(args[index + 1])  # 0 = a request every frame
 		if args[index] == "--no-synthetic-live-input":
 			synthetic_input_without_xr = false
 		if args[index] == "--no-openvr-overlay":

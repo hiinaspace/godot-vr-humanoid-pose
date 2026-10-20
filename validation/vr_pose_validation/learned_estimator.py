@@ -22,6 +22,7 @@ debug-overlay names Godot expects (``neck``).
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,10 @@ CONFIG: dict = dict(
     threads=int(os.environ.get("VRHP_LEARNED_THREADS", "1")),
     skeleton=os.environ.get("VRHP_LEARNED_SKELETON", "xsens"),
     frame=os.environ.get("VRHP_LEARNED_FRAME", "godot"),
+    height_m=float(os.environ["VRHP_LEARNED_HEIGHT_M"])
+    if "VRHP_LEARNED_HEIGHT_M" in os.environ
+    else None,
+    stats_every=int(os.environ.get("VRHP_LEARNED_STATS_EVERY", "300")),
 )
 
 
@@ -81,11 +86,17 @@ class LearnedEstimator:
         threads: int | None = None,
         skeleton: str | None = None,
         frame: str | None = None,
+        height_m: float | None = None,
+        stats_every: int | None = None,
     ):
         cfg = {**CONFIG}
         self.rt = RT.LearnedRuntime(
             model_path or cfg["model_path"], threads or cfg["threads"], skeleton or cfg["skeleton"]
         )
+        self.height_override = height_m if height_m is not None else cfg["height_m"]
+        self.stats_every = cfg["stats_every"] if stats_every is None else stats_every
+        self._times: list[dict] = []
+        self._last_stats = time.perf_counter()
         self.frame = frame or cfg["frame"]
         if self.frame not in ("godot", "model"):
             raise ValueError(f"frame must be godot|model, got {self.frame!r}")
@@ -101,10 +112,10 @@ class LearnedEstimator:
     # --- calibration -> (static scalars, bone lengths) ---------------------------------------
     def _calibrate(self, cal: AvatarCalibration) -> None:
         bl = dict(cal.bone_lengths_m)
-        key = (cal.human_height_m, tuple(sorted(bl.items())))
+        key = (self.height_override or cal.human_height_m, tuple(sorted(bl.items())))
         if key == self._cal_key:
             return
-        h = float(cal.human_height_m)
+        h = float(self.height_override or cal.human_height_m)
         arm = float(bl.get("arm_length", ARM_PER_HEIGHT * h))
         shoulder = float(bl.get("shoulder_width", SHOULDER_PER_HEIGHT * h))
         self.rt.set_calibration((h, arm, shoulder))
@@ -116,6 +127,25 @@ class LearnedEstimator:
             if name in bl:
                 lengths[i] = float(bl[name])
         self._lengths, self._cal_key = lengths, key
+
+    def _log_stats(self, timing: dict) -> None:
+        """Every ``stats_every`` estimates print compute time and the rate requests arrive at."""
+        if not self.stats_every:
+            return
+        self._times.append(timing)
+        if len(self._times) < self.stats_every:
+            return
+        now = time.perf_counter()
+        tot = np.array([t["total"] for t in self._times]) * 1e3
+        ort = np.array([t["ort"] for t in self._times]) * 1e3
+        print(
+            f"[learned] {len(tot)} frames @ {len(tot) / (now - self._last_stats):.1f} Hz | "
+            f"compute p50 {np.percentile(tot, 50):.2f} p99 {np.percentile(tot, 99):.2f} ms "
+            f"(ort p50 {np.percentile(ort, 50):.2f})",
+            flush=True,
+        )
+        self._times.clear()
+        self._last_stats = now
 
     # --- sample -> raw24 -------------------------------------------------------------------
     def _raw(self, s: TrackedPoseSample) -> np.ndarray:
@@ -139,6 +169,7 @@ class LearnedEstimator:
         self._calibrate(calibration)
         res = self.rt.step(sample.timestamp_seconds, self._raw(sample), self._lengths)
         self.last_timing, self.last_contact = res.timing, res.contact
+        self._log_stats(res.timing)
         quats = RT.rotmat_to_quat(res.global_rot)
         joints = {
             name: JointPose(

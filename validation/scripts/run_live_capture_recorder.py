@@ -74,6 +74,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--learned-skeleton", choices=("xsens", "cmu"))
     parser.add_argument(
+        "--learned-height-m",
+        type=float,
+        help="Override the user height (m) the model is conditioned on; the Godot overlay "
+        "currently always sends 1.7 (no live height calibration yet).",
+    )
+    parser.add_argument(
         "--no-raw-log",
         action="store_true",
         help="Do not append every message to raw_messages.ndjson (saves a file write per frame).",
@@ -127,6 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             threads=args.learned_threads,
             frame=args.learned_frame,
             skeleton=args.learned_skeleton,
+            height_m=args.learned_height_m,
         )
     writer = LiveCaptureParquetWriter(
         args.output_dir, session_id=args.session_id, raw_log=not args.no_raw_log

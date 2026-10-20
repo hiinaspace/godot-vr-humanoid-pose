@@ -63,9 +63,11 @@ def run_onnx(rt: RT.LearnedRuntime, inputs, calib, lengths, dataset: str, hz: fl
     rt.reset()
     rt.skel_id = None if rt.skel_id is None else (0 if dataset == "cmu" else 1)
     rt.set_calibration((calib.height_m, calib.arm_length_m, calib.shoulder_width_m))
-    pos, loc, glob, hips, times = [], [], [], [], []
+    pos, loc, glob, hips, times, contact = [], [], [], [], [], []
     for k in range(len(inputs)):
         r = rt.step(k / hz, inputs[k], lengths)
+        if r.contact is not None:
+            contact.append(r.contact)
         (
             pos.append(r.positions),
             loc.append(r.local_rot),
@@ -73,6 +75,7 @@ def run_onnx(rt: RT.LearnedRuntime, inputs, calib, lengths, dataset: str, hz: fl
             hips.append(r.hips),
         )
         times.append(r.timing)
+    rt.last_contact = np.stack(contact) if contact else None
     return np.stack(pos), np.stack(loc), np.stack(glob), np.stack(hips), times
 
 
@@ -89,10 +92,14 @@ def gate(args) -> int:
         d_pos = np.abs(pos_o - pos_t).max()
         d_hip = np.abs(hips_o - pred.root_pos).max()
         d_deg = float(C.qgeodesic_deg(q_o, pred.rotations).max())
-        rows.append((cid, len(inputs), d_pos, d_hip, d_deg))
+        d_ct = None
+        if rt.last_contact is not None and getattr(predictor, "last_contact", None) is not None:
+            d_ct = float(np.abs(rt.last_contact - predictor.last_contact).max())
+        rows.append((cid, len(inputs), d_pos, d_hip, d_deg, d_ct))
         worst = max(worst, d_pos)
         print(
-            f"{cid:44s} {len(inputs):5d} fr  max|dpos| {d_pos:.2e} m  max|dhips| {d_hip:.2e} m  max rot {d_deg:.4f} deg",
+            f"{cid:44s} {len(inputs):5d} fr  max|dpos| {d_pos:.2e} m  max|dhips| {d_hip:.2e} m  max rot {d_deg:.4f} deg"
+            + (f"  max|dcontact| {d_ct:.1e}" if d_ct is not None else ""),
             flush=True,
         )
     ok = worst <= GATE_M

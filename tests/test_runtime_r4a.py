@@ -113,27 +113,34 @@ def test_rotmat_to_quat_roundtrip():
     assert np.all(C.qgeodesic_deg(back, q) < 1e-3)
 
 
-@pytest.mark.parametrize("arch", ["hmdposer", "avatarposer"])
-def test_onnx_matches_torch_predictor(tmp_path, arch):
+@pytest.fixture(scope="module", params=["hmdposer", "avatarposer"])
+def exported(request, tmp_path_factory):
     from validation.sprint import export_onnx as X
 
+    tmp = tmp_path_factory.mktemp(request.param)
     torch.manual_seed(0)
     T.L = 40
-    model = T.MODELS[arch]()
-    cfg = dict(model=arch, skel=True)
-    ck = tmp_path / "ck.pt"
-    torch.save(dict(model=model.state_dict(), cfg=cfg, step=0, best=(0, 0), hist=[]), ck)
-    onnx = tmp_path / "m.onnx"
+    cfg = dict(model=request.param, skel=True)
+    ck = tmp / "ck.pt"
+    torch.save(
+        dict(model=T.MODELS[request.param]().state_dict(), cfg=cfg, step=0, best=(0, 0), hist=[]),
+        ck,
+    )
+    onnx = tmp / "m.onnx"
     meta = X.export(ck, onnx)
     assert meta["verify_max_abs"]["onnx"] < 1e-4
+    return ck, onnx
+
+
+def test_onnx_matches_torch_predictor(exported):
+    ck, onnx = exported
     rt = RT.LearnedRuntime(onnx)
     pred = T.ModelPredictor.load(ck, dev="cpu")
     inputs = random_stream(70, 5)
     calib = O.Calib(1.72, 0.6, 0.36)
     ref = pred.predict_clip_meta(inputs, calib, {"dataset": "xsens"})
-    lengths = np.linalg.norm(
-        C.template_offsets("xsens", calib.height_m, calib.arm_length_m), axis=-1
-    )
+    off = C.template_offsets("xsens", calib.height_m, calib.arm_length_m)
+    lengths = np.linalg.norm(off, axis=-1)
     want = R.fk(ref.rotations, ref.root_pos, lengths)
     rt.set_calibration((calib.height_m, calib.arm_length_m, calib.shoulder_width_m))
     got = np.stack([rt.step(k / 60.0, inputs[k], lengths).positions for k in range(len(inputs))])
@@ -142,3 +149,26 @@ def test_onnx_matches_torch_predictor(tmp_path, arch):
     rt.reset()
     again = np.stack([rt.step(k / 60.0, inputs[k], lengths).positions for k in range(len(inputs))])
     np.testing.assert_array_equal(got, again)
+
+
+def test_zero_lookahead(exported):
+    """Output at frame k must not change when frames after k change (torch path and ONNX path)."""
+    ck, onnx = exported
+    pred = T.ModelPredictor.load(ck, dev="cpu")
+    a = random_stream(60, 6)
+    b = a.copy()
+    b[40:] = random_stream(60, 7)[40:]  # a different future from frame 40 on
+    calib = O.Calib(1.7, 0.58, 0.35)
+    ra = pred.predict_clip_meta(a, calib, {"dataset": "xsens"})
+    rb = pred.predict_clip_meta(b, calib, {"dataset": "xsens"})
+    np.testing.assert_array_equal(ra.rotations[:40], rb.rotations[:40])
+    assert (
+        np.abs(ra.rotations[40:] - rb.rotations[40:]).max() > 1e-4
+    )  # ...and it does react to them
+    rt = RT.LearnedRuntime(onnx)
+    rt.set_calibration((1.7, 0.58, 0.35))
+    lengths = np.full(C.NJ, 0.3)
+    pa = [rt.step(k / 60.0, a[k], lengths).positions for k in range(60)]
+    rt.reset()
+    pb = [rt.step(k / 60.0, b[k], lengths).positions for k in range(60)]
+    np.testing.assert_array_equal(np.stack(pa[:40]), np.stack(pb[:40]))

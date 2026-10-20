@@ -193,7 +193,10 @@ class LearnedRuntime:
         so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self.sess = ort.InferenceSession(str(onnx_path), so, providers=["CPUExecutionProvider"])
-        self.meta = json.loads(self.sess.get_modelmeta().custom_metadata_map["vrhp_meta"])
+        raw_meta = self.sess.get_modelmeta().custom_metadata_map.get("vrhp_meta")
+        if raw_meta is None:  # re-written graphs (e.g. quantised) may drop metadata_props
+            raw_meta = Path(onnx_path).with_suffix(".json").read_text()
+        self.meta = json.loads(raw_meta)
         m = self.meta
         self.W, self.hz, self.nj = m["window"], m["frame_hz"], m["nj"]
         self.parents = m["parents"]
