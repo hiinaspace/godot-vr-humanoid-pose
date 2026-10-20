@@ -615,6 +615,7 @@ class ModelPredictor:
 
     needs_meta = True
     parallel_safe = False
+    contact_thr = 0.5  # p(contact) threshold of the foot lock (eval.py --contact-thr)
 
     def __init__(
         self,
@@ -689,7 +690,7 @@ class ModelPredictor:
             rot, root = P.one_euro(rot, root, *self.smooth)
             pred = O2.CanonPrediction(rotations=rot, root_pos=root)
         if self.footlock:
-            rot = P.foot_lock(rot, pred.root_pos, lengths, self.last_contact)
+            rot = P.foot_lock(rot, pred.root_pos, lengths, self.last_contact, thr=self.contact_thr)
         if self.postfix:
             hp = np.stack([inputs[:, 7:10], inputs[:, 14:17]], 1)
             valid = np.stack([inputs[:, 22], inputs[:, 23]], 1) > 0.5
@@ -737,6 +738,7 @@ def train(args) -> int:
     run = RUNS / args.run
     run.mkdir(parents=True, exist_ok=True)
     set_window(args.window)
+    W["contact"] = args.contact_w
     torch.manual_seed(args.seed)
     tr, va = Store("train", dev), Store("val", dev)
     cfg = dict(vars(args), skel=not args.no_skel)
@@ -992,6 +994,7 @@ def main(argv=None) -> int:
     t.add_argument("--no-skel", action="store_true", help="drop the skeleton-id input")
     t.add_argument("--contact-loss", action="store_true", help="contact head + foot-velocity loss")
     t.add_argument("--skate-w", type=float, default=SKATE_W)
+    t.add_argument("--contact-w", type=float, default=1.0, help="weight of the contact BCE")
     t.add_argument("--inputs", choices=INPUT_MODES, default="full")
     t.add_argument(
         "--jit-loss", action="store_true", help="acceleration + frame-to-frame consistency terms"

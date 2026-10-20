@@ -31,6 +31,7 @@ def main(argv=None) -> int:
         "--honest-fk", action="store_true", help="FK with lengths from noisy calibration"
     )
     ap.add_argument("--smooth", default=None, help="causal One-Euro output filter: MINCUT_HZ,BETA")
+    ap.add_argument("--contact-thr", type=float, default=0.5, help="foot-lock p(contact) threshold")
     ap.add_argument("--footlock", action="store_true", help="causal foot lock (needs contact head)")
     ap.add_argument(
         "--split",
@@ -58,6 +59,7 @@ def main(argv=None) -> int:
             honest_fk=args.honest_fk,
             smooth=tuple(map(float, args.smooth.split(","))) if args.smooth else None,
         )
+        predictor.contact_thr = args.contact_thr
         name = predictor.name
     sets = SPLIT_GROUPS.get(args.split, [args.split])
     variants = oracle.VARIANTS if args.variant == "both" else (args.variant,)

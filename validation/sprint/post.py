@@ -41,6 +41,30 @@ def global_and_pos(local: np.ndarray, root: np.ndarray, lengths: np.ndarray):
     return g, R.fk(local, root, lengths)
 
 
+POLE_CONF_M = 0.04  # below this perpendicular offset the predicted elbow side is unreliable
+
+
+def stable_pole(pole_unit, pn, a):
+    """Causal pole direction: the predicted side where it is well defined (offset from the root->target
+    axis >= POLE_CONF_M), blended toward the previous frame's pole (re-projected) as it vanishes.
+    Avoids elbow flips when the predicted arm is nearly straight."""
+    out = pole_unit.copy()
+    prev = None
+    for t in range(len(pole_unit)):
+        v = pole_unit[t]
+        if prev is not None:
+            pp = prev - np.dot(prev, a[t]) * a[t]
+            n = np.linalg.norm(pp)
+            if n > 1e-6:
+                c = min(1.0, pn[t] / POLE_CONF_M)
+                v = c * v + (1 - c) * pp / n
+                nv = np.linalg.norm(v)
+                v = v / nv if nv > 1e-9 else pp / n
+        out[t] = v
+        prev = v
+    return out
+
+
 def two_bone(root, mid, target, l1, l2, eps=1e-4):
     """Per-frame two-bone solve. root/mid/target [T,3]; returns new mid and end positions [T,3]
     with |mid-root| = l1, |end-mid| = l2, end = target (clamped to reach), mid on the predicted
@@ -52,13 +76,8 @@ def two_bone(root, mid, target, l1, l2, eps=1e-4):
     x = (l1 * l1 - l2 * l2 + dist_c**2) / (2.0 * dist_c)  # along the axis
     h = np.sqrt(np.maximum(l1 * l1 - x * x, 0.0))
     pole = (mid - root) - np.sum((mid - root) * a, -1, keepdims=True) * a
-    pn = np.linalg.norm(pole, axis=-1, keepdims=True)
-    # degenerate pole (arm exactly straight): any perpendicular vector
-    alt = np.cross(a, np.array([0.0, 0.0, 1.0]))
-    alt = np.where(
-        np.linalg.norm(alt, axis=-1, keepdims=True) < 1e-6, np.cross(a, [1.0, 0, 0]), alt
-    )
-    pole = np.where(pn > 1e-6, pole / np.maximum(pn, 1e-9), _unit(alt))
+    pn = np.linalg.norm(pole, axis=-1)
+    pole = stable_pole(pole / np.maximum(pn, 1e-9)[:, None], pn, a)
     new_mid = root + a * x + pole * h
     new_end = root + a * dist_c
     return new_mid, new_end
@@ -109,13 +128,13 @@ def lock_track(contact: np.ndarray, foot_xz: np.ndarray, blend: int = BLEND):
     return out, w_arr
 
 
-def foot_lock(local, root, lengths, contact_prob, blend: int = BLEND):
+def foot_lock(local, root, lengths, contact_prob, blend: int = BLEND, thr: float = 0.5):
     """contact_prob [T,2] (left, right) from the model's contact head."""
     glob, pos = global_and_pos(local, root, lengths)
     for k, chain in enumerate(LEGS):
         f = J[chain[2]]
         foot = pos[:, f]
-        xz, w = lock_track(contact_prob[:, k] > 0.5, foot[:, [0, 2]], blend)
+        xz, w = lock_track(contact_prob[:, k] > thr, foot[:, [0, 2]], blend)
         target = foot.copy()
         target[:, [0, 2]] = xz
         _apply_chain(glob, pos, chain, target, w > 0, lengths)
