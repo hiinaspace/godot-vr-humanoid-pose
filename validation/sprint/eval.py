@@ -26,6 +26,8 @@ def main(argv=None) -> int:
     ap.add_argument("--method", default="basis", choices=sorted(baselines._REGISTRY))
     ap.add_argument("--ckpt", type=Path, help="model checkpoint from train.py (overrides --method)")
     ap.add_argument("--oracle", choices=("v1", "v2"), default="v2")
+    ap.add_argument("--postfix", action="store_true", help="two-bone hand post-fix (model ckpt)")
+    ap.add_argument("--footlock", action="store_true", help="causal foot lock (needs contact head)")
     ap.add_argument(
         "--split",
         default="test",
@@ -45,7 +47,9 @@ def main(argv=None) -> int:
             ap.error("--ckpt needs --oracle v2")
         from validation.sprint import train
 
-        predictor = train.ModelPredictor.load(args.ckpt)
+        predictor = train.ModelPredictor.load(
+            args.ckpt, postfix=args.postfix, footlock=args.footlock
+        )
         name = predictor.name
     sets = SPLIT_GROUPS.get(args.split, [args.split])
     variants = oracle.VARIANTS if args.variant == "both" else (args.variant,)

@@ -40,9 +40,13 @@ DATA = S.REPO / ".cache/sprint/data"
 RUNS = S.REPO / ".cache/sprint/runs"
 MLFLOW_DB = S.REPO / ".cache/ml/mlflow.db"
 REPORTS = S.REPO / "validation/reports/sprint-2026-10"
-L = 40  # causal window (frames)
+L = 40  # causal window (frames); per-run via cfg["window"] -> set_window()
 NT = 5  # tokens: head, lhand, rhand, lhand-in-head, rhand-in-head
 OUT = C.NJ * 6 + 3
+NC = 2  # contact logits (left foot, right foot), appended after the pose outputs when enabled
+FEET = [C.J["left_foot"], C.J["right_foot"]]
+CONTACT_H, CONTACT_V = 0.05, 0.10  # perceptual-memo contact rule (same constants as oracle_v2)
+INPUT_MODES = ("pos", "posrot", "full")
 ID6 = torch.tensor([1.0, 0, 0, 0, 1.0, 0])
 REST_T = torch.tensor(R.REST_DIRS, dtype=torch.float32)
 PARENT = [int(p) for p in C.PARENT]
@@ -50,6 +54,12 @@ HANDS = [C.J["left_hand"], C.J["right_hand"]]
 LOWER = [int(i) for i in C.LOWER_IDX]
 UPPER = [int(i) for i in C.UPPER_IDX]
 NONIN = [int(i) for i in C.NONINPUT_IDX]
+
+
+def set_window(w: int) -> None:
+    global L
+    L = int(w)
+
 
 # --- rotation helpers (torch) ----------------------------------------------------------------
 
@@ -169,6 +179,22 @@ def build_data(args) -> None:
     build_set("val", [(c, False, None) for c in val])
 
 
+def contact_labels(pos: np.ndarray, start, length) -> np.ndarray:
+    """[N,2] float32 foot-contact labels from GT, per clip, with the oracle's rule: foot height <
+    floor + 5 cm and horizontal speed (central difference) < 10 cm/s; floor = 2nd percentile of the
+    lowest GT foot-joint height in the clip (perceptual memo 3a, oracle_v2.contact_metrics)."""
+    out = np.zeros((len(pos), 2), np.float32)
+    for s0, n in zip(start, length, strict=True):
+        f = pos[s0 : s0 + n][:, FEET].astype(np.float64)
+        floor = np.percentile(f[..., 1].min(1), 2)
+        v = np.zeros((n, 2))
+        if n > 2:
+            v[1:-1] = np.linalg.norm((f[2:] - f[:-2])[..., [0, 2]], axis=-1) * (C.FPS / 2.0)
+            v[0], v[-1] = v[1], v[-2]
+        out[s0 : s0 + n] = (f[..., 1] < floor + CONTACT_H) & (v < CONTACT_V)
+    return out
+
+
 class Store:
     """A preprocessed set resident on the GPU, plus window sampling."""
 
@@ -197,6 +223,9 @@ class Store:
         self.noise = (
             torch.rand(len(start), 3, generator=torch.Generator().manual_seed(7)) * 0.1 + 0.95
         ).to(dev)
+        self.contact = torch.from_numpy(contact_labels(self.pos.cpu().numpy(), start, length)).to(
+            dev
+        )
 
     def sample(self, bs: int, xs_frac: float, gen: torch.Generator) -> torch.Tensor:
         """Uniform end frames; ``xs_frac`` of them from Xsens, the rest from CMU."""
@@ -282,7 +311,7 @@ def make_targets(store: Store, idx: torch.Tensor, Q, origin, head_pc):
 
 
 class HMDPoser(nn.Module):
-    def __init__(self, d=256, nstatic=5, layers=3, heads=8, blocks=2, ff=1024):
+    def __init__(self, d=256, nstatic=5, layers=3, heads=8, blocks=2, ff=1024, nout=OUT):
         super().__init__()
         mk = lambda n: nn.Sequential(nn.Linear(n, d // 4), nn.LeakyReLU())  # noqa: E731
         self.emb = nn.ModuleList([nn.ModuleList([mk(6), mk(6), mk(3), mk(3)]) for _ in range(NT)])
@@ -300,7 +329,9 @@ class HMDPoser(nn.Module):
             enable_nested_tensor=False,
         )
         self.spatial = nn.ModuleList([enc() for _ in range(blocks)])
-        self.head = nn.Sequential(nn.Linear((NT + 1) * d, 256), nn.LeakyReLU(), nn.Linear(256, OUT))
+        self.head = nn.Sequential(
+            nn.Linear((NT + 1) * d, 256), nn.LeakyReLU(), nn.Linear(256, nout)
+        )
         for lstm in self.lstm.modules():
             if isinstance(lstm, nn.LSTM):
                 for n, p in lstm.named_parameters():
@@ -327,7 +358,7 @@ class HMDPoser(nn.Module):
 class AvatarPoser(nn.Module):
     """AvatarPoser-style: 54-d tracker features -> 3-layer causal transformer (d=256) over the window."""
 
-    def __init__(self, d=256, nstatic=5, layers=3, heads=8):
+    def __init__(self, d=256, nstatic=5, layers=3, heads=8, nout=OUT):
         super().__init__()
         self.inp = nn.Linear(3 * 18 + nstatic, d)
         self.pos = nn.Parameter(torch.zeros(1, L, d))
@@ -336,7 +367,7 @@ class AvatarPoser(nn.Module):
             layers,
             enable_nested_tensor=False,
         )
-        self.head = nn.Sequential(nn.Linear(d, 256), nn.LeakyReLU(), nn.Linear(256, OUT))
+        self.head = nn.Sequential(nn.Linear(d, 256), nn.LeakyReLU(), nn.Linear(256, nout))
         self.register_buffer("mask", nn.Transformer.generate_square_subsequent_mask(L))
 
     def forward(self, feats, static):
@@ -349,9 +380,15 @@ MODELS = {"hmdposer": HMDPoser, "avatarposer": AvatarPoser}
 
 
 def decode(out: torch.Tensor):
-    return out[..., : C.NJ * 6].reshape(*out.shape[:-1], C.NJ, 6) + ID6.to(out.device), out[
-        ..., -3:
-    ]
+    """-> rot6 [..,NJ,6], hips-from-head [..,3]; trailing NC contact logits (if any) are ignored."""
+    return (
+        out[..., : C.NJ * 6].reshape(*out.shape[:-1], C.NJ, 6) + ID6.to(out.device),
+        out[..., C.NJ * 6 : C.NJ * 6 + 3],
+    )
+
+
+def build_model(cfg: dict) -> nn.Module:
+    return MODELS[cfg["model"]](nout=OUT + (NC if cfg.get("contact_loss") else 0))
 
 
 def fk_torch(rot6: torch.Tensor, hips: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
@@ -368,12 +405,22 @@ def fk_torch(rot6: torch.Tensor, hips: torch.Tensor, lengths: torch.Tensor) -> t
 
 # --- loss ------------------------------------------------------------------------------------
 
-W = dict(rot=2.0, pos=10.0, hand=10.0, vel=10.0)
+W = dict(rot=2.0, pos=10.0, hand=10.0, vel=10.0, contact=1.0)
+SKATE_W = 20.0  # weight on the foot-velocity-at-contact term (m/frame units), --skate-w
 
 
-def loss_fn(out, r6, hips_rel, pc, head_pc, lengths):
-    rot6, hr = decode(out.float())
+def loss_fn(out, r6, hips_rel, pc, head_pc, lengths, ct=None, skate_w=0.0):
+    """ct: GT contact labels [B,T,2] (float) -> adds the contact BCE and foot-velocity terms."""
+    out = out.float()
+    rot6, hr = decode(out)
     pos = fk_torch(rot6, head_pc + hr, lengths)
+    extra = {}
+    if ct is not None and out.shape[-1] > OUT:
+        extra["contact"] = F.binary_cross_entropy_with_logits(out[..., OUT:], ct)
+        v = (pos[:, 1:, FEET] - pos[:, :-1, FEET])[..., [0, 2]]
+        m = ct[:, 1:] * ct[:, :-1]
+        speed = torch.sqrt((v**2).sum(-1) + 1e-8) * m
+        extra["skate"] = speed.sum() / m.sum().clamp(min=1.0)
     terms = dict(
         rot=(rot6 - r6).abs().mean(),
         pos=(pos - pc).abs().mean(),
@@ -382,18 +429,111 @@ def loss_fn(out, r6, hips_rel, pc, head_pc, lengths):
             (pos[:, k:] - pos[:, :-k] - (pc[:, k:] - pc[:, :-k])).abs().mean() for k in (1, 3, 5)
         )
         / 3,
+        **extra,
     )
-    return sum(W[k] * v for k, v in terms.items()), terms, pos
+    wts = {**W, "skate": skate_w}
+    return sum(wts[k] * v for k, v in terms.items()), terms, pos
 
 
-def batch_inputs(store: Store, g: torch.Tensor, skel: bool, aug: bool, gen=None, noise=True):
+# Fitted corruption model (validation/reports/fitted_tracker_noise.json, rounded) per tracker
+# (head, left hand, right hand), as a training augmentation (E2). Every draw randomises each
+# parameter x U(0.5, 1.5); Gaussian jitter and overshoot are off, as in the oracle's corrupted
+# variant. Seeds come from a separate torch stream, never the oracle's crc32 stream.
+CORR = dict(
+    drift_amp=[0.034, 0.138, 0.093],
+    drift_period=8.0,
+    bias_std=[0.001, 0.003, 0.003],
+    drop_p=[0.0005, 0.004, 0.004],
+    drop_run=[2.0, 6.0, 6.0],
+    exc_mag=[0.01, 0.06, 0.06],
+    exc_frames=[2, 4, 4],
+)
+
+
+def corrupt_raw(raw: torch.Tensor, gen: torch.Generator, frac: float = 0.5) -> torch.Tensor:
+    """raw [B,W,24] clean tracker stream -> corrupted copy for a random ``frac`` of the batch:
+    1-2 frame position latency, calibration bias, 3-phase cosine drift, run-length dropout (the
+    tracker holds its last position), re-acquire excursions. Rotations and flags are untouched."""
+    b, w, _ = raw.shape
+    dev = raw.device
+    r = lambda *sh: torch.rand(*sh, device=dev, generator=gen)  # noqa: E731
+    u = lambda *sh: 0.5 + r(*sh)  # noqa: E731  ~U(0.5, 1.5)
+    idx = torch.arange(w, device=dev)
+    out = raw.clone()
+    sel = (r(b) < frac)[:, None, None]
+    phase3 = torch.tensor([0.0, 2.094395, 4.188790], device=dev)
+    for k in range(3):
+        sl = slice(7 * k, 7 * k + 3)
+        p = raw[..., sl]
+        lat = 1 + (r(b) < 0.5).long()
+        gi = (idx[None] - lat[:, None]).clamp(min=0)
+        p = p.gather(1, gi[..., None].expand(-1, -1, 3))
+        p = p + torch.randn(b, 1, 3, device=dev, generator=gen) * CORR["bias_std"][k] * u(b, 1, 1)
+        ang = (
+            2 * math.pi * idx[None, :, None] / (60.0 * CORR["drift_period"] * u(b, 1, 1))
+            + r(b, 1, 1) * 2 * math.pi
+            + phase3
+        )
+        p = p + CORR["drift_amp"][k] * u(b, 1, 1) * torch.cos(ang)
+        start = r(b, w) < CORR["drop_p"][k] * u(b, 1)
+        run = torch.ceil(-torch.log(r(b, w).clamp(min=1e-6)) * CORR["drop_run"][k] * u(b, 1)).clamp(
+            min=1
+        )
+        covered = (
+            torch.cummax(torch.where(start, idx[None] + run, torch.zeros_like(run)), 1)[0] > idx
+        )
+        tracking = ~covered
+        last = torch.cummax(torch.where(tracking, idx[None], torch.full_like(idx[None], -1)), 1)[0]
+        p = p.gather(1, last.clamp(min=0)[..., None].expand(-1, -1, 3))
+        reac = tracking & torch.cat([torch.ones_like(tracking[:, :1]), covered[:, :-1]], 1)
+        exc = (
+            torch.cummax(
+                torch.where(reac, idx[None] + CORR["exc_frames"][k], torch.zeros_like(idx)[None]), 1
+            )[0]
+            > idx
+        ) & tracking
+        off = torch.randn(b, 1, 3, device=dev, generator=gen) * CORR["exc_mag"][k] * u(b, 1, 1)
+        p = p + exc[..., None] * off
+        out[..., sl] = torch.where(sel, p, raw[..., sl])
+    return out
+
+
+def feat_mask(mode: str, dev) -> torch.Tensor:
+    """Per-token feature mask [18] = [rot6 | angvel6 | pos3 | linvel3]; ``pos`` keeps positions only,
+    ``posrot`` adds rotations, ``full`` also angular / linear velocities (the E1 default)."""
+    m = torch.zeros(18, device=dev)
+    m[12:15] = 1.0
+    if mode in ("posrot", "full"):
+        m[0:6] = 1.0
+    if mode == "full":
+        m[6:12] = 1.0
+        m[15:18] = 1.0
+    return m
+
+
+def batch_inputs(
+    store: Store,
+    g: torch.Tensor,
+    skel: bool,
+    aug: bool,
+    gen=None,
+    noise=True,
+    mode="full",
+    corrupt=0.0,
+    cgen=None,
+):
     idx = window(store, g)
     wr = None
     if aug:  # CMU hand-tracker rotations come from the forearm frame: randomise the wrist
         wr = wrist_aug(len(g), L + 1, g.device, gen)
         cmu = (store.ds_dev[store.cidx[g]] == 0)[:, None, None, None, None]
         wr = torch.where(cmu, wr, torch.eye(3, device=g.device).expand_as(wr))
-    feats, Q, origin, head_pc = make_feats(store.inp[idx], wr)
+    raw = store.inp[idx]
+    if corrupt > 0:
+        raw = corrupt_raw(raw, cgen, corrupt)
+    feats, Q, origin, head_pc = make_feats(raw, wr)
+    if mode != "full":
+        feats = feats * feat_mask(mode, g.device)
     cal = store.calib_dev[store.cidx[g]]
     if noise and gen is not None:
         cal = cal * (torch.rand(len(g), 3, device=g.device, generator=gen) * 0.1 + 0.95)
@@ -404,7 +544,7 @@ def batch_inputs(store: Store, g: torch.Tensor, skel: bool, aug: bool, gen=None,
 
 
 @torch.no_grad()
-def quick_val(model, store: Store, skel: bool, stride=8, bs=512, max_frames=40000):
+def quick_val(model, store: Store, skel: bool, stride=8, bs=512, max_frames=40000, mode="full"):
     """Subsampled val metrics (cm) per dataset: pooled end-frames every ``stride`` frames."""
     model.eval()
     res = {}
@@ -417,7 +557,9 @@ def quick_val(model, store: Store, skel: bool, stride=8, bs=512, max_frames=4000
         acc = dict(full=0.0, upper=0.0, lower=0.0, loss=0.0, n=0)
         for i in range(0, len(gs), bs):
             g = gs[i : i + bs]
-            idx, feats, st, Q, origin, head_pc = batch_inputs(store, g, skel, False, noise=True)
+            idx, feats, st, Q, origin, head_pc = batch_inputs(
+                store, g, skel, False, noise=True, mode=mode
+            )
             r6, hips_rel, pc = make_targets(store, idx[:, 1:], Q, origin, head_pc)
             out = model(feats, st)
             loss, _, pos = loss_fn(out, r6, hips_rel, pc, head_pc, store.lengths[store.cidx[g]])
@@ -439,23 +581,55 @@ def quick_val(model, store: Store, skel: bool, stride=8, bs=512, max_frames=4000
 
 
 class ModelPredictor:
+    """Oracle-facing wrapper. ``postfix`` / ``footlock`` are inference-only post-processes (post.py);
+    they need the clip's bone lengths (the oracle's own FK lengths, i.e. the user's skeleton), which is
+    all they read from the GT clip."""
+
     needs_meta = True
     parallel_safe = False
 
-    def __init__(self, model, cfg: dict, name: str, dev: str = "cuda"):
+    def __init__(
+        self, model, cfg: dict, name: str, dev: str = "cuda", postfix=False, footlock=False
+    ):
         self.model, self.cfg, self.name, self.dev = model.to(dev).eval(), cfg, name, dev
+        self.postfix, self.footlock = postfix, footlock
+        self.needs_gt = postfix or footlock
+        if footlock and not cfg.get("contact_loss"):
+            raise ValueError("--footlock needs a model trained with --contact-loss")
+        set_window(cfg.get("window", 40))
+        self.mode = cfg.get("inputs", "full")
 
     @classmethod
-    def load(cls, path: Path, dev: str = "cuda"):
+    def load(cls, path: Path, dev: str = "cuda", postfix=False, footlock=False):
         ck = torch.load(path, map_location=dev, weights_only=False)
-        model = MODELS[ck["cfg"]["model"]]()
+        model = build_model(ck["cfg"])
         model.load_state_dict(ck["model"])
+        tag = "".join(["+postfix" if postfix else "", "+footlock" if footlock else ""])
         return cls(
             model,
             ck["cfg"],
-            f"{ck['cfg']['model']}_{Path(path).parent.name}_{Path(path).stem}",
+            f"{ck['cfg']['model']}_{Path(path).parent.name}_{Path(path).stem}{tag}",
             dev,
+            postfix,
+            footlock,
         )
+
+    def predict_clip_with_gt(self, inputs, calib, clip):
+        pred = self.predict_clip_meta(inputs, calib, {"dataset": clip.dataset})
+        return self.post(pred, inputs, R.bone_lengths(clip.positions))
+
+    def post(self, pred, inputs: np.ndarray, lengths: np.ndarray):
+        """Causal per-frame / scan post-processes on a CanonPrediction (post.py)."""
+        from validation.sprint import post as P
+
+        rot = pred.rotations
+        if self.footlock:
+            rot = P.foot_lock(rot, pred.root_pos, lengths, self.last_contact)
+        if self.postfix:
+            hp = np.stack([inputs[:, 7:10], inputs[:, 14:17]], 1)
+            valid = np.stack([inputs[:, 22], inputs[:, 23]], 1) > 0.5
+            rot = P.hand_postfix(rot, pred.root_pos, lengths, hp, valid)
+        return O2.CanonPrediction(rotations=rot, root_pos=pred.root_pos)
 
     @torch.no_grad()
     def predict_clip_meta(self, inputs: np.ndarray, calib: O.Calib, meta: dict, bs=1024):
@@ -466,12 +640,18 @@ class ModelPredictor:
         )
         ds = torch.tensor([0 if meta["dataset"] == "cmu" else 1], device=self.dev)
         st = static_feats(cal, ds, self.cfg.get("skel", True))
-        rots, roots = [], []
+        mask = None if self.mode == "full" else feat_mask(self.mode, self.dev)
+        rots, roots, cts = [], [], []
         for i in range(0, len(inputs), bs):
             t = torch.arange(i, min(i + bs, len(inputs)), device=self.dev)
             raw = x[t[:, None] + torch.arange(L + 1, device=self.dev)[None]]
             feats, Q, origin, head_pc = make_feats(raw)
-            rot6, hr = decode(self.model(feats, st.expand(len(t), -1))[:, -1:].float())
+            if mask is not None:
+                feats = feats * mask
+            out = self.model(feats, st.expand(len(t), -1))[:, -1:].float()
+            rot6, hr = decode(out)
+            if out.shape[-1] > OUT:
+                cts.append(torch.sigmoid(out[:, 0, OUT:]).cpu().numpy())
             m = sixd2mat(rot6[:, 0])  # [n,NJ,3,3] canonical frame
             m = torch.cat([(Q.transpose(-1, -2) @ m[:, 0])[:, None], m[:, 1:]], 1)  # root -> world
             hips = (Q.transpose(-1, -2) @ (head_pc[:, -1] + hr[:, 0])[..., None]).squeeze(
@@ -479,6 +659,7 @@ class ModelPredictor:
             ) + origin
             rots.append(mat2quat(m).double().cpu().numpy())
             roots.append(hips.double().cpu().numpy())
+        self.last_contact = np.concatenate(cts) if cts else None
         return O2.CanonPrediction(rotations=np.concatenate(rots), root_pos=np.concatenate(roots))
 
 
@@ -490,11 +671,13 @@ def train(args) -> int:
     torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = True
     run = RUNS / args.run
     run.mkdir(parents=True, exist_ok=True)
+    set_window(args.window)
+    torch.manual_seed(args.seed)
     tr, va = Store("train", dev), Store("val", dev)
-    model = MODELS[args.model]().to(dev)
+    cfg = dict(vars(args), skel=not args.no_skel)
+    model = build_model(cfg).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     step, best, hist = 0, (1e9, -1), []
-    cfg = dict(vars(args), skel=not args.no_skel)
     if (run / "last.pt").exists():
         ck = torch.load(run / "last.pt", map_location=dev, weights_only=False)
         model.load_state_dict(ck["model"])
@@ -511,6 +694,8 @@ def train(args) -> int:
     if rid is None:
         mlflow.log_params({k: str(v) for k, v in cfg.items()})
     gen = torch.Generator(device=dev).manual_seed(args.seed + step)
+    cgen = torch.Generator(device=dev).manual_seed(7_000_003 + args.seed + step)  # aug stream
+    cw = bool(args.contact_loss)
 
     def sched(s):  # linear warmup, cosine to 3 % of the peak lr
         return min(1.0, (s + 1) / 500) * (
@@ -538,12 +723,28 @@ def train(args) -> int:
             gparam["lr"] = args.lr * sched(step)
         g = tr.sample(args.bs, args.xs_frac, gen)
         idx, feats, st, Q, origin, head_pc = batch_inputs(
-            tr, g, cfg["skel"], not args.no_wrist_aug, gen
+            tr,
+            g,
+            cfg["skel"],
+            not args.no_wrist_aug,
+            gen,
+            mode=args.inputs,
+            corrupt=args.corrupt_aug,
+            cgen=cgen,
         )
         r6, hips_rel, pc = make_targets(tr, idx[:, 1:], Q, origin, head_pc)
         with torch.autocast("cuda", torch.bfloat16, enabled=args.bf16):
             out = model(feats, st)
-        loss, terms, _ = loss_fn(out, r6, hips_rel, pc, head_pc, tr.lengths[tr.cidx[g]])
+        loss, terms, _ = loss_fn(
+            out,
+            r6,
+            hips_rel,
+            pc,
+            head_pc,
+            tr.lengths[tr.cidx[g]],
+            tr.contact[idx[:, 1:]] if cw else None,
+            args.skate_w if cw else 0.0,
+        )
         opt.zero_grad(set_to_none=True)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -563,9 +764,9 @@ def train(args) -> int:
         done = step >= args.steps
         timeout = (time.time() - t0) > args.time_min * 60
         if step % args.val_every == 0 or done or timeout:
-            v = quick_val(model, va, cfg["skel"])
+            v = quick_val(model, va, cfg["skel"], mode=args.inputs)
             t = quick_val(
-                model, tr, cfg["skel"], stride=64, max_frames=20000
+                model, tr, cfg["skel"], stride=64, max_frames=20000, mode=args.inputs
             )  # train error, same metric
             sel = float(np.mean([v[d]["full"] for d in v]))
             hist.append(dict(step=step, val=v, train=t, sel=sel))
@@ -718,6 +919,13 @@ def main(argv=None) -> int:
     t.add_argument("--bf16", action="store_true")
     t.add_argument("--no-wrist-aug", action="store_true")
     t.add_argument("--no-skel", action="store_true", help="drop the skeleton-id input")
+    t.add_argument("--contact-loss", action="store_true", help="contact head + foot-velocity loss")
+    t.add_argument("--skate-w", type=float, default=SKATE_W)
+    t.add_argument("--inputs", choices=INPUT_MODES, default="full")
+    t.add_argument("--window", type=int, default=40, help="causal window / sequence length")
+    t.add_argument(
+        "--corrupt-aug", type=float, default=0.0, help="fraction of samples corrupted (E2)"
+    )
     sub.add_parser("selftest")
     sub.add_parser("probe-wrist")
     o = sub.add_parser("overfit")
