@@ -1,0 +1,874 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pose Review Packet</title>
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --panel2: #eceef2; --ink: #1c2330; --muted: #5d6676; --line: #d3d8e0;
+  --accent: #1d6fd6; --accent-ink: #ffffff; --good: #1a8a4a; --bad: #c8321f;
+  --scene-bg: #e9ecf1; --floor: #d9dee6; --grid-a: #7d8797; --grid-b: #a9b2bf;
+  --c-gt: #6b7686; --c-basis: #e08a00; --c-learned: #0a84c6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151b; --panel: #1b2029; --panel2: #232a36; --ink: #e6e9ef; --muted: #98a2b3; --line: #313a49;
+    --accent: #5aa2ff; --accent-ink: #08121f; --good: #4cc98a; --bad: #ff7a66;
+    --scene-bg: #0d1016; --floor: #171c26; --grid-a: #5b667a; --grid-b: #384254;
+    --c-gt: #aeb8c8; --c-basis: #ffb02e; --c-learned: #43b8ff;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151b; --panel: #1b2029; --panel2: #232a36; --ink: #e6e9ef; --muted: #98a2b3; --line: #313a49;
+  --accent: #5aa2ff; --accent-ink: #08121f; --good: #4cc98a; --bad: #ff7a66;
+  --scene-bg: #0d1016; --floor: #171c26; --grid-a: #5b667a; --grid-b: #384254;
+  --c-gt: #aeb8c8; --c-basis: #ffb02e; --c-learned: #43b8ff;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+body { display: flex; flex-direction: column; min-height: 100%; }
+header { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: var(--panel);
+  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 650; }
+button, select, input[type=text], textarea { font: inherit; color: var(--ink); background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+button { cursor: pointer; min-height: 34px; }
+button:hover { border-color: var(--accent); }
+button.on, button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+.sp { flex: 1; }
+.tabs button { border-radius: 0; }
+.tabs button:first-child { border-radius: 6px 0 0 6px; } .tabs button:last-child { border-radius: 0 6px 6px 0; }
+main { flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 8px 16px 16px; min-height: 0; }
+#stage { position: relative; width: 100%; height: min(62vh, 640px); min-height: 280px; background: var(--scene-bg);
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden; touch-action: none; }
+#stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.vlabel { position: absolute; padding: 2px 8px; font-size: 12px; border-radius: 4px; background: color-mix(in srgb, var(--panel) 80%, transparent);
+  pointer-events: none; font-weight: 600; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row .grp { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.grp > .lbl { color: var(--muted); font-size: 12px; margin-right: 2px; }
+#strip { width: 100%; height: 54px; display: block; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; cursor: pointer; touch-action: none; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { padding: 3px 9px; min-height: 28px; font-size: 12px; border-radius: 14px; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th, td { padding: 3px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+.tbl { overflow-x: auto; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+#ab { display: none; }
+body.ab #ab { display: flex; flex-direction: column; gap: 8px; }
+body.ab #reviewOnly { display: none !important; }
+.big { font-size: 17px; padding: 10px 22px; min-height: 48px; font-weight: 650; }
+#abDone textarea { width: 100%; height: 140px; font: 12px ui-monospace, monospace; }
+body.still header, body.still .noStill { display: none !important; }
+body.still main { padding: 0; }
+body.still #stage { height: 100vh; border: 0; border-radius: 0; }
+@media (max-width: 640px) {
+  header { padding: 6px 12px; } main { padding: 6px 12px 12px; }
+  #stage { height: 56vh; }
+  .big { flex: 1; padding: 10px 8px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Pose review packet</h1>
+  <span class="tabs"><button id="tabReview" aria-pressed="true">Review</button><button id="tabAB" aria-pressed="false">Blind A/B</button></span>
+  <span class="sp"></span>
+  <span class="muted small" id="meta"></span>
+  <button id="themeBtn" title="Toggle theme">Theme</button>
+</header>
+<main>
+  <div id="stage"><canvas id="cv"></canvas></div>
+
+  <div id="reviewOnly" class="noStill" style="display:flex;flex-direction:column;gap:8px">
+    <div class="row">
+      <div class="grp">
+        <button id="btnPrevClip" title="previous clip">&#9664;&#9664;</button>
+        <select id="clipSel" aria-label="clip"></select>
+        <button id="btnNextClip" title="next clip">&#9654;&#9654;</button>
+      </div>
+      <span class="muted small" id="clipInfo"></span>
+    </div>
+    <canvas id="strip" aria-label="timeline"></canvas>
+    <div class="row">
+      <div class="grp">
+        <button id="btnPlay">Play</button>
+        <button id="btnStepB" title="back one frame (Left)">&#9664;|</button>
+        <button id="btnStepF" title="forward one frame (Right)">|&#9654;</button>
+        <button id="spd1" aria-pressed="true">1&times;</button>
+        <button id="spd25" aria-pressed="false">0.25&times;</button>
+      </div>
+      <span class="small muted" id="timeInfo"></span>
+    </div>
+    <div class="row">
+      <div class="grp"><span class="lbl">methods</span><span id="methodBtns" class="grp"></span></div>
+      <div class="grp"><span class="lbl">layout</span>
+        <button id="layOver" aria-pressed="true">overlay</button><button id="laySide" aria-pressed="false">side by side</button>
+        <button id="layQuad" aria-pressed="false" title="all four owner cameras at once (overlay)">4 cameras</button></div>
+    </div>
+    <div class="row">
+      <div class="grp"><span class="lbl">camera</span>
+        <button data-cam="3q" aria-pressed="true" title="1">3/4 front 2 m</button><button data-cam="side" aria-pressed="false" title="2">side</button>
+        <button data-cam="top" aria-pressed="false" title="3">top</button><button data-cam="fp" aria-pressed="false" title="4">first person</button>
+        <button data-cam="free" aria-pressed="false" title="5">free orbit</button></div>
+      <div class="grp"><span class="lbl">show</span>
+        <button id="tgContact" aria-pressed="true">foot contact</button><button id="tgTrail" aria-pressed="true">slide trails</button>
+        <button id="tgGhost" aria-pressed="true" title="faint GT behind each method in side-by-side">GT ghost</button></div>
+    </div>
+    <div class="panel">
+      <div class="row small"><b>Jump to worst frames</b>
+        <span class="grp" id="jumpMethodBtns"></span></div>
+      <div class="chips" id="jumps" style="margin-top:6px"></div>
+    </div>
+    <details class="panel"><summary>Numbers for this 8 s window (oracle-v2 columns)</summary>
+      <div class="tbl" id="nums" style="margin-top:6px"></div>
+      <div class="muted small" id="numsNote"></div>
+    </details>
+    <div class="muted small" id="legend"></div>
+    <div class="muted small">Keys: space play/pause, left/right step (shift = 10 frames), 1-5 cameras, [ ] previous/next clip.</div>
+  </div>
+
+  <div id="ab" class="noStill">
+    <div class="row"><b id="abProg"></b><span class="sp"></span><span class="muted small" id="abSaved"></span></div>
+    <div class="row small muted">GT is the faint grey figure. Keys: A / S (same) / B, Enter = save &amp; next. Left/right placement and which method is A are random; labels are hidden until the end.</div>
+    <div id="abAsk">
+      <div style="font-weight:650;margin-bottom:6px">Which would you rather see in the mirror?</div>
+      <div class="row">
+        <button class="big" id="chA">A</button><button class="big" id="chSame">Same</button><button class="big" id="chB">B</button>
+      </div>
+      <div class="small muted" style="margin:8px 0 4px">Biggest artifact in the one you liked less (optional):</div>
+      <div class="chips" id="tagChips"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="abPrev">Back</button><button id="abReplay">Replay</button><button id="abPlay">Pause</button>
+        <button id="abSlow" aria-pressed="false">0.25&times;</button>
+        <span class="sp"></span><button id="abNext" class="big on" disabled>Save &amp; next</button>
+      </div>
+    </div>
+    <div id="abDone" style="display:none" class="panel">
+      <div id="abSummary"></div>
+      <div class="row" style="margin:8px 0"><button id="abExport" class="on">Export answers (copy JSON)</button>
+        <button id="abReset">Clear answers and restart</button><span id="abExportMsg" class="small muted"></span></div>
+      <textarea id="abJson" readonly aria-label="answers JSON"></textarea>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+window.addEventListener("error", e => { document.title = "ERR " + e.message + " @" + e.lineno; document.body.dataset.err = e.message + " @" + e.lineno; });
+const DATA = /*__REVIEW_DATA__*/null;
+
+/* ------------------------------------------------------------------ data decode */
+const NJ = 14, FPS = DATA.fps;
+const PARENT = DATA.parents;
+const JN = DATA.joints, JI = Object.fromEntries(JN.map((n, i) => [n, i]));
+const LSIDE = new Set([JI.left_shoulder, JI.left_elbow, JI.left_hand, JI.left_knee, JI.left_foot]);
+const RSIDE = new Set([JI.right_shoulder, JI.right_elbow, JI.right_hand, JI.right_knee, JI.right_foot]);
+const FOOT = [JI.left_foot, JI.right_foot];
+const METHODS = DATA.methods.map(m => m.id);
+const NONGT = METHODS.filter(m => m !== "gt");
+const PAL = [
+  { base: "#e08a00", dark: "#ffb02e", l: "#f7c04a", r: "#9c5d00", rd: "#c77b00" },   // basis
+  { base: "#0a84c6", dark: "#43b8ff", l: "#58c4f2", r: "#06577f", rd: "#1d7fc0" },   // learned
+  { base: "#8a5cf6", dark: "#b69aff", l: "#b79bff", r: "#5b34c4", rd: "#7a58d6" },
+  { base: "#d6409f", dark: "#ff7ac6", l: "#f08ac8", r: "#8f1f66", rd: "#b83a8c" },
+];
+function methodLabel(m) {
+  if (m === "gt") return "GT";
+  if (m === "basis") return "Basis";
+  if (m === "learned") return "learned (" + ((DATA.ckpts.learned || {}).name || "ckpt") + ")";
+  return m + (DATA.ckpts[m] ? " (" + DATA.ckpts[m].name + ")" : "");
+}
+function methodColors(m, dark) {
+  if (m === "gt") return dark ? { c: "#aeb8c8", l: "#c9d1de", r: "#7f8aa0" } : { c: "#6b7686", l: "#8c97a8", r: "#48515f" };
+  // blind A/B: both candidates share one neutral colour so the colour never reveals the method
+  const p = (typeof S !== "undefined" && S.mode === "ab") ? PAL[2] : PAL[Math.min(NONGT.indexOf(m), PAL.length - 1)];
+  return dark ? { c: p.dark, l: p.l, r: p.rd } : { c: p.base, l: p.l, r: p.r };
+}
+function b64bytes(s) {
+  const bin = atob(s), u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u;
+}
+function decodeClip(c) {
+  if (c._d) return c._d;
+  const n = c.n, d = { n, pos: {}, err: {}, contact: null };
+  for (const m of Object.keys(c.pos)) {
+    const u = b64bytes(c.pos[m]);
+    const i16 = new Int16Array(u.buffer, u.byteOffset, u.byteLength >> 1);
+    const f = new Float32Array(i16.length);
+    for (let k = 0; k < f.length; k++) f[k] = i16[k] / 1000;
+    d.pos[m] = f;
+  }
+  for (const m of Object.keys(c.err || {})) {
+    const u = b64bytes(c.err[m]);
+    const u16 = new Uint16Array(u.buffer, u.byteOffset, u.byteLength >> 1);
+    d.err[m] = Float32Array.from(u16, v => v / 1000);
+  }
+  if (c.contact) d.contact = b64bytes(c.contact);
+  // camera rig from the reference method (GT if present): smoothed centre, heading, head
+  const ref = d.pos.gt || d.pos[NONGT[0]];
+  const ctr = new Float32Array(n * 2), yaw = new Float32Array(n), head = new Float32Array(n * 3), cy = new Float32Array(n), rawy = new Float32Array(n);
+  const rawc = new Float32Array(n * 2), rs = new Float32Array(n), rc = new Float32Array(n), rh = new Float32Array(n * 3);
+  for (let t = 0; t < n; t++) {
+    const o = t * NJ * 3;
+    rawc[2 * t] = ref[o + 0]; rawc[2 * t + 1] = ref[o + 2];
+    const lx = ref[o + JI.left_shoulder * 3] - ref[o + JI.right_shoulder * 3];
+    const lz = ref[o + JI.left_shoulder * 3 + 2] - ref[o + JI.right_shoulder * 3 + 2];
+    const fx = -lz, fz = lx, nrm = Math.hypot(fx, fz) || 1;
+    rs[t] = fx / nrm; rc[t] = fz / nrm;
+    let sy = 0; for (let j = 0; j < NJ; j++) sy += ref[o + j * 3 + 1]; rawy[t] = sy / NJ;
+    for (let k = 0; k < 3; k++) rh[3 * t + k] = ref[o + JI.head * 3 + k];
+  }
+  const W = 30, W2 = 45;
+  for (let t = 0; t < n; t++) {
+    let sy2 = 0, ky = 0; for (let u = Math.max(0, t - W); u <= Math.min(n - 1, t + W); u++) { sy2 += rawy[u]; ky++; } cy[t] = sy2 / ky;
+    let sx = 0, sz = 0, k = 0, ss = 0, sc = 0, k2 = 0, hx = 0, hy = 0, hz = 0, k3 = 0;
+    for (let u = Math.max(0, t - W); u <= Math.min(n - 1, t + W); u++) { sx += rawc[2 * u]; sz += rawc[2 * u + 1]; k++; }
+    for (let u = Math.max(0, t - W2); u <= Math.min(n - 1, t + W2); u++) { ss += rs[u]; sc += rc[u]; k2++; }
+    for (let u = Math.max(0, t - 2); u <= Math.min(n - 1, t + 2); u++) { hx += rh[3 * u]; hy += rh[3 * u + 1]; hz += rh[3 * u + 2]; k3++; }
+    ctr[2 * t] = sx / k; ctr[2 * t + 1] = sz / k; yaw[t] = Math.atan2(ss, sc);
+    head[3 * t] = hx / k3; head[3 * t + 1] = hy / k3; head[3 * t + 2] = hz / k3;
+  }
+  d.ctr = ctr; d.yaw = yaw; d.head = head; d.cy = cy;
+  // contact runs per foot: for each frame, the start of its run, and run end
+  d.run = [0, 1].map(f => {
+    const st = new Int32Array(n).fill(-1), en = new Int32Array(n).fill(-1);
+    if (!d.contact) return { st, en };
+    let t = 0;
+    while (t < n) {
+      if ((d.contact[t] >> f) & 1) {
+        let e = t; while (e + 1 < n && ((d.contact[e + 1] >> f) & 1)) e++;
+        for (let u = t; u <= e; u++) { st[u] = t; en[u] = e; }
+        t = e + 1;
+      } else t++;
+    }
+    return { st, en };
+  });
+  c._d = d;
+  return d;
+}
+
+/* ------------------------------------------------------------------ three.js scene */
+const stage = document.getElementById("cv").parentElement;
+const cv = document.getElementById("cv");
+let renderer = null, scene = null;
+const V = {};  // per-method skeleton: {bones[], joints[], nose, trails[], mats}
+const lbl = document.getElementById("stage");
+let floorPlane = null, rings = [];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const isDark = () => {
+  const t = document.documentElement.dataset.theme;
+  return t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+};
+const Z = new THREE.Vector3(0, 1, 0);
+
+function initThree() {
+  renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, preserveDrawingBuffer: true });
+  scene = new THREE.Scene();
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x667085, 0.95));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.55); dl.position.set(2, 5, 3); scene.add(dl);
+  for (const m of METHODS) {
+    const g = new THREE.Group(); scene.add(g);
+    const cols = methodColors(m, isDark());
+    const mk = c => new THREE.MeshLambertMaterial({ color: c, transparent: true });
+    const mats = { c: mk(cols.c), l: mk(cols.l), r: mk(cols.r) };
+    const bones = [], joints = [];
+    for (let j = 1; j < NJ; j++) {
+      const side = LSIDE.has(j) ? "l" : RSIDE.has(j) ? "r" : "c";
+      const b = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 1, 8, 1), mats[side]);
+      b.matrixAutoUpdate = false; g.add(b); bones[j] = b;
+    }
+    for (let j = 0; j < NJ; j++) {
+      const side = LSIDE.has(j) ? "l" : RSIDE.has(j) ? "r" : "c";
+      const rad = j === JI.head ? 0.085 : (j === JI.left_hand || j === JI.right_hand) ? 0.04 : 0.028;
+      const mat = FOOT.includes(j) ? mats[side].clone() : mats[side];
+      if (FOOT.includes(j)) mat._own = true;
+      const s = new THREE.Mesh(new THREE.SphereGeometry(rad, 14, 10), mat);
+      g.add(s); joints[j] = s;
+    }
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.12, 10), mats.c);
+    nose.matrixAutoUpdate = false; g.add(nose);
+    const trails = [0, 1].map(() => {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(600 * 3), 3));
+      geo.setDrawRange(0, 0);
+      const ln = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xe5231a, transparent: true, linewidth: 2 }));
+      ln.frustumCulled = false; g.add(ln); return ln;
+    });
+    V[m] = { g, bones, joints, nose, trails, mats };
+  }
+  for (let f = 0; f < 2; f++) {
+    const r = new THREE.Mesh(new THREE.RingGeometry(0.07, 0.1, 28), new THREE.MeshBasicMaterial({ color: 0x24b560, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
+    r.rotation.x = -Math.PI / 2; r.visible = false; scene.add(r); rings.push(r);
+  }
+  floorPlane = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  floorPlane.rotation.x = -Math.PI / 2; scene.add(floorPlane);
+
+
+  applyTheme();
+}
+
+function applyTheme() {
+  if (!renderer) return;
+  const dark = isDark();
+  scene.background = new THREE.Color(css("--scene-bg"));
+
+  const tex = gridTexture(); if (floorPlane.material.map) floorPlane.material.map.dispose(); floorPlane.material.map = tex; floorPlane.material.needsUpdate = true;
+  scene.fog = new THREE.Fog(new THREE.Color(css("--scene-bg")), 10, 40);
+  setFloor();
+
+  for (const m of METHODS) {
+    const c = methodColors(m, dark);
+    for (const k of ["c", "l", "r"]) V[m].mats[k].color.set(c[k]);
+    V[m].joints.forEach((j, i) => { if (j.material._own) j.material.color.set(c[LSIDE.has(i) ? "l" : "r"]); });
+  }
+  updateLegend(); drawStrip();
+}
+
+const tmpV = new THREE.Vector3(), tmpU = new THREE.Vector3(), tmpQ = new THREE.Quaternion(), tmpM = new THREE.Matrix4(), tmpS = new THREE.Vector3(1, 1, 1);
+const pose = new Float32Array(NJ * 3);
+function poseAt(d, m, t, out) {
+  const a = d.pos[m]; if (!a) return false;
+  const t0 = Math.max(0, Math.min(d.n - 1, Math.floor(t))), t1 = Math.min(d.n - 1, t0 + 1), w = t - t0;
+  for (let k = 0; k < NJ * 3; k++) out[k] = a[t0 * NJ * 3 + k] * (1 - w) + a[t1 * NJ * 3 + k] * w;
+  return true;
+}
+function updateSkeleton(c, d, m, t, opts) {
+  const sk = V[m];
+  if (!poseAt(d, m, t, pose)) { sk.g.visible = false; return; }
+  const P = j => tmpV.set(pose[3 * j], pose[3 * j + 1], pose[3 * j + 2]);
+  for (let j = 0; j < NJ; j++) sk.joints[j].position.set(pose[3 * j], pose[3 * j + 1], pose[3 * j + 2]);
+  for (let j = 1; j < NJ; j++) {
+    const p = PARENT[j];
+    const a = new THREE.Vector3(pose[3 * p], pose[3 * p + 1], pose[3 * p + 2]);
+    const b = new THREE.Vector3(pose[3 * j], pose[3 * j + 1], pose[3 * j + 2]);
+    tmpU.subVectors(b, a); const len = tmpU.length(); if (len < 1e-6) { sk.bones[j].visible = false; continue; }
+    sk.bones[j].visible = true;
+    tmpU.divideScalar(len); tmpQ.setFromUnitVectors(Z, tmpU);
+    tmpM.compose(tmpV.copy(a).add(b).multiplyScalar(0.5), tmpQ, tmpS.set(1, len, 1));
+    sk.bones[j].matrix.copy(tmpM); sk.bones[j].matrixWorldNeedsUpdate = true;
+  }
+  // nose: facing from shoulder line
+  const lx = pose[JI.left_shoulder * 3] - pose[JI.right_shoulder * 3], lz = pose[JI.left_shoulder * 3 + 2] - pose[JI.right_shoulder * 3 + 2];
+  const f = new THREE.Vector3(-lz, 0, lx).normalize();
+  tmpQ.setFromUnitVectors(Z, f);
+  const hp = new THREE.Vector3(pose[JI.head * 3], pose[JI.head * 3 + 1], pose[JI.head * 3 + 2]);
+  hp.addScaledVector(f, 0.11); hp.y += 0.01;
+  // cone points along +Y by default; rotate +Y -> f
+  tmpQ.setFromUnitVectors(Z, f);
+  tmpM.compose(hp, tmpQ, tmpS.set(1, 1, 1)); sk.nose.matrix.copy(tmpM); sk.nose.matrixWorldNeedsUpdate = true;
+  // contact tint (GT labels) on feet
+  const ti = Math.round(t);
+  const cont = opts.contacts && d.contact ? d.contact[Math.max(0, Math.min(d.n - 1, ti))] : 0;
+  const dark = isDark(), cols = methodColors(m, dark);
+  for (let f2 = 0; f2 < 2; f2++) {
+    const js = sk.joints[FOOT[f2]], on = (cont >> f2) & 1;
+    js.material.color.set(on ? (dark ? "#4cf08a" : "#12a64a") : cols[f2 === 0 ? "l" : "r"]);
+    js.scale.setScalar(on ? 1.5 : 1);
+  }
+  // slide trail: predicted foot path during the GT contact run containing t (kept 0.5 s after it ends)
+  for (let f2 = 0; f2 < 2; f2++) {
+    const ln = sk.trails[f2]; let show = false;
+    if (opts.trails && m !== "gt" && d.contact) {
+      const run = d.run[f2]; let s = run.st[ti], e = run.en[ti];
+      if (s < 0) { for (let u = ti - 1; u >= Math.max(0, ti - 30); u--) if (run.en[u] >= 0) { s = run.st[u]; e = run.en[u]; break; } }
+      if (s >= 0) {
+        const last = Math.min(ti, e), arr = ln.geometry.attributes.position.array; let k = 0;
+        const a = d.pos[m];
+        for (let u = s; u <= last && k < 600; u++, k++) {
+          const o = u * NJ * 3 + FOOT[f2] * 3;
+          arr[3 * k] = a[o]; arr[3 * k + 1] = (S.floorY || 0) + 0.006 - 0.03; arr[3 * k + 2] = a[o + 2];
+        }
+        ln.geometry.setDrawRange(0, k); ln.geometry.attributes.position.needsUpdate = true; show = k > 1;
+      }
+    }
+    ln.visible = show;
+  }
+}
+
+/* ------------------------------------------------------------------ cameras */
+const orbit = { az: 0.9, el: 0.3, dist: 3.0 };
+const cams = {};
+function getCam(key) {
+  if (!cams[key]) cams[key] = new THREE.PerspectiveCamera(40, 1, 0.02, 200);
+  return cams[key];
+}
+function rigAt(d, t) {
+  const t0 = Math.max(0, Math.min(d.n - 1, Math.floor(t))), t1 = Math.min(d.n - 1, t0 + 1), w = t - t0;
+  const mix = (arr, i0, i1) => arr[i0] * (1 - w) + arr[i1] * w;
+  // yaw interpolation along shortest arc
+  let y0 = d.yaw[t0], y1 = d.yaw[t1], dy = y1 - y0; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+  return {
+    cy: mix(d.cy, t0, t1), x: mix(d.ctr, 2 * t0, 2 * t1), z: mix(d.ctr, 2 * t0 + 1, 2 * t1 + 1), yaw: y0 + dy * w,
+    hx: mix(d.head, 3 * t0, 3 * t1), hy: mix(d.head, 3 * t0 + 1, 3 * t1 + 1), hz: mix(d.head, 3 * t0 + 2, 3 * t1 + 2),
+  };
+}
+function placeCam(cam, kind, d, t, aspect) {
+  const r = rigAt(d, t), fx = Math.sin(r.yaw), fz = Math.cos(r.yaw), lx = fz, lz = -fx; // forward, left
+  cam.aspect = aspect; cam.up.set(0, 1, 0); cam.fov = 48;
+  const fl = S.floorY || 0;
+  if (kind === "3q") {
+    const s = Math.SQRT1_2 * 2.0;
+    const ty = fl + Math.max(0.3, r.cy);
+    cam.position.set(r.x + (fx + lx) * s, ty + 0.65, r.z + (fz + lz) * s);
+    cam.lookAt(r.x, ty, r.z);
+  } else if (kind === "side") {
+    const ty = fl + Math.max(0.3, r.cy);
+    cam.position.set(r.x + lx * 2.6, ty + 0.15, r.z + lz * 2.6); cam.lookAt(r.x, ty, r.z);
+  } else if (kind === "top") {
+    cam.up.set(fx, 0, fz); cam.position.set(r.x, fl + 3.0, r.z); cam.lookAt(r.x, fl, r.z);
+  } else if (kind === "fp") {
+    cam.fov = 100; const p = 50 * Math.PI / 180;
+    cam.position.set(r.hx + fx * 0.06, r.hy + 0.03, r.hz + fz * 0.06);
+    cam.lookAt(cam.position.x + fx * Math.cos(p), cam.position.y - Math.sin(p), cam.position.z + fz * Math.cos(p));
+  } else {  // free orbit around the (smoothed) subject
+    const ce = Math.cos(orbit.el), cx = r.x + orbit.dist * ce * Math.sin(orbit.az), cz = r.z + orbit.dist * ce * Math.cos(orbit.az);
+    const ty = fl + Math.max(0.3, r.cy);
+    cam.position.set(cx, ty + orbit.dist * Math.sin(orbit.el), cz); cam.lookAt(r.x, ty, r.z);
+  }
+  cam.updateProjectionMatrix();
+}
+
+/* ------------------------------------------------------------------ app state */
+const S = {
+  mode: "review", ci: 0, t: 0, playing: true, speed: 1,
+  layout: "over", cam: "3q", show: Object.fromEntries(METHODS.map(m => [m, true])),
+  contacts: true, trails: true, ghost: true, floorY: 0, jumpMethod: NONGT[NONGT.length - 1] || NONGT[0],
+  still: false, last: performance.now(),
+  seg: null,        // [a,b] loop bounds (frames); null = whole window
+  views: [],        // [{x,y,w,h,cam,methods:[{m,op}],label}]
+};
+const CLIPS = DATA.clips;
+const cur = () => CLIPS[S.ci];
+
+function setFloor() { if (floorPlane) floorPlane.position.y = S.floorY - 0.03; }
+function gridTexture() {
+  const c = document.createElement("canvas"); c.width = c.height = 128; const g = c.getContext("2d");
+  g.fillStyle = css("--floor"); g.fillRect(0, 0, 128, 128);
+  g.strokeStyle = css("--grid-a"); g.lineWidth = 4; g.strokeRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(80, 80);
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy(); return t;
+}
+function layoutViews() {
+  const w = stage.clientWidth, h = stage.clientHeight, gap = 3, v = [];
+  const grid = (items, cols, rows) => items.forEach((it, i) => {
+    const cx = i % cols, cy = Math.floor(i / cols), vw = w / cols, vh = h / rows;
+    v.push({ x: cx * vw + gap / 2, y: cy * vh + gap / 2, w: vw - gap, h: vh - gap, ...it });
+  });
+  if (S.mode === "ab") {
+    const wide = w >= h * 1.15, ab = S.ab.cur;
+    const items = ["A", "B"].map((side, i) => ({
+      cam: ab.view, label: side,
+      methods: [{ m: "gt", op: 0.28 }, { m: ab.sides[i], op: 1 }],
+    }));
+    grid(items, wide ? 2 : 1, wide ? 1 : 2);
+  } else {
+    const vis = METHODS.filter(m => S.show[m]);
+    if (S.layout === "quad") {
+      grid(["3q", "side", "top", "fp"].map(k => ({ cam: k, label: k === "3q" ? "3/4 front" : k === "fp" ? "first person" : k, methods: vis.map(m => ({ m, op: 1 })) })), 2, 2);
+    } else if (S.layout === "side" && vis.length > 1) {
+      const wide = w >= h * 1.15;
+      grid(vis.map(m => ({
+        cam: S.cam, label: methodLabel(m),
+        methods: (m !== "gt" && S.ghost && cur().has_gt ? [{ m: "gt", op: 0.28 }] : []).concat([{ m, op: 1 }]),
+      })), wide ? vis.length : 1, wide ? 1 : vis.length);
+    } else {
+      grid([{ cam: S.cam, label: "", methods: vis.map(m => ({ m, op: 1 })) }], 1, 1);
+    }
+  }
+  S.views = v;
+  // DOM labels
+  stage.querySelectorAll(".vlabel").forEach(e => e.remove());
+  for (const vw of v) {
+    if (!vw.label) continue;
+    const e = document.createElement("div"); e.className = "vlabel"; e.textContent = vw.label;
+    e.style.left = vw.x + 6 + "px"; e.style.top = vw.y + 6 + "px"; stage.appendChild(e);
+  }
+}
+
+function resize() {
+  if (!renderer) return;
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(w, h, false);
+  layoutViews();
+}
+
+function renderAll() {
+  const c = cur(), d = decodeClip(c);
+  const abMode = S.mode === "ab";
+  const opts = { contacts: S.contacts && !abMode, trails: S.trails && !abMode };
+  for (const m of METHODS) updateSkeleton(c, d, m, S.t, opts);
+  // contact rings on GT feet
+  for (let f = 0; f < 2; f++) {
+    const on = opts.contacts && d.contact && d.pos.gt && ((d.contact[Math.round(S.t)] >> f) & 1);
+    rings[f].visible = !!on;
+    if (on) { poseAt(d, "gt", S.t, pose); rings[f].position.set(pose[FOOT[f] * 3], S.floorY - 0.03 + 0.004, pose[FOOT[f] * 3 + 2]); }
+  }
+  renderer.setScissorTest(true);
+  renderer.setClearColor(new THREE.Color(css("--scene-bg")), 1);
+  renderer.setViewport(0, 0, stage.clientWidth, stage.clientHeight);
+  renderer.setScissor(0, 0, stage.clientWidth, stage.clientHeight);
+  renderer.clear();
+  const H = stage.clientHeight;
+  for (const vw of S.views) {
+    const x = Math.round(vw.x), w = Math.round(vw.w), y = Math.round(H - vw.y - vw.h), h = Math.round(vw.h);
+    renderer.setViewport(x, y, w, h); renderer.setScissor(x, y, w, h);
+    const cam = getCam(vw.cam + (vw.cam === "free" ? vw.label : ""));
+    placeCam(cam, vw.cam, d, S.t, w / h);
+    for (const m of METHODS) { V[m].joints[JI.head].visible = V[m].nose.visible = V[m].bones[JI.head].visible = vw.cam !== "fp"; }
+    const active = new Map(vw.methods.filter(o => d.pos[o.m]).map(o => [o.m, o.op]));
+    for (const m of METHODS) {
+      const sk = V[m], on = active.has(m);
+      sk.g.visible = on;
+      if (on) { const op = active.get(m); for (const k of ["c", "l", "r"]) sk.mats[k].opacity = op; sk.joints.forEach(j => { if (j.material._own) j.material.opacity = op; }); sk.trails.forEach(t => t.material.opacity = op); }
+    }
+    // rings only in views showing GT or any contact info
+    renderer.render(scene, cam);
+  }
+}
+
+/* ------------------------------------------------------------------ review UI */
+const $ = id => document.getElementById(id);
+function fmtT(f) { return (f / FPS).toFixed(2) + " s"; }
+
+function buildClipSelect() {
+  const sel = $("clipSel"), groups = {};
+  CLIPS.forEach((c, i) => { (groups[c.group] = groups[c.group] || []).push([c, i]); });
+  const names = { "worst-cmu-test": "Worst CMU test (learned)", "worst-xsens-s09": "Worst Xsens S09 (learned)", "learned-beats-basis": "Learned beats Basis most", "sit-crouch": "Sitting / crouching", "live-capture": "Live capture 2026-07-06 (no GT)" };
+  for (const g of Object.keys(groups)) {
+    const og = document.createElement("optgroup"); og.label = names[g] || g;
+    for (const [c, i] of groups[g]) {
+      const o = document.createElement("option"); o.value = i;
+      const sc = c.clip_scores && c.clip_scores.learned_full_cm != null ? `  [${c.clip_scores.learned_full_cm.toFixed(1)} / ${c.clip_scores.basis_full_cm.toFixed(1)} cm]` : "";
+      o.textContent = c.id + sc; og.appendChild(o);
+    }
+    sel.appendChild(og);
+  }
+  sel.onchange = () => setClip(+sel.value);
+}
+function setClip(i, keepT) {
+  S.ci = (i + CLIPS.length) % CLIPS.length;
+  $("clipSel").value = S.ci;
+  const c = cur(), d = decodeClip(c);
+  S.floorY = c.floor || 0; setFloor();
+  if (!keepT) S.t = 0;
+  // methods without data in this clip (live has no GT) are hidden
+  $("clipInfo").textContent = `${c.dataset} · ${c.activity} · frames ${c.win[0]}–${c.win[1]} of ${c.n_clip} (${fmtT(c.win[0])}–${fmtT(c.win[1])}) · inputs: ${c.variant}` + (c.has_gt ? "" : " · no ground truth");
+  buildMethodBtns(); buildJumps(); buildNums(); layoutViews(); drawStrip();
+}
+function buildMethodBtns() {
+  const box = $("methodBtns"); box.innerHTML = "";
+  for (const m of METHODS) {
+    if (!cur().pos[m]) continue;
+    const b = document.createElement("button"); b.setAttribute("aria-pressed", S.show[m]);
+    b.innerHTML = `<span class="sw" style="background:${methodColors(m, isDark()).c}"></span>${methodLabel(m)}`;
+    b.onclick = () => { S.show[m] = !S.show[m]; b.setAttribute("aria-pressed", S.show[m]); layoutViews(); updateLegend(); };
+    box.appendChild(b);
+  }
+  updateLegend();
+}
+function updateLegend() {
+  const dark = isDark();
+  $("legend").innerHTML = METHODS.filter(m => cur().pos[m]).map(m => {
+    const c = methodColors(m, dark);
+    return `<span class="sw" style="background:${c.l}"></span>L <span class="sw" style="background:${c.r}"></span>R <b style="color:${c.c}">${methodLabel(m)}</b>`;
+  }).join(" &nbsp; ") + " &nbsp; green foot = GT contact; red trail = predicted foot slide during GT contact; nose cone = facing";
+}
+function buildJumps() {
+  const c = cur(), box = $("jumps"), mb = $("jumpMethodBtns"); box.innerHTML = ""; mb.innerHTML = "";
+  const ms = NONGT.filter(m => c.jump && c.jump[m]);
+  if (!ms.includes(S.jumpMethod)) S.jumpMethod = ms[ms.length - 1];
+  for (const m of ms) {
+    const b = document.createElement("button"); b.className = "chip"; b.setAttribute("aria-pressed", m === S.jumpMethod);
+    b.innerHTML = `<span class="sw" style="background:${methodColors(m, isDark()).c}"></span>${methodLabel(m).split(" (")[0]}`;
+    b.onclick = () => { S.jumpMethod = m; buildJumps(); };
+    mb.appendChild(b);
+  }
+  const kinds = { err: "err", pop: "pop", skate: "slide", diff: "differs" };
+  for (const j of (c.jump && c.jump[S.jumpMethod]) || []) {
+    const b = document.createElement("button"); b.className = "chip";
+    b.textContent = `${kinds[j.k]}${j.v != null ? " " + j.v + (j.k === "skate" ? " cm/s" : " cm") : ""} @ ${(j.f / FPS).toFixed(2)} s`;
+    b.onclick = () => { S.t = j.f; S.playing = false; syncPlayBtn(); };
+    box.appendChild(b);
+  }
+  if (!box.children.length) box.innerHTML = '<span class="muted small">none</span>';
+}
+function buildNums() {
+  const c = cur(), cols = [["full_cm", "MPJPE-full cm", 2], ["upper_cm", "upper cm", 2], ["lower_cm", "lower cm", 2], ["hand_cm", "hand cm", 2], ["jitter", "jitter (GT)", 2], ["skate_cm_s", "skate cm/s", 1], ["float_p95_cm", "float p95 cm", 1], ["pen_p95_cm", "pen p95 cm", 1], ["pops_per_min", "pops/min", 1], ["swivel_deg", "swivel deg", 1]];
+  const ms = METHODS.filter(m => c.metrics && c.metrics[m]);
+  const use = c.has_gt ? cols : cols.filter(k => ["jitter", "pops_per_min"].includes(k[0]));
+  let h = "<table><tr><th></th>" + use.map(k => `<th>${k[1]}</th>`).join("") + "</tr>";
+  for (const m of ms) {
+    const r = c.metrics[m];
+    h += `<tr><td><span class="sw" style="background:${methodColors(m, isDark()).c}"></span>${methodLabel(m)}</td>` + use.map(k => {
+      let v = r[k[0]]; if (v == null) return "<td>–</td>";
+      let s = v.toFixed(k[2]); if (k[0] === "jitter" && r.jitter_gt != null) s += ` (${r.jitter_gt.toFixed(2)})`;
+      return `<td>${s}</td>`;
+    }).join("") + "</tr>";
+  }
+  $("nums").innerHTML = h + "</table>";
+  $("numsNote").textContent = c.has_gt ? "Computed on this window only (oracle-v2 formulas; floor and contact from the window's GT). Whole-clip MPJPE-full (sampled): " + (c.clip_scores.learned_full_cm != null ? `learned ${c.clip_scores.learned_full_cm} cm, Basis ${c.clip_scores.basis_full_cm} cm.` : "n/a") : "No GT: pops and jitter only; the timeline curve is distance to the first method.";
+}
+
+/* timeline strip */
+const strip = $("strip");
+function drawStrip() {
+  if (S.mode !== "review") return;
+  const c = cur(), d = decodeClip(c), dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = strip.clientWidth, h = strip.clientHeight; if (!w) return;
+  strip.width = w * dpr; strip.height = h * dpr;
+  const g = strip.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  const n = d.n, X = t => t / (n - 1) * (w - 8) + 4;
+  let mx = 0.01;
+  const ms = NONGT.filter(m => d.err[m] && d.err[m].some(v => v > 0));
+  for (const m of ms) for (const v of d.err[m]) mx = Math.max(mx, v);
+  g.lineWidth = 1.5;
+  for (const m of ms) {
+    g.strokeStyle = methodColors(m, isDark()).c; g.beginPath();
+    for (let t = 0; t < n; t++) { const y = h - 12 - (d.err[m][t] / mx) * (h - 20); t ? g.lineTo(X(t), y) : g.moveTo(X(t), y); }
+    g.stroke();
+  }
+  if (d.contact) {
+    for (let t = 0; t < n; t++) for (let f = 0; f < 2; f++) if ((d.contact[t] >> f) & 1) { g.fillStyle = "#24b560"; g.fillRect(X(t), h - 8 + f * 4 - 0, Math.max(1, (w - 8) / n), 3); }
+  }
+  g.fillStyle = css("--muted"); g.font = "10px system-ui"; g.fillText(`${(mx * 100).toFixed(0)} cm`, 5, 11);
+  for (const j of (c.jump && c.jump[S.jumpMethod]) || []) { g.fillStyle = j.k === "pop" ? "#c8321f" : css("--ink"); g.fillRect(X(j.f) - 1, 0, 2, 6); }
+  g.strokeStyle = css("--accent"); g.lineWidth = 2; g.beginPath(); g.moveTo(X(S.t), 0); g.lineTo(X(S.t), h); g.stroke();
+}
+function stripSeek(ev) {
+  const r = strip.getBoundingClientRect(), n = cur().n;
+  S.t = Math.max(0, Math.min(n - 1, (ev.clientX - r.left - 4) / (r.width - 8) * (n - 1)));
+}
+let stripDrag = false;
+strip.addEventListener("pointerdown", e => { stripDrag = true; strip.setPointerCapture(e.pointerId); S.playing = false; syncPlayBtn(); stripSeek(e); });
+strip.addEventListener("pointermove", e => { if (stripDrag) stripSeek(e); });
+strip.addEventListener("pointerup", () => { stripDrag = false; });
+
+function syncPlayBtn() { $("btnPlay").textContent = S.playing ? "Pause" : "Play"; $("abPlay").textContent = S.playing ? "Pause" : "Play"; }
+function setSpeed(s) { S.speed = s; $("spd1").setAttribute("aria-pressed", s === 1); $("spd25").setAttribute("aria-pressed", s === 0.25); $("abSlow").setAttribute("aria-pressed", s === 0.25); }
+function setCamBtn(k) { S.cam = k; document.querySelectorAll("[data-cam]").forEach(b => b.setAttribute("aria-pressed", b.dataset.cam === k)); if (S.layout === "quad") setLayout("over"); else layoutViews(); }
+function setLayout(l) { S.layout = l; $("layOver").setAttribute("aria-pressed", l === "over"); $("laySide").setAttribute("aria-pressed", l === "side"); $("layQuad").setAttribute("aria-pressed", l === "quad"); layoutViews(); }
+function tog(id, key) { const b = $(id); b.onclick = () => { S[key] = !S[key]; b.setAttribute("aria-pressed", S[key]); }; }
+
+/* free-orbit controls */
+(function () {
+  const pts = new Map(); let pd = 0;
+  stage.addEventListener("pointerdown", e => { pts.set(e.pointerId, [e.clientX, e.clientY]); stage.setPointerCapture(e.pointerId); pd = 0; });
+  stage.addEventListener("pointermove", e => {
+    if (!pts.has(e.pointerId)) return; const p = pts.get(e.pointerId);
+    const dx = e.clientX - p[0], dy = e.clientY - p[1];
+    if (pts.size === 1 && S.cam === "free" && S.mode === "review") { orbit.az -= dx * 0.008; orbit.el = Math.max(-0.2, Math.min(1.45, orbit.el + dy * 0.008)); }
+    pts.set(e.pointerId, [e.clientX, e.clientY]);
+  });
+  const up = e => pts.delete(e.pointerId);
+  stage.addEventListener("pointerup", up); stage.addEventListener("pointercancel", up);
+  stage.addEventListener("wheel", e => { if (S.cam !== "free") return; e.preventDefault(); orbit.dist = Math.max(0.8, Math.min(12, orbit.dist * Math.exp(e.deltaY * 0.001))); }, { passive: false });
+})();
+
+/* ------------------------------------------------------------------ blind A/B */
+const AB_KEY = "r4b_ab_v1";
+const TAGS = ["elbow", "shoulder", "feet slide", "floating", "pop", "jitter", "other"];
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function shuffle(a, rnd) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+const store = {
+  get() { try { return JSON.parse(localStorage.getItem(AB_KEY)); } catch (e) { return this.mem || null; } },
+  set(v) { this.mem = v; try { localStorage.setItem(AB_KEY, JSON.stringify(v)); return true; } catch (e) { return false; } },
+  clear() { this.mem = null; try { localStorage.removeItem(AB_KEY); } catch (e) { } },
+};
+const AB = { pair: null, ms: ["basis", "learned"] };
+if (NONGT.length >= 2) AB.ms = [NONGT[0], NONGT[1]];
+S.ab = { cur: null, pairs: [], answers: [], i: 0, seed: 20261020, t0: 0 };
+
+function buildPairs(seed) {
+  const rnd = mulberry32(seed);
+  const cands = CLIPS.map((c, i) => [c, i]).filter(([c]) => c.has_gt && c.ab_seg && c.pos[AB.ms[0]] && c.pos[AB.ms[1]]);
+  shuffle(cands, rnd);
+  const distinct = cands.slice(0, 18), pairs = [];
+  const fpSet = new Set(shuffle(distinct.map((_, i) => i), rnd).slice(0, 4));
+  distinct.forEach(([c, ci], i) => pairs.push({ id: pairs.length, ci, clip: c.id, seg: c.ab_seg, view: fpSet.has(i) ? "fp" : "3q", sides: rnd() < 0.5 ? [AB.ms[0], AB.ms[1]] : [AB.ms[1], AB.ms[0]], repeat_of: null }));
+  // two swapped-side repeats (consistency check), placed late in the order
+  const order = pairs.slice(); shuffle(order, rnd);
+  const reps = shuffle(order.slice(0, Math.max(2, Math.floor(order.length / 2))), rnd).slice(0, Math.min(2, pairs.length));
+  for (const r of reps) {
+    const p = { ...r, sides: [r.sides[1], r.sides[0]], repeat_of: r.id };
+    const at = Math.min(order.length, Math.max(order.findIndex(o => o.id === r.id) + 5, Math.floor(order.length * 0.6)) + Math.floor(rnd() * 3));
+    p.id = pairs.length + order.filter(o => o.repeat_of != null).length; order.splice(at, 0, p);
+  }
+  order.forEach((p, i) => p.n = i);
+  return order;
+}
+function abInit() {
+  const saved = store.get();
+  const ck = (DATA.ckpts.learned || {}).name + "|" + (DATA.ckpts.learned || {}).path;
+  let seed = S.ab.seed;
+  if (saved && saved.ckpt === ck && saved.seed) seed = saved.seed;
+  S.ab.seed = seed; S.ab.pairs = buildPairs(seed);
+  S.ab.answers = saved && saved.ckpt === ck && saved.seed === seed ? saved.answers.filter(a => S.ab.pairs.some(p => p.n === a.n)) : [];
+  S.ab.i = Math.min(S.ab.answers.length, S.ab.pairs.length);
+  S.ab.ckptKey = ck;
+}
+function abSave() { return store.set({ schema: "r4b-ab-v1", ckpt: S.ab.ckptKey, seed: S.ab.seed, answers: S.ab.answers }); }
+function abShow() {
+  const A = S.ab, done = A.i >= A.pairs.length;
+  $("abAsk").style.display = done ? "none" : ""; $("abDone").style.display = done ? "" : "none";
+  $("abProg").textContent = done ? "All pairs answered" : `Pair ${A.i + 1} of ${A.pairs.length}`;
+  $("abSaved").textContent = `${A.answers.length} saved` + (abSave() ? " (this browser)" : " (browser storage unavailable: use Export)");
+  if (done) { abSummary(); return; }
+  const p = A.pairs[A.i]; A.cur = p;
+  S.ci = p.ci; const c = cur(); decodeClip(c); S.floorY = c.floor || 0; setFloor();
+  S.seg = p.seg; S.t = p.seg[0]; S.playing = true; syncPlayBtn(); A.t0 = Date.now();
+  const prev = A.answers.find(a => a.n === p.n);
+  A.choice = prev ? prev.choice : null; A.tag = prev ? prev.tag : null;
+  abSyncBtns(); layoutViews();
+}
+function abSyncBtns() {
+  const A = S.ab;
+  for (const [id, v] of [["chA", "A"], ["chSame", "same"], ["chB", "B"]]) $(id).classList.toggle("on", A.choice === v);
+  document.querySelectorAll("#tagChips button").forEach(b => b.setAttribute("aria-pressed", A.tag === b.dataset.tag));
+  $("abNext").disabled = !A.choice; $("abPrev").disabled = A.i === 0;
+}
+function abCommit() {
+  const A = S.ab, p = A.cur;
+  const winner = A.choice === "same" ? "same" : p.sides[A.choice === "A" ? 0 : 1];
+  const rec = { n: p.n, clip: p.clip, seg_frames: p.seg, window: cur().win, view: p.view, A: p.sides[0], B: p.sides[1], choice: A.choice, winner, tag: A.tag, repeat_of: p.repeat_of, ms: Date.now() - A.t0, ts: new Date().toISOString() };
+  const k = A.answers.findIndex(a => a.n === p.n); if (k >= 0) A.answers[k] = rec; else A.answers.push(rec);
+  A.i = Math.max(A.i + 1, 0);
+  // jump to first unanswered if going forward after a revision
+  abShow();
+}
+function abSummary() {
+  const A = S.ab, cnt = { same: 0 }; AB.ms.forEach(m => cnt[m] = 0);
+  A.answers.forEach(a => cnt[a.winner] = (cnt[a.winner] || 0) + 1);
+  let cons = [];
+  for (const p of A.pairs.filter(p => p.repeat_of != null)) {
+    const a = A.answers.find(x => x.n === p.n), o = A.answers.find(x => A.pairs[x.n] && A.pairs[x.n].id === p.repeat_of);
+    if (a && o) cons.push(a.winner === o.winner);
+  }
+  const tags = {}; A.answers.forEach(a => { if (a.tag) tags[a.tag] = (tags[a.tag] || 0) + 1; });
+  $("abSummary").innerHTML = `<b>Result</b>: ` + AB.ms.map(m => `${methodLabel(m).split(" (")[0]} preferred ${cnt[m] || 0}`).join(", ") + `, same ${cnt.same || 0} of ${A.answers.length}.<br>` +
+    `Consistency on swapped-side repeats: ${cons.length ? cons.filter(Boolean).length + "/" + cons.length + " agree" : "n/a"}.<br>` +
+    `Artifact tags: ${Object.keys(tags).length ? Object.entries(tags).map(e => e.join(" ")).join(", ") : "none"}.`;
+  $("abJson").value = abJson();
+}
+function abJson() {
+  const A = S.ab;
+  return JSON.stringify({ schema: "r4b-ab-v1", question: "Which would you rather see in the mirror?", created: new Date().toISOString(), data_generated: DATA.generated, ckpts: DATA.ckpts, variant: DATA.variant, methods: AB.ms, seed: A.seed, answers: A.answers }, null, 1);
+}
+function abExport() {
+  const j = abJson(); $("abJson").value = j;
+  const msg = $("abExportMsg");
+  const fallback = () => { $("abJson").select(); try { document.execCommand("copy"); msg.textContent = "copied (fallback)"; } catch (e) { msg.textContent = "select the text below and copy"; } };
+  try { navigator.clipboard.writeText(j).then(() => msg.textContent = "copied " + A_count() + " answers", fallback); } catch (e) { fallback(); }
+}
+const A_count = () => S.ab.answers.length;
+
+/* ------------------------------------------------------------------ mode switching */
+function setMode(m) {
+  S.mode = m; document.body.classList.toggle("ab", m === "ab");
+  $("tabReview").setAttribute("aria-pressed", m === "review"); $("tabAB").setAttribute("aria-pressed", m === "ab");
+  applyTheme();
+  if (m === "ab") { abInit(); S.layout = "over"; abShow(); } else { S.seg = null; setClip(S.ci); S.playing = true; syncPlayBtn(); }
+  resize();
+}
+
+/* ------------------------------------------------------------------ main loop */
+function tick(now) {
+  const dt = Math.min(0.1, (now - S.last) / 1000); S.last = now;
+  const c = cur();
+  if (S.playing && !S.still) {
+    S.t += dt * FPS * S.speed;
+    const a = S.seg ? S.seg[0] : 0, b = S.seg ? S.seg[1] - 1 : c.n - 1;
+    if (S.t > b) S.t = a + (S.t - b);
+  }
+  renderAll();
+  if (S.mode === "review") {
+    $("timeInfo").textContent = `${fmtT(S.t)} / ${fmtT(c.n)}  ·  frame ${Math.round(S.t)} of ${c.n}`;
+    if (!tick.sc || Math.abs(tick.sc - S.t) > 0.01) { drawStrip(); tick.sc = S.t; }
+  }
+  if (!S.still) requestAnimationFrame(tick);
+}
+
+function boot() {
+  $("meta").textContent = `ckpt ${(DATA.ckpts.learned || {}).name || "?"} · ${DATA.variant} inputs · ${DATA.clips.length} clips · data ${DATA.generated}`;
+  try { initThree(); } catch (e) {
+    stage.innerHTML = '<div style="padding:20px">WebGL is not available in this browser: ' + e + "</div>"; return;
+  }
+  buildClipSelect();
+  $("btnPrevClip").onclick = () => setClip(S.ci - 1); $("btnNextClip").onclick = () => setClip(S.ci + 1);
+  $("btnPlay").onclick = () => { S.playing = !S.playing; syncPlayBtn(); };
+  $("btnStepB").onclick = () => { S.playing = false; syncPlayBtn(); S.t = Math.max(0, Math.round(S.t) - 1); };
+  $("btnStepF").onclick = () => { S.playing = false; syncPlayBtn(); S.t = Math.min(cur().n - 1, Math.round(S.t) + 1); };
+  $("spd1").onclick = () => setSpeed(1); $("spd25").onclick = () => setSpeed(0.25);
+  $("layOver").onclick = () => setLayout("over"); $("laySide").onclick = () => setLayout("side"); $("layQuad").onclick = () => setLayout("quad");
+  document.querySelectorAll("[data-cam]").forEach(b => b.onclick = () => setCamBtn(b.dataset.cam));
+  tog("tgContact", "contacts"); tog("tgTrail", "trails"); tog("tgGhost", "ghost");
+  $("tgGhost").addEventListener("click", layoutViews);
+  $("tabReview").onclick = () => setMode("review"); $("tabAB").onclick = () => setMode("ab");
+  $("themeBtn").onclick = () => { const r = document.documentElement; r.dataset.theme = isDark() ? "light" : "dark"; applyTheme(); buildMethodBtns(); buildJumps(); buildNums(); };
+  $("tagChips").innerHTML = TAGS.map(t => `<button class="chip" data-tag="${t}" aria-pressed="false">${t}</button>`).join("");
+  document.querySelectorAll("#tagChips button").forEach(b => b.onclick = () => { S.ab.tag = S.ab.tag === b.dataset.tag ? null : b.dataset.tag; abSyncBtns(); });
+  $("chA").onclick = () => { S.ab.choice = "A"; abSyncBtns(); }; $("chB").onclick = () => { S.ab.choice = "B"; abSyncBtns(); }; $("chSame").onclick = () => { S.ab.choice = "same"; abSyncBtns(); };
+  $("abNext").onclick = abCommit;
+  $("abPrev").onclick = () => { S.ab.i = Math.max(0, S.ab.i - 1); abShow(); };
+  $("abReplay").onclick = () => { S.t = S.seg[0]; S.playing = true; syncPlayBtn(); };
+  $("abPlay").onclick = () => { S.playing = !S.playing; syncPlayBtn(); };
+  $("abSlow").onclick = () => setSpeed(S.speed === 1 ? 0.25 : 1);
+  $("abExport").onclick = abExport;
+  $("abReset").onclick = () => { if (confirm("Delete all saved answers in this browser?")) { store.clear(); abInit(); abShow(); } };
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+    if (e.key === " ") { e.preventDefault(); S.playing = !S.playing; syncPlayBtn(); }
+    else if (S.mode === "ab" && S.ab.cur && S.ab.i < S.ab.pairs.length) {
+      const k = e.key.toLowerCase();
+      if (k === "a") { S.ab.choice = "A"; abSyncBtns(); } else if (k === "b") { S.ab.choice = "B"; abSyncBtns(); }
+      else if (k === "s") { S.ab.choice = "same"; abSyncBtns(); } else if (k === "enter" && S.ab.choice) abCommit();
+    }
+    else if (S.mode === "review") {
+      if (e.key === "ArrowRight") { S.playing = false; syncPlayBtn(); S.t = Math.min(cur().n - 1, Math.round(S.t) + (e.shiftKey ? 10 : 1)); }
+      else if (e.key === "ArrowLeft") { S.playing = false; syncPlayBtn(); S.t = Math.max(0, Math.round(S.t) - (e.shiftKey ? 10 : 1)); }
+      else if ("12345".includes(e.key) && e.key) setCamBtn(["3q", "side", "top", "fp", "free"][+e.key - 1]);
+      else if (e.key === "]") setClip(S.ci + 1); else if (e.key === "[") setClip(S.ci - 1);
+    }
+  });
+  window.addEventListener("resize", () => { resize(); drawStrip(); });
+  new ResizeObserver(() => { resize(); }).observe(stage);
+
+  // URL hash: #clip=3&t=120&cam=fp&layout=side&methods=gt,learned&still=1&theme=dark
+  const q = new URLSearchParams(location.hash.slice(1));
+  if (q.get("theme")) document.documentElement.dataset.theme = q.get("theme");
+  if (q.get("mode") === "ab") { setMode("ab"); }
+  else { setClip(+(q.get("clip") || 0)); }
+  const snap = q.get("still") || q.get("snap");
+  if (snap) { S.still = true; S.playing = false; }
+  if (q.get("still")) document.body.classList.add("still");
+  if (q.get("cam")) setCamBtn(q.get("cam"));
+  if (q.get("layout")) setLayout(q.get("layout"));
+  if (q.get("methods")) { const ms = q.get("methods").split(","); METHODS.forEach(m => S.show[m] = ms.includes(m)); layoutViews(); }
+  if (q.get("t")) S.t = +q.get("t");
+  if (q.get("noTrail")) S.trails = false;
+  applyTheme(); resize(); syncPlayBtn();
+  tick.sc = -1;
+  requestAnimationFrame(now => { S.last = now; tick(now); document.body.dataset.ready = "1"; });
+  if (snap) setTimeout(() => {
+    S.still = false; renderAll(); S.still = true;
+    // headless captures: freeze the WebGL frame into a plain <img> so compositing cannot drop it
+    const im = document.createElement("img"); im.style.cssText = "position:absolute;inset:0;width:100%;height:100%";
+    im.onload = () => { stage.appendChild(im); document.body.dataset.snap = "1"; };
+    im.src = cv.toDataURL("image/png");
+  }, 50);
+}
+window.addEventListener("load", boot);
+</script>
+</body>
+</html>
