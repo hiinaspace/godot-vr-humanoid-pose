@@ -1,7 +1,7 @@
 # ruff: noqa: E501
 """Owner review packet exporter (Round 4b): pick clips, run methods, inline one HTML viewer.
 
-    uv run python -m validation.sprint.export_review --ckpt .cache/sprint/runs/e1/best.pt \
+    uv run python -m validation.sprint.export_review --ckpt .cache/sprint/runs/r3_stream_full/best.pt --footlock --contact-thr 0.35 --postfix --lock-drift 0.20 \
         --methods gt,basis,learned
 
 Methods: ``gt``, ``basis``, ``learned`` (= the first ``--ckpt``) and, for extra checkpoints given as
@@ -9,14 +9,15 @@ Methods: ``gt``, ``basis``, ``learned`` (= the first ``--ckpt``) and, for extra 
 the method list in the exported JSON, so a Round-3 model is one ``--ckpt`` away.
 
 Pipeline: (1) rank candidate clips (CMU test minus content-duplicate subject 84, Xsens val subject
-S09 without mirror twins) by learned MPJPE-full, evaluating the model every ``--rank-stride`` frames
-and Basis on every frame; (2) select 6+6 worst, 4 learned-beats-Basis, 4 sit/crouch, plus the
+S09 without mirror twins; splits-v2 dedupe) by learned MPJPE-full on oracle-v3-valid frames, with the
+model (streaming, ``ModelPredictor`` + eval.py post-process flags) and Basis run on every frame; (2) select 6+6 worst, 4 learned-beats-Basis, 4 sit/crouch, plus the
 2026-07-06 live capture (no GT); (3) cut each clip to its worst 8 s window, run every method at 60 Hz
-there; (4) compute oracle-v2 columns on the window; (5) write quantised int16-mm joint arrays, GT
+there; (4) compute oracle-v3 columns on the window; (5) write quantised int16-mm joint arrays, GT
 foot-contact flags, error curves and jump lists as one JSON blob into ``viewer/index.html``
 (``viewer/template.html`` with the blob substituted for ``PLACEHOLDER``).
 
-All metric / contact definitions come from ``oracle_v2`` (floor = 2nd percentile of GT lowest foot
+Basis's head joint is the raw HMD pose (+ attachment offset); the export subtracts that offset (display).
+Metric / contact definitions come from ``oracle_v3`` / ``oracle_v2`` (floor = 2nd percentile of GT lowest foot
 joint, contact = GT foot < floor + 5 cm and GT horizontal speed < 10 cm/s); the window floor is
 used for both the columns and the markers so the two never disagree.
 """
@@ -37,6 +38,7 @@ import numpy as np
 from validation.sprint import conventions as C
 from validation.sprint import oracle as O
 from validation.sprint import oracle_v2 as O2
+from validation.sprint import oracle_v3 as O3
 from validation.sprint import rest as R
 from validation.sprint import splits as S
 
@@ -83,51 +85,62 @@ def basis_from_inputs(inputs: np.ndarray, calib: O.Calib) -> np.ndarray:
 
 
 class Learned:
-    """A trained checkpoint evaluated at arbitrary frame indices (causal 40-frame windows)."""
+    """A trained checkpoint run through ``train.ModelPredictor`` exactly as ``eval.py`` does it
+    (streaming inference, optional --footlock / --postfix / --contact-thr / --lock-drift), at every
+    frame of the clip. Whole-clip predictions are cached because the post-processes are causal scans."""
 
-    def __init__(self, label: str, path: Path):
-        import torch
-
+    def __init__(self, label: str, path: Path, opts: dict, cache: Path):
         from validation.sprint import train as T
 
-        self.torch, self.T, self.label, self.path = torch, T, label, path
-        self.pred = T.ModelPredictor.load(path, dev="cpu")
+        self.label, self.path, self.opts = label, path, opts
+        self.pred = T.ModelPredictor.load(
+            path, dev="cpu", postfix=opts["postfix"], footlock=opts["footlock"]
+        )
+        self.pred.contact_thr = opts["contact_thr"]
+        self.pred.lock_drift = opts["lock_drift"]
+        key = f"{self.pred.name}_thr{opts['contact_thr']}_drift{opts['lock_drift']}_{int(path.stat().st_mtime)}"
+        self.cache = cache / f"pred_{label}_{key}"
+        self.cache.mkdir(parents=True, exist_ok=True)
 
     @property
     def name(self) -> str:
         return self.pred.name
 
-    def positions_at(
-        self,
-        inputs: np.ndarray,
-        calib: O.Calib,
-        dataset: str,
-        idx: np.ndarray,
-        lengths: np.ndarray,
-        bs: int = 256,
-    ) -> np.ndarray:
-        """Same computation as ``ModelPredictor.predict_clip_meta`` restricted to frames ``idx``."""
-        torch, T, p = self.torch, self.T, self.pred
-        with torch.no_grad():
-            x = torch.tensor(inputs, dtype=torch.float32)
-            x = torch.cat([x[:1].expand(T.L, -1), x])
-            cal = torch.tensor([[calib.height_m, calib.arm_length_m, calib.shoulder_width_m]])
-            ds = torch.tensor([0 if dataset == "cmu" else 1])
-            st = T.static_feats(cal, ds, p.cfg.get("skel", True))
-            rots, roots = [], []
-            for i in range(0, len(idx), bs):
-                t = torch.as_tensor(idx[i : i + bs])
-                raw = x[t[:, None] + torch.arange(T.L + 1)[None]]
-                feats, Q, origin, head_pc = T.make_feats(raw)
-                rot6, hr = T.decode(p.model(feats, st.expand(len(t), -1))[:, -1:].float())
-                m = T.sixd2mat(rot6[:, 0])
-                m = torch.cat([(Q.transpose(-1, -2) @ m[:, 0])[:, None], m[:, 1:]], 1)
-                hips = (Q.transpose(-1, -2) @ (head_pc[:, -1] + hr[:, 0])[..., None]).squeeze(
-                    -1
-                ) + origin
-                rots.append(T.mat2quat(m).double().numpy())
-                roots.append(hips.double().numpy())
-        return R.fk(np.concatenate(rots), np.concatenate(roots), lengths).astype(np.float32)
+    def positions(self, inputs: np.ndarray, calib: O.Calib, clip: C.ClipData, variant: str):
+        """[T,NJ,3] float32 for the whole clip; the call sequence of ``oracle_v3.evaluate_clip``."""
+        f = self.cache / f"{variant}_{clip.clip_id.replace('/', '__')}.npy"
+        if f.exists():
+            return np.load(f)
+        p = self.pred
+        if getattr(p, "needs_gt", False):
+            pred = p.predict_clip_with_gt(inputs.astype(np.float64), calib, clip)
+        else:
+            pred = p.predict_clip_meta(inputs.astype(np.float64), calib, {"dataset": clip.dataset})
+        pos = O2.predicted_positions(pred, clip, calib).astype(np.float32)
+        np.save(f, pos)
+        return pos
+
+    def positions_live(self, inputs: np.ndarray, calib: O.Calib, lengths: np.ndarray):
+        """No GT clip: the same predictor + post-processes with template bone lengths."""
+        p = self.pred
+        pred = p.predict_clip_meta(inputs.astype(np.float64), calib, {"dataset": "xsens"})
+        out = p.post(pred, inputs.astype(np.float64), lengths) if p.needs_gt else pred
+        return R.fk(out.rotations, out.root_pos, lengths).astype(np.float32)
+
+
+def head_offset() -> np.ndarray:
+    """Head tracker mounting offset of the oracle's input generator (added to the head joint)."""
+    from validation.vr_pose_validation.synthetic_trackers import SyntheticTrackerConfig
+
+    return np.array(SyntheticTrackerConfig().attachments["head"].local_transform.position)
+
+
+def basis_head_fix(pos: np.ndarray) -> np.ndarray:
+    """Basis returns the raw HMD tracker pose as its head joint (+ the mounting offset). For display
+    only: subtract the oracle's known attachment offset so its head sits at the head joint."""
+    out = pos.copy()
+    out[:, C.J["head"]] -= head_offset().astype(out.dtype)
+    return out
 
 
 # --- live capture ---------------------------------------------------------------------------
@@ -211,22 +224,13 @@ def per_frame_err(pos: np.ndarray, gt: np.ndarray) -> np.ndarray:
     return np.linalg.norm(pos - gt, axis=-1)[:, C.NONINPUT_IDX].mean(1)
 
 
-GLITCH_BONE_TOL, GLITCH_JUMP_M, GLITCH_DILATE = 0.35, 0.5, 5
 MAX_INVALID_FRAC = 0.10  # a review window may contain at most this fraction of invalid GT frames
 
 
 def gt_invalid(gt: np.ndarray) -> np.ndarray:
-    """[T] bool: GT frames that cannot be trusted. A frame is invalid when any bone length is outside
-    +-35 % of the clip median, or any joint moves more than 0.5 m since the previous / to the next
-    frame (mocap glitch); the mask is dilated by +-5 frames."""
-    b = np.linalg.norm(gt[:, 1:] - gt[:, C.PARENT[1:]], axis=-1)
-    med = np.maximum(np.median(b, axis=0), 1e-6)
-    bad = (np.abs(b / med - 1.0) > GLITCH_BONE_TOL).any(1)
-    step = np.linalg.norm(np.diff(gt, axis=0), axis=-1).max(1) > GLITCH_JUMP_M
-    bad[1:] |= step
-    bad[:-1] |= step
-    k = 2 * GLITCH_DILATE + 1
-    return np.convolve(bad.astype(float), np.ones(k), mode="same") > 0
+    """[T] bool, True = GT frame masked out by oracle-v3 (joint step > 0.5 m or a bone > 35 % off
+    its clip median, dilated +-5 frames)."""
+    return ~O3.valid_mask(gt)
 
 
 def gt_contact(gt: np.ndarray, invalid: np.ndarray | None = None) -> tuple[np.ndarray, float]:
@@ -267,50 +271,27 @@ def separated_top(score: np.ndarray, k: int, gap: int) -> list[int]:
     return sorted(out)
 
 
-def window_metrics(clip: C.ClipData, pos: np.ndarray, invalid: np.ndarray | None = None) -> dict:
-    """Oracle-v2 columns on a window. Invalid GT frames are dropped: the window is split into runs
-    of valid frames (>= 30 frames) and the per-run oracle-v2 results are pooled (the floor is taken
-    per run), so no temporal metric ever differences across a glitch."""
-    n = clip.n_frames
-    ok = np.ones(n, bool) if invalid is None else ~invalid
-    runs, t = [], 0
-    while t < n:
-        if ok[t]:
-            e = t
-            while e + 1 < n and ok[e + 1]:
-                e += 1
-            if e - t + 1 >= 30:
-                runs.append((t, e + 1))
-            t = e + 1
-        else:
-            t += 1
-    ms = [
-        O2.clip_metrics(
-            dataclasses.replace(clip, positions=clip.positions[a:b], rotations=clip.rotations[a:b]),
-            pos[a:b],
-            O.Prediction(positions=pos[a:b]),
-        )
-        for a, b in runs
-    ]
-    nv = sum(b - a for a, b in runs)
-    cat = lambda k: np.concatenate([m[k] for m in ms])  # noqa: E731
-    sv, gv, ev = cat("skate_vals"), cat("ground_vals"), cat("swivel_vals")
-    jit_n = sum(m["jit_n"] for m in ms)
+def window_metrics(clip: C.ClipData, pos: np.ndarray) -> dict:
+    """Oracle-v3 columns on a window (its own validity mask: masked frames are excluded)."""
+    m = O3.clip_metrics(clip, pos, O.Prediction(positions=pos))
+    nv = max(int(m["n"]), 1)
+    sv, gv, ev = m["skate_vals"], m["ground_vals"], m["swivel_vals"]
+    mean = lambda k: float(m[k].mean() * 100) if m[k].size else None  # noqa: E731
     return {
-        "full_cm": float(cat("full").mean() * 100),
-        "upper_cm": float(cat("upper").mean() * 100),
-        "lower_cm": float(cat("lower").mean() * 100),
-        "hand_cm": float(cat("hand").mean() * 100),
-        "jitter": float(sum(m["jit_pred_sum"] for m in ms) / jit_n),
-        "jitter_gt": float(sum(m["jit_gt_sum"] for m in ms) / jit_n),
-        "skate_cm_s": float(sv.mean()) if sv.size else None,
+        "full_cm": mean("full"),
+        "upper_cm": mean("upper"),
+        "lower_cm": mean("lower"),
+        "hand_cm": mean("hand"),
+        "jitter": float(m["jit_pred_sum"] / max(m["jit_n"], 1)),
+        "jitter_gt": float(m["jit_gt_sum"] / max(m["jit_n"], 1)),
+        "skate_cm_s": None if np.isnan(m["skate_clip"]) else float(m["skate_clip"]),
         "pen_p95_cm": float(np.percentile(np.maximum(0, -gv), 95)) if gv.size else None,
         "float_p95_cm": float(np.percentile(np.maximum(0, gv), 95)) if gv.size else None,
-        "pops_per_min": float(sum(m["pops"] for m in ms) / (nv / C.FPS / 60.0)),
+        "pops_per_min": float(m["pops"] / (nv / C.FPS / 60.0)),
         "swivel_deg": float(ev.mean()) if ev.size else None,
         "swivel_p95_deg": float(np.percentile(ev, 95)) if ev.size else None,
         "contact_frames": int(sv.size),
-        "valid_frames": int(nv),
+        "valid_frames": int(m["n"]),
     }
 
 
@@ -330,23 +311,22 @@ class Cand:
 
 
 def best_window(
-    score: np.ndarray, idx: np.ndarray, n: int, w: int, invalid: np.ndarray | None = None
+    score: np.ndarray, n: int, w: int, invalid: np.ndarray | None = None
 ) -> tuple[int, int] | None:
-    """Window of length w maximising the mean of ``score`` (sampled at frame indices ``idx``),
-    ignoring invalid GT frames. Windows with more than MAX_INVALID_FRAC invalid frames are not
-    allowed; None when no window qualifies."""
+    """Window of length w maximising the mean of the per-frame ``score`` over valid frames. Windows with
+    more than MAX_INVALID_FRAC invalid frames are not allowed; None when no window qualifies."""
     inv = np.zeros(n, bool) if invalid is None else invalid
-    samp_ok = ~inv[idx]
+    ok = ~inv
     if n <= w:
-        return (0, n) if inv.mean() <= MAX_INVALID_FRAC and samp_ok.sum() >= 4 else None
+        return (0, n) if inv.mean() <= MAX_INVALID_FRAC and ok.sum() >= 4 else None
+    z = np.concatenate([[0.0], np.cumsum(np.where(ok, score, 0.0))])
+    cc = np.concatenate([[0], np.cumsum(ok)])
     best, bs = -1e18, None
     for s in range(0, n - w + 1, FPS // 2):
-        if inv[s : s + w].mean() > MAX_INVALID_FRAC:
+        c = cc[s + w] - cc[s]
+        if (w - c) > MAX_INVALID_FRAC * w or c < 4:
             continue
-        sel = (idx >= s) & (idx < s + w) & samp_ok
-        if sel.sum() < 4:
-            continue
-        v = float(score[sel].mean())
+        v = float((z[s + w] - z[s]) / c)
         if v > best:
             best, bs = v, s
     return None if bs is None else (bs, bs + w)
@@ -363,12 +343,8 @@ def _npz(basis_dir: Path, cid: str) -> Path:
 
 
 def rank_pool(args, learned: Learned, log) -> tuple[list[Cand], dict]:
-    cache = (
-        args.cache
-        / f"rank_{learned.label}_{learned.path.parent.name}_{args.variant}_s{args.rank_stride}.json"
-    )
     ids = pool_ids()
-    log(f"pool {len(ids)} clips; basis pass")
+    log(f"pool {len(ids)} clips (splits-v2); basis pass")
     basis_dir = args.cache / f"basis_{args.variant}"
     basis_dir.mkdir(exist_ok=True)
     todo = [i for i in ids if not _npz(basis_dir, i).exists()]
@@ -378,8 +354,7 @@ def rank_pool(args, learned: Learned, log) -> tuple[list[Cand], dict]:
                 _worker, [(str(args.data_root), i, args.variant) for i in todo], chunksize=1
             ):
                 np.savez(_npz(basis_dir, cid), inputs=inputs, pos=pos, calib=np.array(calib))
-    log("basis done; learned rank pass")
-    results = json.loads(cache.read_text()) if cache.exists() else {}
+    log("basis done; learned pass over every frame")
     cands: list[Cand] = []
     store: dict = {}
     for k, cid in enumerate(ids):
@@ -388,37 +363,26 @@ def rank_pool(args, learned: Learned, log) -> tuple[list[Cand], dict]:
             continue
         z = np.load(_npz(basis_dir, cid))
         gt = clip.positions
-        idx = np.arange(0, clip.n_frames, args.rank_stride)
-        if cid not in results:
-            t0 = time.time()
-            lp = learned.positions_at(
-                z["inputs"],
-                O.Calib(*map(float, z["calib"])),
-                clip.dataset,
-                idx,
-                R.bone_lengths(gt),
-                bs=512,
-            )
-            results[cid] = {"err_l": (per_frame_err(lp, gt[idx]) * 100).tolist()}
-            cache.write_text(json.dumps(results))
-            log(f"  ranked {k + 1}/{len(ids)} {cid} {len(idx)} fr {time.time() - t0:.0f}s")
-        eb = per_frame_err(z["pos"], gt) * 100
-        el = np.array(results[cid]["err_l"])
+        t0 = time.time()
+        lp = learned.positions(z["inputs"], O.Calib(*map(float, z["calib"])), clip, args.variant)
+        el = per_frame_err(lp, gt) * 100
+        eb = per_frame_err(basis_head_fix(z["pos"]), gt) * 100
+        log(f"  {k + 1}/{len(ids)} {cid} {clip.n_frames} fr {time.time() - t0:.0f}s")
         inv = gt_invalid(gt)
-        win = best_window(el, idx, clip.n_frames, int(WINDOW_S * FPS), inv)
+        win = best_window(el, clip.n_frames, int(WINDOW_S * FPS), inv)
         if win is None:
             log(
                 f"  skip {cid}: no window with <= {MAX_INVALID_FRAC:.0%} invalid GT frames "
                 f"({inv.mean():.0%} of the clip invalid)"
             )
             continue
-        ok = ~inv[idx]
+        ok = ~inv
         c = Cand(cid, clip.dataset, clip.n_frames)
-        c.score_learned, c.score_basis = float(el[ok].mean()), float(eb[idx][ok].mean())
+        c.score_learned, c.score_basis = float(el[ok].mean()), float(eb[ok].mean())
         c.win = win
-        c.crouch_frac = float((gt[~inv, 0, 1] < 0.65).mean())
+        c.crouch_frac = float((gt[ok, 0, 1] < 0.65).mean())
         c.invalid_frac = float(inv.mean())
-        store[cid] = {"idx": idx, "el": el, "eb": eb[idx], "hips": gt[idx, 0, 1], "inv": inv}
+        store[cid] = {"el": el, "eb": eb, "hips": gt[:, 0, 1], "inv": inv}
         cands.append(c)
     return cands, store
 
@@ -448,9 +412,9 @@ def select(cands: list[Cand], store: dict) -> list[tuple[Cand, str]]:
     for c, g in chosen:  # re-centre the window on the reason the clip was picked
         d = store[c.clip_id]
         if g == "learned-beats-basis":
-            c.win = best_window(d["eb"] - d["el"], d["idx"], c.n, w, d["inv"]) or c.win
+            c.win = best_window(d["eb"] - d["el"], c.n, w, d["inv"]) or c.win
         elif g == "sit-crouch":
-            c.win = best_window(-d["hips"], d["idx"], c.n, w, d["inv"]) or c.win
+            c.win = best_window(-d["hips"], c.n, w, d["inv"]) or c.win
     return chosen
 
 
@@ -488,7 +452,9 @@ def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores,
     err: dict = {}
     jump: dict = {}
     if gt is not None and clip is not None:
-        inv = np.zeros(n, bool) if inv is None else inv
+        inv = gt_invalid(
+            gt.astype(np.float64)
+        )  # window-level oracle-v3 mask (same as the metrics')
         contact, floor = gt_contact(gt, inv)
         rec["floor"] = floor
         rec["invalid"] = b64(inv.astype(np.uint8))
@@ -499,7 +465,7 @@ def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores,
             rotations=np.ascontiguousarray(clip.rotations[f0:f1]),
         )
         for m, p in method_pos.items():
-            metrics[m] = window_metrics(wclip, p.astype(np.float64), inv)
+            metrics[m] = window_metrics(wclip, p.astype(np.float64))
             e = per_frame_err(p, gt)
             err[m] = b64(np.round(e * 1000).astype("<u2"))
             if m == "gt":
@@ -583,7 +549,10 @@ def main(argv=None) -> int:
     ap.add_argument("--methods", default="gt,basis,learned")
     ap.add_argument("--variant", choices=O.VARIANTS, default="clean")
     ap.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
-    ap.add_argument("--rank-stride", type=int, default=12)
+    ap.add_argument("--footlock", action="store_true", help="as eval.py")
+    ap.add_argument("--postfix", action="store_true", help="as eval.py")
+    ap.add_argument("--contact-thr", type=float, default=0.5, help="as eval.py")
+    ap.add_argument("--lock-drift", type=float, default=None, help="as eval.py")
     ap.add_argument("--workers", type=int, default=min(10, os.cpu_count() or 1))
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--no-live", action="store_true")
@@ -608,10 +577,16 @@ def main(argv=None) -> int:
 
     torch.set_num_threads(args.threads)
     ckpts: dict[str, Learned] = {}
+    opts = {
+        "footlock": args.footlock,
+        "postfix": args.postfix,
+        "contact_thr": args.contact_thr,
+        "lock_drift": args.lock_drift,
+    }
     for i, spec in enumerate(args.ckpt):
         label, path = spec.split("=", 1) if "=" in spec else ("", spec)
         label = "learned" if i == 0 else (label or f"learned{i + 1}")
-        ckpts[label] = Learned(label, Path(path))
+        ckpts[label] = Learned(label, Path(path), opts, args.cache)
     methods = [m for m in args.methods.split(",") if m]
     for m in methods:
         assert m in ("gt", "basis") or m in ckpts, f"unknown method {m}; ckpt labels {list(ckpts)}"
@@ -639,15 +614,9 @@ def main(argv=None) -> int:
             if m == "gt":
                 mp[m] = gt
             elif m == "basis":
-                mp[m] = z["pos"][f0:f1]
+                mp[m] = basis_head_fix(z["pos"])[f0:f1]
             else:
-                mp[m] = ckpts[m].positions_at(
-                    z["inputs"],
-                    calib,
-                    clip.dataset,
-                    np.arange(f0, f1),
-                    R.bone_lengths(clip.positions),
-                )
+                mp[m] = ckpts[m].positions(z["inputs"], calib, clip, args.variant)[f0:f1]
         extra = {
             "dataset": clip.dataset,
             "activity": clip.activity_class,
@@ -670,23 +639,20 @@ def main(argv=None) -> int:
         for ci, name in LIVE_RUNS.items():
             inputs, calib = load_live(args.data_root, ci)
             n = len(inputs)
-            basis = basis_from_inputs(inputs, calib)
+            basis = basis_head_fix(basis_from_inputs(inputs, calib))
             lengths = np.linalg.norm(
                 C.template_offsets("xsens", calib.height_m, calib.arm_length_m), axis=-1
             )
-            idx = np.arange(0, n, args.rank_stride)
-            lp = primary.positions_at(inputs, calib, "xsens", idx, lengths, bs=512)
-            diff = np.linalg.norm(basis[idx] - lp, axis=-1)[:, C.NONINPUT_IDX].mean(1)
-            f0, f1 = best_window(diff, idx, n, int(WINDOW_S * FPS))
+            full = {
+                m: ckpts[m].positions_live(inputs, calib, lengths) for m in methods if m in ckpts
+            }
+            diff = np.linalg.norm(basis - full["learned"], axis=-1)[:, C.NONINPUT_IDX].mean(1)
+            f0, f1 = best_window(diff, n, int(WINDOW_S * FPS)) or (0, min(n, int(WINDOW_S * FPS)))
             mp = {}
             for m in methods:
                 if m == "gt":
                     continue
-                mp[m] = (
-                    basis[f0:f1]
-                    if m == "basis"
-                    else ckpts[m].positions_at(inputs, calib, "xsens", np.arange(f0, f1), lengths)
-                )
+                mp[m] = (basis if m == "basis" else full[m])[f0:f1]
             extra = {
                 "dataset": "live",
                 "activity": name,
@@ -703,7 +669,9 @@ def main(argv=None) -> int:
     blob = {
         "version": 1,
         "fps": FPS,
-        "oracle": O2.ORACLE_VERSION,
+        "oracle": O3.ORACLE_VERSION,
+        "postprocess": opts,
+        "basis_head_fix": "Basis head joint minus the oracle head attachment offset (display only)",
         "joints": list(C.JOINTS),
         "parents": [int(p) for p in C.PARENT],
         "methods": [{"id": m, "label": m} for m in methods],

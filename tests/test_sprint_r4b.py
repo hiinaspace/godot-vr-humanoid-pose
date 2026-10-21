@@ -20,15 +20,14 @@ def test_quantisation_roundtrip_mm():
 
 
 def test_best_window_and_separated_top():
-    idx = np.arange(0, 3000, 6)
-    score = np.zeros(len(idx))
-    score[(idx >= 1500) & (idx < 1980)] = 5.0
-    f0, f1 = E.best_window(score, idx, 3000, 480)
+    score = np.zeros(3000)
+    score[1500:1980] = 5.0
+    f0, f1 = E.best_window(score, 3000, 480)
     assert f1 - f0 == 480 and 1500 <= f0 + 240 <= 1980
-    assert E.best_window(score[:50], idx[:50], 300, 480) == (0, 300)
+    assert E.best_window(score[:300], 300, 480) == (0, 300)
     inv = np.zeros(3000, bool)
     inv[1500:1980] = True  # the only interesting window is a GT glitch: it must not be chosen
-    w = E.best_window(score, idx, 3000, 480, inv)
+    w = E.best_window(score, 3000, 480, inv)
     assert w is not None and not (1500 <= w[0] < 1980)
     tops = E.separated_top(np.array([0, 9, 8, 0, 0, 0, 7, 0.0]), 3, 3)
     assert tops == [1, 6]  # frame 2 is within the gap of frame 1
@@ -58,14 +57,3 @@ def test_pop_frames_flags_single_frame_flip_only_where_gt_is_smooth():
     flipped[20:, el] += np.array([0.3, 0.0, 0.0])  # elbow jumps sideways at frame 20 and stays
     assert 20 in E.pop_frames(base, flipped)
     assert E.pop_frames(flipped, flipped) == []
-
-
-def test_gt_invalid_flags_jump_and_bone_stretch_and_dilates():
-    n = 60
-    gt = np.zeros((n, C.NJ, 3))
-    for j in range(1, C.NJ):
-        gt[:, j] = gt[:, C.PARENT[j]] + np.array([0.0, 0.2, 0.0])
-    gt[30:32, C.J["left_hand"]] += np.array([1.0, 0.0, 0.0])  # 2-frame 1 m spike
-    inv = E.gt_invalid(gt)
-    assert inv[25:37].all()
-    assert not inv[:20].any() and not inv[45:].any()
