@@ -844,7 +844,7 @@ class ModelPredictor:
         self.model, self.cfg, self.name, self.dev = model.to(dev).eval(), cfg, name, dev
         self.postfix, self.footlock = postfix, footlock
         self.honest_fk, self.smooth = honest_fk, smooth  # smooth = (min_cutoff_hz, beta) or None
-        self.needs_gt = postfix or footlock or honest_fk
+        self.needs_gt = postfix or footlock or honest_fk or bool(smooth)
         if footlock and not cfg.get("contact_loss"):
             raise ValueError("--footlock needs a model trained with --contact-loss")
         set_window(cfg.get("window", 40))

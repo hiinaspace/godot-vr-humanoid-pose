@@ -1,4 +1,5 @@
-# ruff: noqa: E501, B007, F841, E731, E741, F541
+# ruff: noqa: E501
+# ruff: noqa: E501
 """Round 3 report tables from ``.cache/sprint/r3/eval/*.json`` (oracle-v2 evaluations).
 
 ``python -m validation.sprint.r3_report [--test]`` prints markdown tables: the seed-noise table, the
@@ -14,7 +15,9 @@ import statistics as st
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-EVAL = REPO / ".cache/sprint/r3/eval"
+import os
+
+EVAL = Path(os.environ.get("R3_EVAL", REPO / ".cache/sprint/r3/eval"))
 REPORTS = REPO / "validation/reports/sprint-2026-10"
 
 COLS = [  # key, header, scale, fmt
@@ -212,20 +215,17 @@ def main() -> int:
     print("## Seed noise (base = E1 config, 15k steps, 3 seeds, clean)\n")
     print("\n".join(seed_table(base)))
     arms = [
-        ("contact head + skate loss (f)", "r3_contact__val"),
-        ("jitter loss (acc + consistency)", "r3_jit__val"),
-        ("contact w=5", "r3_contact_w5__val"),
-        ("avatarposer (e)", "r3_avatar__val"),
-        ("no skeleton-id (g)", "r3_noskel__val"),
-        ("no wrist aug (h)", "r3_nowrist__val"),
-        ("CMU only (a)", "r3_cmuonly__val"),
-        ("Xsens only (a)", "r3_xsonly__val"),
-        ("xs-frac 0.25 (a)", "r3_xs025__val"),
-        ("inputs: pos only (b)", "r3_in_pos__val"),
-        ("inputs: pos+rot (b)", "r3_in_posrot__val"),
-        ("avatarposer window 10 (c)", "r3_avatar_w10__val"),
-        ("hmdposer window 20 (c)", "r3_hmd_w20__val"),
-        ("hmdposer window 80 (c)", "r3_hmd_w80__val"),
+        ("(f) contact head + skate loss", "r3_contact__val"),
+        ("(f') contact weight 5", "r3_contact_w5__val"),
+        ("jitter losses (acc + consistency)", "r3_jit__val"),
+        ("(e) avatarposer, equal wall-clock", "r3_avatar__val"),
+        ("(g) no skeleton-id", "r3_noskel__val"),
+        ("(h) no wrist aug", "r3_nowrist__val"),
+        ("(b) inputs: pos only", "r3_in_pos__val"),
+        ("(b) inputs: pos+rot", "r3_in_posrot__val"),
+        ("all-in windowed (mask+jit+contact)", "r3_win_full__val"),
+        ("all-in streaming", "r3_stream_full__val"),
+        ("all-in streaming + corruption aug (E2)", "r3_stream_aug__val"),
     ]
     print("\n## Ablation arms, absolute (clean)\n")
     print("\n".join(header("arm") + sum((rows(l, st) for l, st in arms), [])))

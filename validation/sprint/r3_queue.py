@@ -33,7 +33,9 @@ ENV = {
 
 def vr_up() -> bool:
     out = subprocess.run(["ps", "-eo", "comm"], capture_output=True, text=True).stdout.split()
-    return any(c.startswith(("monado", "vrcompositor", "vrserver")) for c in out)
+    return any(
+        c.startswith(("monado", "wivrn", "vrcompositor", "vrserver", "vrmonitor")) for c in out
+    )
 
 
 def gpu(args: list[str], log: Path) -> int:
@@ -50,8 +52,13 @@ def pending() -> tuple[dict, str] | None:
     jobs = json.loads((R3 / "jobs.json").read_text())
     for j in jobs:
         run = RUNS / j["name"]
-        if not (run / "elapsed_gpu_s").exists() and "train" in j:
+        done = (run / "elapsed_gpu_s").exists()
+        if not done and "train" in j and not j.get("pod"):
             return j, "train"
+        if (
+            j.get("pod") and not done
+        ):  # trained on a RunPod pod; evaluate once the checkpoint is back
+            continue
         for e in j.get("evals", []):
             if not (EVAL_OUT / f"{j['name']}__{e['tag']}.json").exists():
                 return j, "eval:" + e["tag"]
