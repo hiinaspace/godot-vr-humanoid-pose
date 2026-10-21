@@ -32,6 +32,9 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--smooth", default=None, help="causal One-Euro output filter: MINCUT_HZ,BETA")
     ap.add_argument("--contact-thr", type=float, default=0.5, help="foot-lock p(contact) threshold")
+    ap.add_argument(
+        "--lock-drift", type=float, default=None, help="release the foot lock beyond this drift (m)"
+    )
     ap.add_argument("--footlock", action="store_true", help="causal foot lock (needs contact head)")
     ap.add_argument(
         "--split",
@@ -60,6 +63,7 @@ def main(argv=None) -> int:
             smooth=tuple(map(float, args.smooth.split(","))) if args.smooth else None,
         )
         predictor.contact_thr = args.contact_thr
+        predictor.lock_drift = args.lock_drift
         name = predictor.name
     sets = SPLIT_GROUPS.get(args.split, [args.split])
     variants = oracle.VARIANTS if args.variant == "both" else (args.variant,)

@@ -106,35 +106,51 @@ def hand_postfix(local, root, lengths, hand_pos, hand_valid):
     return C.local_rotations(glob)
 
 
-def lock_track(contact: np.ndarray, foot_xz: np.ndarray, blend: int = BLEND):
+def lock_track(
+    contact: np.ndarray, foot_xz: np.ndarray, blend: int = BLEND, max_drift: float | None = None
+):
     """Causal scan for one foot. contact [T] bool, foot_xz [T,2] predicted horizontal position.
-    Returns corrected horizontal position [T,2] and weights [T]."""
+    Returns corrected horizontal position [T,2] and weights [T]. ``max_drift``: if the pinned anchor gets
+    further than this (m) from the predicted foot, the lock is released until the next contact onset
+    (a stuck foot is worse than a sliding one)."""
     T = len(contact)
     out = foot_xz.copy()
     w_arr = np.zeros(T)
     anchor = np.zeros(2)
-    w, prev = 0.0, False
+    w, prev, released = 0.0, False, False
     for t in range(T):
-        if contact[t]:
-            if not prev:  # onset: anchor at the currently displayed position
-                anchor = foot_xz[t] + w * (anchor - foot_xz[t]) if w > 0 else foot_xz[t].copy()
+        c = bool(contact[t])
+        if c and not prev:  # onset: anchor at the currently displayed position
+            anchor = foot_xz[t] + w * (anchor - foot_xz[t]) if w > 0 else foot_xz[t].copy()
+            released = False
+        if c and max_drift is not None and np.linalg.norm(anchor - foot_xz[t]) > max_drift:
+            released = True
+        if c and not released:
             w = 1.0
         else:
             w = max(0.0, w - 1.0 / blend)
-        prev = bool(contact[t])
+        prev = c
         if w > 0:
             out[t] = foot_xz[t] + w * (anchor - foot_xz[t])
         w_arr[t] = w
     return out, w_arr
 
 
-def foot_lock(local, root, lengths, contact_prob, blend: int = BLEND, thr: float = 0.5):
+def foot_lock(
+    local,
+    root,
+    lengths,
+    contact_prob,
+    blend: int = BLEND,
+    thr: float = 0.5,
+    max_drift: float | None = None,
+):
     """contact_prob [T,2] (left, right) from the model's contact head."""
     glob, pos = global_and_pos(local, root, lengths)
     for k, chain in enumerate(LEGS):
         f = J[chain[2]]
         foot = pos[:, f]
-        xz, w = lock_track(contact_prob[:, k] > thr, foot[:, [0, 2]], blend)
+        xz, w = lock_track(contact_prob[:, k] > thr, foot[:, [0, 2]], blend, max_drift)
         target = foot.copy()
         target[:, [0, 2]] = xz
         _apply_chain(glob, pos, chain, target, w > 0, lengths)

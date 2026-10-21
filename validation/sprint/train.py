@@ -829,6 +829,9 @@ class ModelPredictor:
     needs_meta = True
     parallel_safe = False
     contact_thr = 0.5  # p(contact) threshold of the foot lock (eval.py --contact-thr)
+    lock_drift = (
+        None  # release the foot lock when the pinned foot is this far (m) from the prediction
+    )
 
     def __init__(
         self,
@@ -903,7 +906,14 @@ class ModelPredictor:
             rot, root = P.one_euro(rot, root, *self.smooth)
             pred = O2.CanonPrediction(rotations=rot, root_pos=root)
         if self.footlock:
-            rot = P.foot_lock(rot, pred.root_pos, lengths, self.last_contact, thr=self.contact_thr)
+            rot = P.foot_lock(
+                rot,
+                pred.root_pos,
+                lengths,
+                self.last_contact,
+                thr=self.contact_thr,
+                max_drift=self.lock_drift,
+            )
         if self.postfix:
             hp = np.stack([inputs[:, 7:10], inputs[:, 14:17]], 1)
             valid = np.stack([inputs[:, 22], inputs[:, 23]], 1) > 0.5
