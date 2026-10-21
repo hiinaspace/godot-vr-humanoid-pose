@@ -11,7 +11,7 @@ import argparse
 import os
 from pathlib import Path
 
-from validation.sprint import baselines, oracle, oracle_v2
+from validation.sprint import baselines, oracle, oracle_v2, oracle_v3
 from validation.sprint import splits as S
 
 SPLIT_GROUPS = {
@@ -25,7 +25,17 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--method", default="basis", choices=sorted(baselines._REGISTRY))
     ap.add_argument("--ckpt", type=Path, help="model checkpoint from train.py (overrides --method)")
-    ap.add_argument("--oracle", choices=("v1", "v2"), default="v2")
+    ap.add_argument("--oracle", choices=("v1", "v2", "v3"), default="v3")
+    ap.add_argument("--postfix", action="store_true", help="two-bone hand post-fix (model ckpt)")
+    ap.add_argument(
+        "--honest-fk", action="store_true", help="FK with lengths from noisy calibration"
+    )
+    ap.add_argument("--smooth", default=None, help="causal One-Euro output filter: MINCUT_HZ,BETA")
+    ap.add_argument("--contact-thr", type=float, default=0.5, help="foot-lock p(contact) threshold")
+    ap.add_argument(
+        "--lock-drift", type=float, default=None, help="release the foot lock beyond this drift (m)"
+    )
+    ap.add_argument("--footlock", action="store_true", help="causal foot lock (needs contact head)")
     ap.add_argument(
         "--split",
         default="test",
@@ -38,14 +48,22 @@ def main(argv=None) -> int:
     ap.add_argument("--tag", default=None, help="report file stem (default method_split)")
     args = ap.parse_args(argv)
 
-    mod = oracle_v2 if args.oracle == "v2" else oracle
+    mod = {"v1": oracle, "v2": oracle_v2, "v3": oracle_v3}[args.oracle]
     predictor, name = args.method, args.method
     if args.ckpt:
-        if args.oracle != "v2":
-            ap.error("--ckpt needs --oracle v2")
+        if args.oracle == "v1":
+            ap.error("--ckpt needs --oracle v2 or v3")
         from validation.sprint import train
 
-        predictor = train.ModelPredictor.load(args.ckpt)
+        predictor = train.ModelPredictor.load(
+            args.ckpt,
+            postfix=args.postfix,
+            footlock=args.footlock,
+            honest_fk=args.honest_fk,
+            smooth=tuple(map(float, args.smooth.split(","))) if args.smooth else None,
+        )
+        predictor.contact_thr = args.contact_thr
+        predictor.lock_drift = args.lock_drift
         name = predictor.name
     sets = SPLIT_GROUPS.get(args.split, [args.split])
     variants = oracle.VARIANTS if args.variant == "both" else (args.variant,)
@@ -62,8 +80,8 @@ def main(argv=None) -> int:
             )
             results.append(r)
     tag = args.tag or f"{name}_{args.split}" + ("_quick" if args.quick else "")
-    if args.oracle == "v2":
-        tag += "_v2" if not args.tag else ""
+    if args.oracle != "v1" and not args.tag:
+        tag += f"_{args.oracle}"
     path = mod.write_report(name, results, args.out, tag)
     print(f"wrote {path}")
     print(path.read_text())

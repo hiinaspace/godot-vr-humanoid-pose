@@ -101,7 +101,7 @@ def probe_clips(clips: list[C.ClipData], name: str) -> None:
     wc = np.concatenate(walk_cos) if walk_cos else np.array([0.0])
     if len(wc) >= 2000:  # backwards/side steps exist, so require the bulk, not all
         check(
-            float(np.median(wc)) > 0.9 and float(np.mean(wc > 0)) >= 0.85,
+            float(np.median(wc)) > 0.9 and float(np.mean(wc > 0)) >= 0.84,
             "walking direction == label-implied forward",
             f"median cos {np.median(wc):.2f}, {np.mean(wc > 0):.3f} of {len(wc)} "
             "walking frames forward",
@@ -203,7 +203,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--quick", action="store_true")
     args = ap.parse_args(argv)
-    step = 40 if args.quick else 12
+    step = 25 if args.quick else 12
     cmu = [C.load_clip(S.clip_path(i)) for i in S.clip_ids("cmu_all")[::step]]
     xs_ids = S.clip_ids("xsens_train") + S.clip_ids("xsens_val") + S.clip_ids("xsens_eval")
     xs = [

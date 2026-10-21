@@ -1,6 +1,10 @@
-"""Frozen subject-disjoint splits (splits_v1.json).
+# ruff: noqa: E501
+"""Frozen subject-disjoint splits: splits_v1.json (id-level) and splits_v2.json (= v1 minus content duplicates).
 
-Rebuild with ``python -m validation.sprint.splits``.
+Rebuild v1 with ``python -m validation.sprint.splits``; v2 with ``python -m validation.sprint.splits
+--v2 PAIRS.json DROP.json`` (outputs of ``dedupe.py``). Round 3 onward uses v2: the audit found CMU test
+subject 84 == train subject 74, val subject 141 == train subject 106 and Xsens eval_S02_A04 == train copy,
+frame for frame, which an id-level split cannot see.
 
 CMU:   test = sha1(subject) % 10 == 0, val = % 10 == 1, train = the rest (subject-level).
 Xsens: the official SparsePoser train/eval lists, plus one train subject (orig + mirror coupled)
@@ -16,9 +20,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-SPLITS_VERSION = "splits-v1"
+SPLITS_VERSION = "splits-v2"
 REPO = Path(__file__).resolve().parents[2]
-SPLITS_PATH = Path(__file__).with_name("splits_v1.json")
+SPLITS_V1_PATH = Path(__file__).with_name("splits_v1.json")
+SPLITS_PATH = Path(__file__).with_name("splits_v2.json")
 CMU_DIR = REPO / ".cache/cmu/parquet/canonical_full"
 XSENS_DIR = REPO / ".cache/sparseposer/parquet/canonical"
 ZENODO_RECORD = "8427980"
@@ -82,7 +87,7 @@ def build() -> dict:
         ]
 
     doc = {
-        "version": SPLITS_VERSION,
+        "version": "splits-v1",
         "rule": {
             "cmu": "bucket = int(sha1(subject_id).hexdigest(), 16) % 10; test=0, val=1, train=rest",
             "xsens": "official train/eval lists; xsens_val_subject = train subject absent from "
@@ -185,11 +190,44 @@ def clip_ids(split: str) -> list[str]:
     return list(doc["xsens"]["clips"][key])
 
 
+def build_v2(pairs_path: Path, drop_path: Path) -> dict:
+    """splits_v1 with every val / test / eval clip that duplicates a clip of another split removed."""
+    doc = json.loads(SPLITS_V1_PATH.read_text())
+    drop = set(json.loads(drop_path.read_text()))
+    pairs = json.loads(pairs_path.read_text())
+    removed: dict[str, list[str]] = {}
+    for group in (doc["cmu"]["clips"], doc["xsens"]["clips"]):
+        for k, v in group.items():
+            kept = [c for c in v if c not in drop]
+            if len(kept) != len(v):
+                removed[k] = sorted(set(v) - set(kept))
+            group[k] = kept
+    for k, subs in doc["cmu"]["subjects"].items():  # subjects left without clips
+        have = {c.split("/")[1] for c in doc["cmu"]["clips"][k]}
+        doc["cmu"]["subjects"][k] = [s for s in subs if s in have]
+    doc["version"] = "splits-v2"
+    doc["dedupe"] = {
+        "method": "validation/sprint/dedupe.py: root-relative 13-joint pose, stride-10 KD-tree radius "
+        "1.8 cm, per-pair dominant offset, verified over the overlap (>= 60 frames, >= 90 % of frames "
+        "with mean joint distance < 5 mm, pose std > 2 mm); mirrored queries for held-out clips. "
+        "Rule: drop the held-out copy (val < test/eval when both held out); train copies stay.",
+        "removed": removed,
+        "pairs": pairs,
+    }
+    assert_disjoint(doc)
+    return doc
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--v2":
+        out = build_v2(Path(sys.argv[2]), Path(sys.argv[3]))
+        SPLITS_PATH.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+        print("wrote", SPLITS_PATH, {k: len(v) for k, v in out["dedupe"]["removed"].items()})
+        sys.exit(0)
     out = build()
-    SPLITS_PATH.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+    SPLITS_V1_PATH.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
     c, x = out["cmu"], out["xsens"]
-    print("wrote", SPLITS_PATH)
+    print("wrote", SPLITS_V1_PATH)
     print({k: (len(c["subjects"][k]), len(c["clips"][k])) for k in c["subjects"]})
     print(
         {k: len(v) for k, v in x["clips"].items()},
