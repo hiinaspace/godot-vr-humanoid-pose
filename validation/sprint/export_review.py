@@ -98,7 +98,9 @@ class Learned:
         )
         self.pred.contact_thr = opts["contact_thr"]
         self.pred.lock_drift = opts["lock_drift"]
-        key = f"{self.pred.name}_thr{opts['contact_thr']}_drift{opts['lock_drift']}_{int(path.stat().st_mtime)}"
+        self.pred.floor_clamp = bool(opts.get("floor_clamp"))
+        self.pred.needs_gt = self.pred.needs_gt or self.pred.floor_clamp
+        key = f"{self.pred.name}_clamp{int(self.pred.floor_clamp)}_thr{opts['contact_thr']}_drift{opts['lock_drift']}_{int(path.stat().st_mtime)}"
         self.cache = cache / f"pred_{label}_{key}"
         self.cache.mkdir(parents=True, exist_ok=True)
 
@@ -233,6 +235,22 @@ def gt_invalid(gt: np.ndarray) -> np.ndarray:
     return ~O3.valid_mask(gt)
 
 
+def ood_frames(gt: np.ndarray) -> np.ndarray:
+    """[T] bool, True = GT frame out of distribution for this model (prone, lying, cartwheel, handstand,
+    crawl): the head is less than 0.30 m above the hips (standing ~0.55 m, sitting/crouching > 0.35 m)
+    or below them, dilated +-20 frames. Round-4c A/B sets contain none of these frames."""
+    h = C.J["head"]
+    low = (gt[:, h, 1] - gt[:, C.J["hips"], 1]) < OOD_HEAD_ABOVE_HIPS
+    k = 20
+    c = np.concatenate([[0], np.cumsum(low)])
+    idx = np.arange(len(low))
+    lo, hi = np.clip(idx - k, 0, len(low)), np.clip(idx + k + 1, 0, len(low))
+    return (c[hi] - c[lo]) > 0
+
+
+OOD_HEAD_ABOVE_HIPS = 0.30
+
+
 def gt_contact(gt: np.ndarray, invalid: np.ndarray | None = None) -> tuple[np.ndarray, float]:
     """[T,2] bool GT foot-contact (oracle-v2 rule, window floor from valid frames) and the floor."""
     gf = gt[:, O2.FEET]
@@ -311,20 +329,21 @@ class Cand:
 
 
 def best_window(
-    score: np.ndarray, n: int, w: int, invalid: np.ndarray | None = None
+    score: np.ndarray, n: int, w: int, invalid: np.ndarray | None = None, strict: np.ndarray | None = None
 ) -> tuple[int, int] | None:
     """Window of length w maximising the mean of the per-frame ``score`` over valid frames. Windows with
     more than MAX_INVALID_FRAC invalid frames are not allowed; None when no window qualifies."""
     inv = np.zeros(n, bool) if invalid is None else invalid
     ok = ~inv
+    st = np.concatenate([[0], np.cumsum(strict if strict is not None else np.zeros(n, bool))])
     if n <= w:
-        return (0, n) if inv.mean() <= MAX_INVALID_FRAC and ok.sum() >= 4 else None
+        return (0, n) if inv.mean() <= MAX_INVALID_FRAC and ok.sum() >= 4 and st[n] == 0 else None
     z = np.concatenate([[0.0], np.cumsum(np.where(ok, score, 0.0))])
     cc = np.concatenate([[0], np.cumsum(ok)])
     best, bs = -1e18, None
     for s in range(0, n - w + 1, FPS // 2):
         c = cc[s + w] - cc[s]
-        if (w - c) > MAX_INVALID_FRAC * w or c < 4:
+        if (w - c) > MAX_INVALID_FRAC * w or c < 4 or st[s + w] - st[s] > 0:
             continue
         v = float((z[s + w] - z[s]) / c)
         if v > best:
@@ -369,7 +388,9 @@ def rank_pool(args, learned: Learned, log) -> tuple[list[Cand], dict]:
         eb = per_frame_err(basis_head_fix(z["pos"]), gt) * 100
         log(f"  {k + 1}/{len(ids)} {cid} {clip.n_frames} fr {time.time() - t0:.0f}s")
         inv = gt_invalid(gt)
-        win = best_window(el, clip.n_frames, int(WINDOW_S * FPS), inv)
+        ood = ood_frames(gt)
+        strict = inv | ood  # Round 4c: zero glitch / prone / cartwheel frames in any shown window
+        win = best_window(el, clip.n_frames, int(WINDOW_S * FPS), inv, strict)
         if win is None:
             log(
                 f"  skip {cid}: no window with <= {MAX_INVALID_FRAC:.0%} invalid GT frames "
@@ -382,7 +403,7 @@ def rank_pool(args, learned: Learned, log) -> tuple[list[Cand], dict]:
         c.win = win
         c.crouch_frac = float((gt[ok, 0, 1] < 0.65).mean())
         c.invalid_frac = float(inv.mean())
-        store[cid] = {"el": el, "eb": eb, "hips": gt[:, 0, 1], "inv": inv}
+        store[cid] = {"el": el, "eb": eb, "hips": gt[:, 0, 1], "inv": inv, "strict": strict}
         cands.append(c)
     return cands, store
 
@@ -412,9 +433,9 @@ def select(cands: list[Cand], store: dict) -> list[tuple[Cand, str]]:
     for c, g in chosen:  # re-centre the window on the reason the clip was picked
         d = store[c.clip_id]
         if g == "learned-beats-basis":
-            c.win = best_window(d["eb"] - d["el"], c.n, w, d["inv"]) or c.win
+            c.win = best_window(d["eb"] - d["el"], c.n, w, d["inv"], d["strict"]) or c.win
         elif g == "sit-crouch":
-            c.win = best_window(-d["hips"], c.n, w, d["inv"]) or c.win
+            c.win = best_window(-d["hips"], c.n, w, d["inv"], d["strict"]) or c.win
     return chosen
 
 
@@ -431,7 +452,7 @@ def quant_pos(pos: np.ndarray, origin: np.ndarray) -> np.ndarray:
 # --- clip record ----------------------------------------------------------------------------
 
 
-def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores, inv=None) -> dict:
+def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores, inv=None, strict=None) -> dict:
     f0, f1 = win
     n = f1 - f0
     gap = FPS * 3 // 4
@@ -508,6 +529,10 @@ def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores,
                 "jitter": float(O.jerk_norms(method_pos[m].astype(np.float64)).mean()),
             }
     rec["metrics"], rec["err"], rec["jump"] = metrics, err, jump
+    if gt is not None:  # Round-4c audit: raw counts of prone/cartwheel and masked-GT frames shown
+        low = (gt[:, C.J["head"], 1] - gt[:, C.J["hips"], 1]) < OOD_HEAD_ABOVE_HIPS
+        bad = np.asarray(strict if strict is not None else inv)
+        rec["audit"] = {"ood_window": int(low.sum()), "glitch_window": int(np.asarray(inv).sum()), "strict_window": int(bad.sum())}
     # A/B segment: the 4 s part of the window where Basis and learned differ most
     if "basis" in method_pos and "learned" in method_pos:
         w = int(AB_S * FPS)
@@ -520,7 +545,7 @@ def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores,
                     - per_frame_err(method_pos["learned"], gt)
                 )
                 diff = (
-                    np.where(inv, 0.0, diff) - 1e3 * inv
+                    np.where(inv, 0.0, diff) - 1e3 * (inv if strict is None else strict)
                 )  # never pick a segment with glitch frames
             else:
                 diff = np.linalg.norm(method_pos["basis"] - method_pos["learned"], axis=-1).mean(1)
@@ -528,6 +553,10 @@ def build_clip_record(cid, group, win, method_pos, gt, clip, extra, clip_scores,
             s = int(np.argmax(cs[w:] - cs[:-w]))
             seg = (s, s + w)
         rec["ab_seg"] = [int(seg[0]), int(seg[1])]
+        if gt is not None:
+            a, b = seg
+            rec["audit"]["ood_ab"] = int(low[a:b].sum())
+            rec["audit"]["strict_ab"] = int(bad[a:b].sum())
     return rec
 
 
@@ -550,6 +579,7 @@ def main(argv=None) -> int:
     ap.add_argument("--variant", choices=O.VARIANTS, default="clean")
     ap.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     ap.add_argument("--footlock", action="store_true", help="as eval.py")
+    ap.add_argument("--floor-clamp", action="store_true", help="as eval.py (post.floor_clamp)")
     ap.add_argument("--postfix", action="store_true", help="as eval.py")
     ap.add_argument("--contact-thr", type=float, default=0.5, help="as eval.py")
     ap.add_argument("--lock-drift", type=float, default=None, help="as eval.py")
@@ -582,6 +612,7 @@ def main(argv=None) -> int:
         "postfix": args.postfix,
         "contact_thr": args.contact_thr,
         "lock_drift": args.lock_drift,
+        "floor_clamp": args.floor_clamp,
     }
     for i, spec in enumerate(args.ckpt):
         label, path = spec.split("=", 1) if "=" in spec else ("", spec)
@@ -630,7 +661,7 @@ def main(argv=None) -> int:
         extra["invalid_clip_frac"] = round(c.invalid_frac, 3)
         clips_out.append(
             build_clip_record(
-                c.clip_id, g, (f0, f1), mp, gt, clip, extra, scores, store[c.clip_id]["inv"][f0:f1]
+                c.clip_id, g, (f0, f1), mp, gt, clip, extra, scores, store[c.clip_id]["inv"][f0:f1], store[c.clip_id]["strict"][f0:f1]
             )
         )
         log(f"  [{k + 1}/{len(chosen)}] {c.clip_id} {time.time() - t0:.0f}s")

@@ -133,7 +133,7 @@ body.still #stage { height: 100vh; border: 0; border-radius: 0; }
       <div class="muted small" id="numsNote"></div>
     </details>
     <div class="muted small" id="legend"></div>
-    <div class="muted small">Keys: space play/pause, left/right step (shift = 10 frames), 1-5 cameras, [ ] previous/next clip.</div>
+    <div class="muted small">Drag the picture: orbit (3/4, free orbit) or look around (first person); wheel zooms. Keys: space play/pause, left/right step (shift = 10 frames), 1-5 cameras, [ ] previous/next clip.</div>
   </div>
 
   <div id="ab" class="noStill">
@@ -401,6 +401,8 @@ function updateSkeleton(c, d, m, t, opts) {
 
 /* ------------------------------------------------------------------ cameras */
 const orbit = { az: 0.9, el: 0.3, dist: 3.0 };
+const orbit3q = { az: 0, el: 0, k: 1 };  // blind-A/B 3/4 view: drag to orbit, wheel to zoom (same offsets on both sides)
+const fpLook = { yaw: 0, pitch: 50 * Math.PI / 180 };  // first-person mouselook (drag); shared by both blind-A/B sides
 const cams = {};
 function getCam(key) {
   if (!cams[key]) cams[key] = new THREE.PerspectiveCamera(40, 1, 0.02, 200);
@@ -423,7 +425,12 @@ function placeCam(cam, kind, d, t, aspect) {
   if (kind === "3q") {
     const s = Math.SQRT1_2 * 2.0;
     const ty = fl + Math.max(0.3, r.cy);
-    cam.position.set(r.x + (fx + lx) * s, ty + 0.65, r.z + (fz + lz) * s);
+    let ox = (fx + lx) * s, oz = (fz + lz) * s, oy = 0.65;
+    if (orbit3q.az || orbit3q.el || orbit3q.k !== 1) {
+      const c = Math.cos(orbit3q.az), sn = Math.sin(orbit3q.az), nx = ox * c + oz * sn, nz = -ox * sn + oz * c;
+      ox = nx * orbit3q.k; oz = nz * orbit3q.k; oy = 0.65 + orbit3q.el * 2.0 * orbit3q.k;
+    }
+    cam.position.set(r.x + ox, ty + oy, r.z + oz);
     cam.lookAt(r.x, ty, r.z);
   } else if (kind === "side") {
     const ty = fl + Math.max(0.3, r.cy);
@@ -431,9 +438,9 @@ function placeCam(cam, kind, d, t, aspect) {
   } else if (kind === "top") {
     cam.up.set(fx, 0, fz); cam.position.set(r.x, fl + 3.0, r.z); cam.lookAt(r.x, fl, r.z);
   } else if (kind === "fp") {
-    cam.fov = 90; const p = 50 * Math.PI / 180;  // headset-like vertical FOV, pitched down to see hands and feet
+    cam.fov = 90; const p = fpLook.pitch, ly = r.yaw + fpLook.yaw, gx = Math.sin(ly), gz = Math.cos(ly);  // headset-like FOV; drag to look around (default: pitched down at hands and feet)
     cam.position.set(r.hx + fx * 0.08, r.hy + 0.08, r.hz + fz * 0.08);  // eye point of the GT head joint
-    cam.lookAt(cam.position.x + fx * Math.cos(p), cam.position.y - Math.sin(p), cam.position.z + fz * Math.cos(p));
+    cam.lookAt(cam.position.x + gx * Math.cos(p), cam.position.y - Math.sin(p), cam.position.z + gz * Math.cos(p));
   } else {  // free orbit around the (smoothed) subject
     const ce = Math.cos(orbit.el), cx = r.x + orbit.dist * ce * Math.sin(orbit.az), cz = r.z + orbit.dist * ce * Math.cos(orbit.az);
     const ty = fl + Math.max(0.3, r.cy);
@@ -692,12 +699,14 @@ function tog(id, key) { const b = $(id); b.onclick = () => { S[key] = !S[key]; b
   stage.addEventListener("pointermove", e => {
     if (!pts.has(e.pointerId)) return; const p = pts.get(e.pointerId);
     const dx = e.clientX - p[0], dy = e.clientY - p[1];
-    if (pts.size === 1 && S.cam === "free" && S.mode === "review") { orbit.az -= dx * 0.008; orbit.el = Math.max(-0.2, Math.min(1.45, orbit.el + dy * 0.008)); }
+    if (pts.size === 1 && S.mode !== "ab" && S.cam === "free") { orbit.az -= dx * 0.008; orbit.el = Math.max(-0.2, Math.min(1.45, orbit.el + dy * 0.008)); }
+    else if (pts.size === 1 && S.mode === "ab" && S.ab.cur && S.ab.cur.view === "3q") { orbit3q.az -= dx * 0.008; orbit3q.el = Math.max(-0.3, Math.min(0.9, orbit3q.el + dy * 0.004)); }
+    else if (pts.size === 1 && (S.mode === "ab" ? S.ab.cur && S.ab.cur.view === "fp" : S.cam === "fp")) { fpLook.yaw = Math.max(-2.6, Math.min(2.6, fpLook.yaw - dx * 0.006)); fpLook.pitch = Math.max(-1.2, Math.min(1.5, fpLook.pitch + dy * 0.006)); }
     pts.set(e.pointerId, [e.clientX, e.clientY]);
   });
   const up = e => pts.delete(e.pointerId);
   stage.addEventListener("pointerup", up); stage.addEventListener("pointercancel", up);
-  stage.addEventListener("wheel", e => { if (S.cam !== "free") return; e.preventDefault(); orbit.dist = Math.max(0.8, Math.min(12, orbit.dist * Math.exp(e.deltaY * 0.001))); }, { passive: false });
+  stage.addEventListener("wheel", e => { if (S.mode === "ab" && S.ab.cur && S.ab.cur.view === "3q") { e.preventDefault(); orbit3q.k = Math.max(0.4, Math.min(3, orbit3q.k * Math.exp(e.deltaY * 0.001))); return; } if (S.cam !== "free") return; e.preventDefault(); orbit.dist = Math.max(0.8, Math.min(12, orbit.dist * Math.exp(e.deltaY * 0.001))); }, { passive: false });
 })();
 
 /* ------------------------------------------------------------------ blind A/B */
