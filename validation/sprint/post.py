@@ -157,6 +157,22 @@ def foot_lock(
     return C.local_rotations(glob)
 
 
+def floor_clamp(local, root, lengths, floor_y: float, margin: float = 0.0):
+    """Per-frame (so causal) floor clamp for the feet. ``floor_y`` is the floor plane height (m) in
+    the canonical frame, in a deployed system the calibrated floor; here the GT clip's floor
+    (2nd percentile of its lowest foot joint, the same plane the oracle measures penetration against).
+    Any foot joint below ``floor_y + margin`` is lifted vertically onto it and the knee is re-solved
+    with two-bone IK; the hips (root) are not moved, so an unreachable target is clamped to leg reach."""
+    glob, pos = global_and_pos(local, root, lengths)
+    for chain in LEGS:
+        foot = pos[:, J[chain[2]]].copy()
+        low = foot[:, 1] < floor_y + margin
+        target = foot.copy()
+        target[:, 1] = np.maximum(foot[:, 1], floor_y + margin)
+        _apply_chain(glob, pos, chain, target, low, lengths)
+    return C.local_rotations(glob)
+
+
 def one_euro(local, root, min_cutoff: float, beta: float, fps: float = C.FPS):
     """Causal One-Euro filter on local rotations (nlerp, sign-aligned) and root position.
     ``min_cutoff`` Hz, ``beta`` speed coefficient (per rad/s for rotations, per m/s for the root)."""

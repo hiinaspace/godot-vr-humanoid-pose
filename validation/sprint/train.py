@@ -829,6 +829,7 @@ class ModelPredictor:
     needs_meta = True
     parallel_safe = False
     contact_thr = 0.5  # p(contact) threshold of the foot lock (eval.py --contact-thr)
+    floor_clamp = False  # eval.py --floor-clamp: lift feet below the (GT-derived) floor plane
     lock_drift = (
         None  # release the foot lock when the pinned foot is this far (m) from the prediction
     )
@@ -847,7 +848,7 @@ class ModelPredictor:
         self.model, self.cfg, self.name, self.dev = model.to(dev).eval(), cfg, name, dev
         self.postfix, self.footlock = postfix, footlock
         self.honest_fk, self.smooth = honest_fk, smooth  # smooth = (min_cutoff_hz, beta) or None
-        self.needs_gt = postfix or footlock or honest_fk or bool(smooth)
+        self.needs_gt = postfix or footlock or honest_fk or bool(smooth) or self.floor_clamp
         if footlock and not cfg.get("contact_loss"):
             raise ValueError("--footlock needs a model trained with --contact-loss")
         set_window(cfg.get("window", 40))
@@ -888,7 +889,12 @@ class ModelPredictor:
     def predict_clip_with_gt(self, inputs, calib, clip):
         pred = self.predict_clip_meta(inputs, calib, {"dataset": clip.dataset})
         lengths = R.bone_lengths(clip.positions)
-        out = self.post(pred, inputs, lengths)
+        floor_y = None
+        if self.floor_clamp:
+            from validation.sprint import oracle_v2 as _O2
+
+            floor_y = float(np.percentile(clip.positions[:, _O2.FEET, 1].min(1), 2))
+        out = self.post(pred, inputs, lengths, floor_y)
         if (
             self.honest_fk
         ):  # FK with lengths from the noisy calibration scalars, not the GT skeleton
@@ -897,7 +903,7 @@ class ModelPredictor:
             return O.Prediction(positions=pos)
         return out
 
-    def post(self, pred, inputs: np.ndarray, lengths: np.ndarray):
+    def post(self, pred, inputs: np.ndarray, lengths: np.ndarray, floor_y=None):
         """Causal per-frame / scan post-processes on a CanonPrediction (post.py)."""
         from validation.sprint import post as P
 
@@ -914,6 +920,8 @@ class ModelPredictor:
                 thr=self.contact_thr,
                 max_drift=self.lock_drift,
             )
+        if self.floor_clamp and floor_y is not None:
+            rot = P.floor_clamp(rot, pred.root_pos, lengths, floor_y)
         if self.postfix:
             hp = np.stack([inputs[:, 7:10], inputs[:, 14:17]], 1)
             valid = np.stack([inputs[:, 22], inputs[:, 23]], 1) > 0.5

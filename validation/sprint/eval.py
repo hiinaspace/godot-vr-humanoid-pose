@@ -35,6 +35,8 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--lock-drift", type=float, default=None, help="release the foot lock beyond this drift (m)"
     )
+    ap.add_argument("--floor-clamp", action="store_true", help="lift feet below the floor plane (post.floor_clamp)")
+    ap.add_argument("--device", default="cuda", help="cuda | cpu (cpu avoids the GPU lock for small evals)")
     ap.add_argument("--footlock", action="store_true", help="causal foot lock (needs contact head)")
     ap.add_argument(
         "--split",
@@ -57,6 +59,7 @@ def main(argv=None) -> int:
 
         predictor = train.ModelPredictor.load(
             args.ckpt,
+            dev=args.device,
             postfix=args.postfix,
             footlock=args.footlock,
             honest_fk=args.honest_fk,
@@ -64,6 +67,10 @@ def main(argv=None) -> int:
         )
         predictor.contact_thr = args.contact_thr
         predictor.lock_drift = args.lock_drift
+        predictor.floor_clamp = args.floor_clamp
+        predictor.needs_gt = predictor.needs_gt or args.floor_clamp
+        if args.floor_clamp:
+            predictor.name += "+floorclamp"
         name = predictor.name
     sets = SPLIT_GROUPS.get(args.split, [args.split])
     variants = oracle.VARIANTS if args.variant == "both" else (args.variant,)
