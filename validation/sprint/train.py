@@ -864,6 +864,7 @@ class ModelPredictor:
         smooth=None,
     ):
         ck = torch.load(path, map_location=dev, weights_only=False)
+        set_window(ck["cfg"].get("window", 40))  # positional params are window-sized
         model = build_model(ck["cfg"])
         model.load_state_dict(ck["model"])
         tag = "".join(
