@@ -20,10 +20,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-SPLITS_VERSION = "splits-v2"
+SPLITS_VERSION = "splits-v3"
 REPO = Path(__file__).resolve().parents[2]
 SPLITS_V1_PATH = Path(__file__).with_name("splits_v1.json")
-SPLITS_PATH = Path(__file__).with_name("splits_v2.json")
+SPLITS_PATH = Path(__file__).with_name("splits_v3.json")
 CMU_DIR = REPO / ".cache/cmu/parquet/canonical_full"
 XSENS_DIR = REPO / ".cache/sparseposer/parquet/canonical"
 ZENODO_RECORD = "8427980"
