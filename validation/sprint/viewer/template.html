@@ -146,17 +146,18 @@ body.still #stage { height: 100vh; border: 0; border-radius: 0; }
       </div>
       <div class="small muted" style="margin:8px 0 4px">Biggest artifact in the one you liked less (optional):</div>
       <div class="chips" id="tagChips"></div>
-      <div class="row" style="margin-top:8px"><input type="text" id="abNote" maxlength="200" placeholder="note (optional)" aria-label="note" style="flex:1;min-width:0"></div>
+      <div class="row" style="margin-top:8px"><textarea id="abNote" rows="4" maxlength="4000" placeholder="note (optional, as long as you like)" aria-label="note" style="flex:1;min-width:0;resize:vertical;font:inherit"></textarea></div>
       <div class="row" style="margin-top:10px">
         <button id="abPrev">Back</button><button id="abReplay">Replay</button><button id="abPlay">Pause</button>
         <button id="abSlow" aria-pressed="false">0.25&times;</button>
+        <button id="abGhost" aria-pressed="true" title="show or hide the faint GT figure">GT ghost</button>
         <span class="sp"></span><button id="abNext" class="big on" disabled>Save &amp; next</button>
       </div>
     </div>
     <div id="abDone" style="display:none" class="panel">
       <div id="abSummary"></div>
       <div class="row" style="margin:8px 0"><button id="abExport" class="on">Export answers (copy JSON)</button>
-        <button id="abReset">Clear answers and restart</button><span id="abExportMsg" class="small muted"></span></div>
+        <button id="abDownload">Download JSON</button><button id="abReset">Clear answers and restart</button><span id="abExportMsg" class="small muted"></span></div>
       <textarea id="abJson" readonly aria-label="answers JSON"></textarea>
     </div>
   </div>
@@ -831,9 +832,9 @@ function abSyncBtns() {
 function abCommit() {
   const A = S.ab, p = A.cur;
   const winner = A.choice === "same" ? "same" : p.sides[A.choice === "A" ? 0 : 1];
-  const rec = { n: p.n, clip: p.clip, seg_frames: p.seg, window: cur().win, view: p.view, A: p.sides[0], B: p.sides[1], choice: A.choice, winner, tag: A.tag, repeat_of: p.repeat_of, note: $("abNote").value.trim().slice(0, 200), ms: Date.now() - A.t0, ts: new Date().toISOString() };
+  const rec = { n: p.n, clip: p.clip, seg_frames: p.seg, window: cur().win, view: p.view, A: p.sides[0], B: p.sides[1], choice: A.choice, winner, tag: A.tag, repeat_of: p.repeat_of, note: $("abNote").value.trim().slice(0, 4000), ms: Date.now() - A.t0, ts: new Date().toISOString() };
   const k = A.answers.findIndex(a => a.n === p.n); if (k >= 0) A.answers[k] = rec; else A.answers.push(rec);
-  abSave();
+  abSave(); diskSave();
   dbWrite(rec, p);  // the only server write: on this action
   A.i = Math.max(A.i + 1, 0);
   abShow();
@@ -863,6 +864,15 @@ function abExport() {
   try { navigator.clipboard.writeText(j).then(() => msg.textContent = "copied " + A_count() + " answers", fallback); } catch (e) { fallback(); }
 }
 const A_count = () => S.ab.answers.length;
+/* autosave to disk through viewer/server.py (POST /save); silent no-op on a plain http.server */
+function diskSave() {
+  try { fetch("save", { method: "POST", headers: { "Content-Type": "application/json" }, body: abJson() })
+    .then(r => r.ok ? r.text() : Promise.reject()).then(t => { $("abSaved").textContent = "saved to disk: " + t; }, () => {}); } catch (e) { }
+}
+function abDownload() {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([abJson()], { type: "application/json" }));
+  a.download = "ab-answers-" + new Date().toISOString().slice(0, 19).replace(/:/g, "") + ".json"; a.click();
+}
 
 /* ------------------------------------------------------------------ mode switching */
 function setMode(m) {
@@ -917,7 +927,8 @@ function boot() {
   $("abReplay").onclick = () => { S.t = S.seg[0]; S.playing = true; syncPlayBtn(); };
   $("abPlay").onclick = () => { S.playing = !S.playing; syncPlayBtn(); };
   $("abSlow").onclick = () => setSpeed(S.speed === 1 ? 0.25 : 1);
-  $("abExport").onclick = abExport;
+  $("abExport").onclick = abExport; $("abDownload").onclick = abDownload;
+  $("abGhost").addEventListener("click", () => { S.ghost = !S.ghost; $("abGhost").setAttribute("aria-pressed", S.ghost); $("tgGhost").setAttribute("aria-pressed", S.ghost); layoutViews(); });
   $("abReset").onclick = () => { if (confirm("Delete all saved answers in this browser?")) { store.clear(); abInit(); abShow(); } };
   document.addEventListener("keydown", e => {
     if (["TEXTAREA", "SELECT", "INPUT"].includes(e.target.tagName)) return;
